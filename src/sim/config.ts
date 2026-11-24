@@ -30,7 +30,7 @@ export const CFG = {
   throwPerLevel: 0.07,
   snowballGravity: 9.5, // lower = flatter throws
   hitRadius: 0.5, // how close a snowball has to pass to count as a hit
-  aimAssist: 0.55, // how much a throw leads a moving penguin under the crosshair (0 = none)
+  aimAssist: 0.2, // how much a throw leads a moving penguin under the crosshair (0 = none)
   snowballRadius: 0.13,
 
   reach: 4.2, // dig / build reach
