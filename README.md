@@ -58,7 +58,7 @@ npm run build
 npm start                 # http://localhost:8080, open it in a few tabs to play each other
 ```
 
-- **Matches:** pick 5v5 or 10v10 on the menu and press **Play online**. You take a bot's place on the team with fewer people; when you leave, a bot takes your penguin back. When every slot in a match is a person, the next person starts a new match of that size. After the results screen the next match starts by itself and everyone stays in.
+- **Matches:** pick Team Deathmatch or Conquest and 5v5 or 10v10 on the menu and press **Play online**. You take a bot's place on the team with fewer people; when you leave, a bot takes your penguin back. When every slot in a match is a person, the next person starts a new match of that mode and size. After the results screen the next match starts by itself and everyone stays in.
 - **Practice with bots** is the offline game, and it's all the GitHub Pages copy offers until it knows where the server is.
 - **Settings** (environment): `PORT` (8080), `MAX_PLAYERS` across all matches (40), `MAX_CONN_PER_IP` (6). Each player downloads about 30 KB/s.
 - `GET /status` is the menu's head count, `GET /healthz` is for hosts and the Flynn Arcade hub (`server/arcade.js` and `server/names.js` are the same files Time of War, Flynn Fall and Scrapforge use: kick/ban hooks and the stream-safe name filter).
@@ -85,7 +85,7 @@ For the Flynn Arcade hub, add `{ "id": "penguin", "name": "Polar Penguin Fight",
 - The server runs the real match with the same code as the offline game (`src/sim`), 60 steps a second, and sends a binary snapshot 30 times a second: every penguin, snowball, big ball, snowflake and the surfboard, the snow voxels that changed, and the events (hits, splats, throws). See `src/net/Protocol.ts`.
 - Your own penguin moves the moment you press a key: the browser runs the same movement code ahead of the server and quietly corrects itself when the server disagrees (`src/net/NetClient.ts`). Everyone else is shown 0.1 s in the past, blended between snapshots.
 - The server does all the digging, building, packing, throwing, hits and pickups.
-- Tests: `npm run test:net` plays a match with three fake players in-process and checks that each one's copy of the snow matches the server's exactly. `npm run test:online` starts the real server and connects two headless players over a laggy connection (`LAG=120 JITTER=60 npm run test:online` for a bad one) and reports how far prediction drifts.
+- Tests: `npm run test:net` plays a match with three fake players in-process and checks that each one's copy of the snow matches the server's exactly. `npm run test:online` starts the real server and connects two headless players over a laggy connection (`LAG=120 JITTER=60 npm run test:online` for a bad one) and reports how far prediction drifts. Put `MODE=conquest` in front of either to test Conquest on Glacier Gap.
 
 ## How it's put together
 
