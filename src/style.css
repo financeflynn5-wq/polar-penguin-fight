@@ -97,6 +97,26 @@ canvas { display: block; }
 .board .r span:not(:first-child) { text-align: right; }
 .board .hd { color: var(--ice-2); font-size: 11px; letter-spacing: 1px; text-transform: uppercase; }
 
+.points { position: absolute; top: 86px; left: 50%; transform: translateX(-50%); display: flex; gap: 14px; filter: drop-shadow(0 3px 8px rgba(0,0,0,.35)); }
+.points .pt { width: 46px; height: 46px; border-radius: 50%; padding: 5px; background: rgba(255,255,255,.16); }
+.points .pt span { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; border-radius: 50%; background: var(--panel-solid); font: 700 22px/1 'Fredoka'; color: #fff; }
+.points .pt.o0 span { background: linear-gradient(180deg, #59a8ff, #2a72d6); }
+.points .pt.o1 span { background: linear-gradient(180deg, #ff9a5c, #e6582a); }
+.points .pt.fight { animation: contest .5s steps(2) infinite; }
+.points .pt.mine { box-shadow: 0 0 0 2px rgba(255,255,255,.75); }
+@keyframes contest { 50% { transform: scale(1.14); } }
+
+.card.streak .label b { font: 700 15px 'Fredoka'; color: #fff; margin-left: 6px; letter-spacing: 0; }
+.rewards { display: flex; flex-direction: column; gap: 5px; }
+.rw { display: flex; align-items: center; gap: 4px; font: 700 13px 'Fredoka'; color: rgba(225,240,255,.5); }
+.rw .key { font-size: 11px; line-height: 16px; min-width: 20px; padding: 1px 5px; opacity: .45; }
+.rw .nm { flex: 1; }
+.rw .at { font: 800 10px 'Nunito'; letter-spacing: .5px; text-transform: uppercase; margin-left: 12px; }
+.rw.ready { color: #fff; }
+.rw.ready .key { opacity: 1; background: var(--gold); box-shadow: 0 3px 0 #b98a12, 0 0 12px rgba(255,211,77,.8); }
+.rw.ready .at { color: var(--gold); }
+.rw.live { color: var(--gold); }
+
 /* ── overlays that take clicks ── */
 .overlay { position: fixed; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center; pointer-events: auto; }
 .overlay * { pointer-events: auto; }
@@ -114,6 +134,10 @@ canvas { display: block; }
 .hat .em { display: block; font-size: 22px; line-height: 1.2; }
 .hat.sel { border-color: #fff; background: rgba(143, 211, 255, .25); box-shadow: 0 0 0 3px rgba(143,211,255,.35); }
 .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.modes + .modes { margin-top: 10px; }
+.mode.sm { padding: 8px 12px; }
+.mode.sm b { font-size: 18px; }
+.mode.gm b { font-size: 20px; }
 .mode { padding: 12px; border-radius: 14px; border: 2px solid var(--stroke); background: rgba(255,255,255,.06); color: #fff; cursor: pointer; text-align: left; }
 .mode b { display: block; font: 700 24px 'Fredoka'; }
 .mode span { font: 700 12px 'Nunito'; color: var(--ice-2); }

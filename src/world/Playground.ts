@@ -3,7 +3,7 @@
 
 export interface Box {
   x: number; z: number; y0: number; y1: number; hx: number; hz: number; rot: number;
-  kind: 'platform' | 'step' | 'rail' | 'wall' | 'seesaw' | 'post';
+  kind: 'platform' | 'step' | 'rail' | 'wall' | 'seesaw' | 'post' | 'solid';
   color?: number;
 }
 
@@ -19,6 +19,8 @@ export interface Slide {
 }
 
 export interface Playground {
+  /** false on maps without a playground: then this only carries the map's solid props (boxes and cylinders) */
+  present: boolean;
   boxes: Box[];
   cyls: Cyl[];
   slide: Slide;
@@ -111,7 +113,16 @@ export function buildPlayground(ground: (x: number, z: number) => number): Playg
     monkeyBars.push({ x: mx, z: mz, ground: mg, rot: Math.PI / 2, len: 3.2 });
     for (const end of [-1, 1]) for (const side of [-1, 1]) cyls.push({ x: mx + side * 0.45, z: mz + end * 1.6, r: 0.07, y0: mg - 0.3, y1: mg + 2.0 });
   }
-  return { boxes, cyls, slide, tower: { x: tx, z: tz, ground: g0, top, size }, swings, seesaws, monkeyBars };
+  return { present: true, boxes, cyls, slide, tower: { x: tx, z: tz, ground: g0, top, size }, swings, seesaws, monkeyBars };
+}
+
+/** A map with no playground still needs somewhere to keep its solid props; the slide is parked far off the map. */
+export function emptyPlayground(): Playground {
+  return {
+    present: false, boxes: [], cyls: [],
+    slide: { x: 1e6, z0: 1e6, dirZ: 1, width: 0, length: 0, samples: [0, 0], step: 1 },
+    tower: { x: 0, z: 0, ground: 0, top: 0, size: 0 }, swings: [], seesaws: [], monkeyBars: [],
+  };
 }
 
 // ── collision helpers ──

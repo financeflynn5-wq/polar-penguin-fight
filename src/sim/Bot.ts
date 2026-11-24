@@ -1,10 +1,14 @@
-// Bot penguins: they build forts in the build phase, pack and stash snowballs, then fight, grab snowflakes and roll big balls.
+// Bot penguins: they build forts and turrets in the build phase, pack and stash snowballs, then fight, grab snowflakes,
+// roll big balls, knock down turrets, spend their streak rewards, and in Conquest take and hold the flags.
 import { ISO } from '../world/SnowField';
 import { V3 } from '../world/MapDef';
 import { World, Penguin, solveThrow } from './World';
 import { CFG } from './config';
 
-type Goal = 'build' | 'pack' | 'stash' | 'grab' | 'fight' | 'flake' | 'roll' | 'retreat' | 'advance' | 'board';
+type Goal = 'build' | 'pack' | 'stash' | 'grab' | 'fight' | 'flake' | 'roll' | 'retreat' | 'advance' | 'board' | 'turret' | 'capture';
+
+/** What a bot is throwing at: a penguin or an enemy turret. */
+interface Mark { x: number; y: number; z: number; vx: number; vz: number; h: number; alive: boolean; }
 
 const wrap = (a: number) => { while (a > Math.PI) a -= Math.PI * 2; while (a < -Math.PI) a += Math.PI * 2; return a; };
 
@@ -27,25 +31,43 @@ export class BotBrain {
   private rollT = 0;
   private advanceSpot: V3 | null = null;
   private reactT = 0;
+  private turretId = -1; // an enemy turret to knock down when no penguin is in sight
+  private turretJob: boolean; // this bot puts up a snowman turret
+  private raider: boolean; // Conquest: this bot likes to sneak round to the enemy's home flag
+  private turretSpot: V3 | null = null;
+  private turretT = 0;
+  private turretWait = 0;
+  private objective = -1; // Conquest: the flag this bot is going for
+  private objectiveT = 0;
+  private holdSpot: V3 | null = null;
+  private rewardT = 0;
+  private detourT = 0;
+  private rnd: () => number;
 
   /** slot = this bot's number within its own team, so both teams get the same mix of jobs */
   constructor(private index: number, rnd: () => number, slot = index) {
     this.role = (['packer', 'builder', 'roller', 'packer', 'builder', 'builder', 'packer', 'roller', 'packer', 'builder'] as const)[slot % 10];
     this.skill = 0.55 + rnd() * 0.4;
+    this.turretJob = slot % 5 === 1;
+    this.raider = slot % 5 === 3;
+    this.rnd = rnd;
     this.strafeDir = rnd() < 0.5 ? -1 : 1;
   }
 
   think(w: World, p: Penguin, dt: number) {
     const inp = p.input;
     inp.fire = inp.fire && p.charging; // keep holding only while charging
-    inp.plow = inp.pack = inp.dig = inp.build = inp.use = inp.roll = false;
+    inp.plow = inp.pack = inp.dig = inp.build = inp.use = inp.roll = inp.turret = false;
     inp.slide = false;
     inp.moveX = 0; inp.moveZ = 0;
     if (!p.alive || w.phase === 'end') { inp.fire = false; return; }
     this.t += dt;
     this.losT -= dt;
     this.reactT -= dt;
+    this.detourT -= dt;
+    this.turretWait -= dt;
 
+    const conquest = w.mode === 'conquest';
     const base = w.map.bases[p.team];
     const enemyBase = w.map.bases[1 - p.team];
     const toCenter = p.team === 0 ? 1 : -1;
@@ -53,23 +75,34 @@ export class BotBrain {
     // ── choose a goal ──
     if (w.phase === 'build') {
       // builders build; packers switch to building once the stockpile is healthy
-      if ((this.role === 'builder' || (w.piles[p.team] >= 18 && p.carried === 0)) && this.t < CFG.buildPhase - 3) this.goal = 'build';
+      if (this.turretJob && this.turretWait <= 0 && this.wantsTurret(w, p) && this.t < w.buildLen - 4) this.goal = 'turret';
+      else if ((this.role === 'builder' || (w.piles[p.team] >= 18 && p.carried === 0)) && this.t < w.buildLen - 3) this.goal = 'build';
       else this.goal = p.carried >= CFG.maxCarry ? 'stash' : 'pack';
     } else {
       this.pickTarget(w, p);
+      this.spendRewards(w, p, dt);
+      if (conquest) this.pickObjective(w, p, dt);
       const flake = this.nearestFlake(w, p);
+      const marked = this.targetId >= 0 || this.turretId >= 0;
+      const pt = conquest ? w.points[this.objective] : undefined;
+      const onFlag = !!pt && Math.hypot(p.x - pt.x, p.z - pt.z) < pt.r;
       if (p.carried === 0) {
         const pileDist = Math.hypot(p.x - base.stockpile.x, p.z - base.stockpile.z);
-        this.goal = w.piles[p.team] > 0 && pileDist < 34 ? 'grab' : 'pack';
-      } else if (p.health === 1 && p.sinceHit < 4 && this.targetVisible) {
+        this.goal = w.piles[p.team] > 0 && pileDist < (conquest ? 20 : 34) ? 'grab' : 'pack';
+      } else if (p.health === 1 && p.sinceHit < 4 && this.targetVisible && !onFlag) {
         this.goal = 'retreat';
-      } else if (w.board.active && w.board.holder < 0 && Math.hypot(w.board.x - p.x, w.board.z - p.z) < 26) {
+      } else if (w.board.active && w.board.holder < 0 && Math.hypot(w.board.x - p.x, w.board.z - p.z) < (conquest ? 14 : 26)) {
         this.goal = 'board';
-      } else if (flake && flake.d < 16 && p.mitten < 3 && !(this.targetVisible && p.carried > 0 && this.targetDist(w, p) < 14)) {
+      } else if (flake && flake.d < (conquest ? 9 : 16) && p.mitten < 3 && !(this.targetVisible && p.carried > 0 && this.targetDist(w, p) < 14)) {
         this.goal = 'flake';
-      } else if (this.role === 'roller' && this.findBall(w, p)) {
+      } else if (this.role === 'roller' && !conquest && this.findBall(w, p)) {
         this.goal = 'roll';
-      } else if (this.targetId >= 0) {
+      } else if (conquest && pt) {
+        // the flag comes first: fight from inside the ring, and only chase enemies that are close to the way there
+        if (marked && this.targetVisible && (onFlag || this.targetDist(w, p) < 22)) this.goal = 'fight';
+        else if (onFlag && this.turretJob && pt.owner === p.team && pt.n0 * pt.n1 === 0 && this.turretWait <= 0 && this.wantsTurret(w, p)) this.goal = 'turret';
+        else this.goal = 'capture';
+      } else if (marked) {
         this.goal = 'fight';
       } else {
         this.goal = 'advance';
@@ -78,12 +111,17 @@ export class BotBrain {
 
     switch (this.goal) {
       case 'build': this.doBuild(w, p, dt, base, toCenter); break;
+      case 'turret': this.doTurret(w, p, dt, base, toCenter); break;
+      case 'capture': this.doCapture(w, p, dt, base); break;
       case 'pack': {
         inp.pack = true;
         this.faceYaw(p, base.facing + Math.sin(this.t * 0.3 + this.index) * 1.2);
         if (p.noSnowT > 0) inp.moveZ = 1;
-        // during the fight, don't pack in the open next to an enemy: back off toward home
-        if (w.phase === 'fight' && this.targetVisible && this.targetDist(w, p) < 12) { inp.pack = false; this.moveTo(w, p, base.center, 2, dt); }
+        // during the fight, don't pack in the open next to an enemy: back off toward home (in Conquest, hold the flag instead)
+        if (w.phase === 'fight' && this.targetVisible && this.targetDist(w, p) < 12 && this.targetId >= 0) {
+          const pt = conquest ? w.points[this.objective] : undefined;
+          if (!pt || Math.hypot(p.x - pt.x, p.z - pt.z) > pt.r) { inp.pack = false; this.moveTo(w, p, base.center, 2, dt); }
+        }
         break;
       }
       case 'stash': {
@@ -117,10 +155,10 @@ export class BotBrain {
       case 'fight': this.doFight(w, p, dt); break;
       case 'advance': {
         if (!this.advanceSpot || Math.hypot(p.x - this.advanceSpot.x, p.z - this.advanceSpot.z) < 2.5 || Math.random() < 0.002) {
-          // spread out: some push the middle, some take the north trail or the south woods to flank
-          const lane = (this.index * 5 + Math.floor(this.t / 40)) % 5;
-          const x = toCenter * -(3 + Math.random() * 16);
-          const z = lane === 0 ? -40 + Math.random() * 3 : lane === 1 ? 30 + Math.random() * 10 : (Math.random() * 2 - 1) * 24;
+          // spread out three ways: past the gingerbread house in the north, through the middle, or round the iceberg in the south
+          const lane = (this.index + Math.floor(this.t / 40)) % 3;
+          const x = toCenter * -(lane === 2 ? 3 + Math.random() * 16 : 7 + Math.random() * 14);
+          const z = lane === 0 ? -41 + Math.random() * 12 : lane === 1 ? 27 + Math.random() * 14 : (Math.random() * 2 - 1) * 22;
           this.advanceSpot = { x: base.center.x * 0 + x, y: 0, z };
         }
         this.moveTo(w, p, this.advanceSpot, 1, dt);
@@ -130,9 +168,121 @@ export class BotBrain {
     }
   }
 
+  /** Whoever (or whatever) this bot is throwing at right now. */
+  private mark(w: World): Mark | null {
+    if (this.targetId >= 0) {
+      const t = w.penguin(this.targetId);
+      return t ? { x: t.x, y: t.y, z: t.z, vx: t.vx, vz: t.vz, h: t.sliding ? 0.3 : 0.7, alive: t.alive } : null;
+    }
+    if (this.turretId >= 0) {
+      const t = w.turrets.find(q => q.id === this.turretId);
+      return t ? { x: t.x, y: t.y, z: t.z, vx: 0, vz: 0, h: 1.0, alive: t.alive } : null;
+    }
+    return null;
+  }
+
   private targetDist(w: World, p: Penguin) {
-    const t = w.penguin(this.targetId);
+    const t = this.mark(w);
     return t ? Math.hypot(t.x - p.x, t.z - p.z) : 999;
+  }
+
+  /** Streak rewards don't wait around: frenzy when there's someone to throw at, a turret at their feet, an Avalanche on their target. */
+  private spendRewards(w: World, p: Penguin, dt: number) {
+    if (w.mode !== 'tdm' || !(p.rewards[0] + p.rewards[1] + p.rewards[2])) { this.rewardT = 0.6 + this.rnd() * 1.2; return; }
+    this.rewardT -= dt;
+    if (this.rewardT > 0) return;
+    const t = this.targetId >= 0 ? w.penguin(this.targetId) : undefined;
+    if (p.rewards[2] > 0 && t && this.targetVisible && this.targetDist(w, p) > 9) {
+      p.input.aim = { x: t.x + t.vx * 1.2, y: t.y, z: t.z + t.vz * 1.2 };
+      p.input.reward = 3;
+    } else if (p.rewards[0] > 0 && t && this.targetVisible && p.frenzyT <= 0) p.input.reward = 1;
+    else if (p.rewards[1] > 0) { p.input.aim = null; p.input.reward = 2; }
+    this.rewardT = 1 + this.rnd() * 2;
+  }
+
+  /** No turret of our own standing, and the team has room for one. */
+  private wantsTurret(w: World, p: Penguin) {
+    let team = 0;
+    for (const t of w.turrets) { if (!t.alive) continue; if (t.owner === p.id) return false; if (t.team === p.team) team++; }
+    return team < CFG.maxTeamTurrets && this.turretT < 14;
+  }
+
+  /** Stand a few steps back from a good spot, face it, and scoop until the snowman is up. */
+  private doTurret(w: World, p: Penguin, dt: number, base: { center: V3; facing: number }, toCenter: number) {
+    if (!this.turretSpot) {
+      const side = this.index % 2 ? 1 : -1;
+      const home = w.mode === 'conquest' ? w.points[this.objective >= 0 ? this.objective : p.team === 0 ? 0 : w.points.length - 1] : undefined;
+      // Conquest: just inside the fort, on the enemy's side of the flag. Deathmatch: out on the lip of the base.
+      this.turretSpot = home ? { x: home.x + toCenter * 2.6, y: 0, z: home.z + side * 2.4 } : { x: base.center.x + toCenter * 25, y: 0, z: side * 8 };
+    }
+    const spot = this.turretSpot;
+    const stand = { x: spot.x - toCenter * 2.4, y: 0, z: spot.z };
+    if (!this.moveTo(w, p, stand, 0.7, dt)) return;
+    this.turretT += dt;
+    this.faceYaw(p, this.yawTo(p, spot.x, spot.z));
+    const g = w.field.surfaceBelow(spot.x, p.y + 1.5, spot.z, 0.5, 4);
+    if (g === null) { this.turretT = 99; return; }
+    p.input.aim = { x: spot.x, y: g, z: spot.z };
+    p.input.turret = true;
+    // can't stand there, or no loose snow: shuffle sideways and try again, then give up for a while
+    if (p.turretBlock >= 2 || (p.noSnowT > 0 && p.turretSnow <= 0)) { spot.z += (this.rnd() - 0.5) * 3; spot.x -= toCenter * 0.6; this.turretT += 1.5; }
+    if (this.turretT >= 14) { this.turretT = 0; this.turretSpot = null; this.turretWait = 40; }
+  }
+
+  /** Conquest: pick the flag that most needs this bot. Builders with the turret job lean toward guarding the home flag. */
+  private pickObjective(w: World, p: Penguin, dt: number) {
+    this.objectiveT -= dt;
+    const cur = w.points[this.objective];
+    const settled = cur && cur.owner === p.team && (p.team === 0 ? cur.n1 : cur.n0) === 0;
+    if (cur && this.objectiveT > 0 && !(settled && this.objectiveT < 6)) return;
+    const home = p.team === 0 ? 0 : w.points.length - 1;
+    let best = -1, bs = -1;
+    for (const pt of w.points) {
+      const enemies = p.team === 0 ? pt.n1 : pt.n0;
+      const need = pt.owner !== p.team ? 1 : enemies > 0 ? 1.5 : 0.12;
+      const d = Math.hypot(pt.x - p.x, pt.z - p.z);
+      let score = need / (22 + d) * (0.6 + this.rnd() * 0.8);
+      if (pt.id === home && this.turretJob) score *= need > 1 ? 3 : 2.2;
+      if (pt.id === w.points.length - 1 - home && this.raider) score *= 2.4; // raiders go for the enemy's home flag
+      if (score > bs) { bs = score; best = pt.id; }
+    }
+    if (best !== this.objective) { this.holdSpot = null; this.turretSpot = null; this.turretT = 0; }
+    this.objective = best;
+    this.objectiveT = 9 + this.rnd() * 8;
+  }
+
+  /** Get into the flag's ring and stay there. With nothing to throw at: stock up on snowballs, then thicken the walls. */
+  private doCapture(w: World, p: Penguin, dt: number, base: { center: V3; facing: number }) {
+    const pt = w.points[this.objective];
+    if (!pt) return;
+    if (!this.holdSpot || this.rnd() < 0.002) {
+      const a = this.rnd() * Math.PI * 2, r = 1.2 + this.rnd() * (pt.r - 3.2);
+      this.holdSpot = { x: pt.x + Math.cos(a) * r, y: pt.y, z: pt.z + Math.sin(a) * r };
+    }
+    const far = Math.hypot(p.x - pt.x, p.z - pt.z);
+    if (!this.moveTo(w, p, this.holdSpot, 1.1, dt)) {
+      if (far > 14 && Math.hypot(p.vx, p.vz) > 3.5 && this.downhill(w, p)) p.input.slide = true;
+      this.combatWhileMoving(w, p);
+      return;
+    }
+    // in the ring
+    const toEnemy = base.facing; // look the way the enemy comes from
+    if (p.carried < CFG.maxCarry) {
+      p.input.pack = true;
+      this.faceYaw(p, toEnemy + Math.sin(this.t * 0.4 + this.index) * 1.3);
+      if (p.noSnowT > 0) this.holdSpot = null;
+    } else if (this.role === 'builder' && pt.owner === p.team) {
+      // pat more snow onto whatever wall is in front of us
+      this.faceYaw(p, toEnemy + Math.sin(this.index * 2.1) * 0.9);
+      const yaw = p.input.yaw, fx = -Math.sin(yaw), fz = -Math.cos(yaw);
+      const hit = w.field.raycast(p.x, p.y + 1.2, p.z, fx * 0.95, -0.31, fz * 0.95, 4.5, 0.15);
+      if (hit) { p.input.aim = { x: hit.x, y: hit.y, z: hit.z }; p.input.build = true; }
+      this.buildT += dt;
+      if (this.buildT > 5) { this.buildT = 0; this.holdSpot = null; }
+    } else {
+      this.faceYaw(p, toEnemy + Math.sin(this.t * 0.5 + this.index) * 1.4);
+    }
+    this.combatWhileMoving(w, p);
   }
 
   private pickTarget(w: World, p: Penguin) {
@@ -148,12 +298,23 @@ export class BotBrain {
       const score = d * (seen ? 1 : 1.8);
       if (score < bestD) { bestD = score; best = e.id; vis = seen; }
     }
+    // nobody in sight? then an enemy turret is worth knocking down
+    this.turretId = -1;
+    if (best < 0 || !vis) {
+      let td = 30;
+      for (const t of w.turrets) {
+        if (!t.alive || t.team === p.team) continue;
+        const d = Math.hypot(t.x - p.x, t.z - p.z);
+        if (d < td && this.canSee(w, p, { x: t.x, y: t.y + 0.4, z: t.z })) { td = d; this.turretId = t.id; }
+      }
+      if (this.turretId >= 0) { best = -1; vis = true; }
+    }
     if (best !== this.targetId) this.reactT = 0.35 + (1 - this.skill) * 0.5;
     this.targetId = best;
     this.targetVisible = vis;
   }
 
-  private canSee(w: World, p: Penguin, e: Penguin) {
+  private canSee(w: World, p: Penguin, e: { x: number; y: number; z: number }) {
     const ox = p.x, oy = p.y + 1.1, oz = p.z;
     const dx = e.x - ox, dy = e.y + 0.7 - oy, dz = e.z - oz;
     const d = Math.hypot(dx, dy, dz);
@@ -180,10 +341,24 @@ export class BotBrain {
 
   /** Walk toward a point (facing it). Returns true once within `near`. */
   private moveTo(w: World, p: Penguin, to: V3, near: number, dt: number, faceAlso = true) {
+    {
+      const dx = to.x - p.x, dz = to.z - p.z;
+      if (Math.hypot(dx, dz) < near) return true;
+    }
+    // heading into a house from outside? go to the door on our side first, then in through it
+    for (const h of w.map.houses) {
+      const inside = (x: number, z: number, pad: number) => Math.abs(x - h.x) < h.hx + pad && Math.abs(z - h.z) < h.hz + pad;
+      if (!inside(to.x, to.z, 0) || inside(p.x, p.z, -0.3)) continue;
+      const side = p.x < h.x ? -1 : 1;
+      const lined = Math.abs(p.z - h.z) < h.doorW / 2 - 0.35 && (p.x - h.x) * side > 0;
+      if (!lined) to = { x: h.x + side * (h.hx + 1.6), y: h.y, z: h.z };
+      else to = { x: h.x, y: h.y, z: h.z };
+    }
     const dx = to.x - p.x, dz = to.z - p.z;
     const d = Math.hypot(dx, dz);
-    if (d < near) return true;
     let yaw = this.yawTo(p, to.x, to.z);
+    // walked into something solid (a wall, a pillar): go round it for a moment
+    if (this.detourT > 0) yaw += this.strafeDir * 1.25;
     // look a little ahead for walls
     const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
     const ahead = w.field.sample(p.x + fx * 1.1, p.y + 0.8, p.z + fz * 1.1) > ISO;
@@ -197,7 +372,7 @@ export class BotBrain {
     p.input.moveZ = Math.cos(rel);
     p.input.moveX = -Math.sin(rel);
     // stuck?
-    if (Math.hypot(p.vx, p.vz) < 0.6) { this.stuckT += dt; if (this.stuckT > 0.8) { p.input.jump = true; this.strafeDir *= -1; this.stuckT = 0; } }
+    if (Math.hypot(p.vx, p.vz) < 0.6) { this.stuckT += dt; if (this.stuckT > 0.8) { p.input.jump = true; this.strafeDir *= -1; this.stuckT = 0; this.detourT = 1.1; } }
     else this.stuckT = 0;
     return false;
   }
@@ -222,6 +397,11 @@ export class BotBrain {
       const row = this.index % 3;
       const lane = ((this.index * 7) % 5) - 2;
       this.buildSpot = { x: base.center.x + toCenter * (13 + row * 6), y: 0, z: lane * 6.5 + (row % 2) * 3 };
+      // Conquest: thicken the old fort round our home flag instead, on the side the enemy comes from
+      if (w.mode === 'conquest') {
+        const home = w.points[p.team === 0 ? 0 : w.points.length - 1];
+        this.buildSpot = { x: home.x + toCenter * (2.2 + row * 0.5), y: 0, z: home.z + lane * 1.9 };
+      }
     }
     if (!this.moveTo(w, p, this.buildSpot, 0.8, dt)) { this.buildT = 0; return; }
     this.buildT += dt;
@@ -242,7 +422,8 @@ export class BotBrain {
         this.buildT = 0;
         const rx = Math.cos(yaw), rz = -Math.sin(yaw);
         this.buildSpot = { x: this.buildSpot.x + rx * this.wallSide * 1.4, y: 0, z: this.buildSpot.z + rz * this.wallSide * 1.4 };
-        if (Math.abs(this.buildSpot.z) > 20) this.wallSide *= -1;
+        const mid = w.mode === 'conquest' ? w.points[p.team === 0 ? 0 : w.points.length - 1].z : 0;
+        if (Math.abs(this.buildSpot.z - mid) > (w.mode === 'conquest' ? 4.5 : 20)) this.wallSide *= -1;
       }
     }
   }
@@ -282,7 +463,7 @@ export class BotBrain {
   }
 
   private doFight(w: World, p: Penguin, dt: number) {
-    const t = w.penguin(this.targetId);
+    const t = this.mark(w);
     if (!t) return;
     const dx = t.x - p.x, dz = t.z - p.z, d = Math.hypot(dx, dz) || 1;
     const want = 11 + this.skill * 5;
@@ -295,6 +476,12 @@ export class BotBrain {
     else if (d > want + 4) { mx = dx / d * 0.8; mz = dz / d * 0.8; }
     else if (d < want - 4) { mx = -dx / d * 0.7; mz = -dz / d * 0.7; }
     mx += (-dz / d) * this.strafeDir * 0.7; mz += (dx / d) * this.strafeDir * 0.7;
+    // Conquest: don't get drawn off the flag you're holding or taking
+    const pt = w.mode === 'conquest' ? w.points[this.objective] : undefined;
+    if (pt) {
+      const ox = pt.x - p.x, oz = pt.z - p.z, od = Math.hypot(ox, oz);
+      if (od > pt.r - 2.2 && od < pt.r + 12) { const k = od < pt.r ? 1.2 : 2.2; mx = mx * 0.5 + ox / od * k; mz = mz * 0.5 + oz / od * k; }
+    }
     // bump into a wall? hop or reverse the strafe
     const ml = Math.hypot(mx, mz) || 1;
     if (w.field.sample(p.x + mx / ml * 1.0, p.y + 0.8, p.z + mz / ml * 1.0) > ISO) { this.strafeDir *= -1; }
@@ -305,7 +492,7 @@ export class BotBrain {
 
   private combatWhileMoving(w: World, p: Penguin) {
     if (w.phase !== 'fight' || p.carried === 0) { p.input.fire = false; return; }
-    const t = w.penguin(this.targetId);
+    const t = this.mark(w);
     if (!t || !this.targetVisible || !t.alive || this.reactT > 0) { if (!p.charging) p.input.fire = false; return; }
     const d = Math.hypot(t.x - p.x, t.z - p.z);
     if (d > 40) { p.input.fire = false; return; }
@@ -319,12 +506,12 @@ export class BotBrain {
       p.input.yaw = this.yawTo(p, t.x, t.z);
       const speed = (CFG.throwSpeedMin + (CFG.throwSpeedMax - CFG.throwSpeedMin) * p.charge) * (1 + p.mitten * CFG.throwPerLevel);
       const h = w.handPos(p);
-      let aim = { x: t.x, y: t.y + (t.sliding ? 0.3 : 0.7), z: t.z };
+      let aim = { x: t.x, y: t.y + t.h, z: t.z };
       for (let it = 0; it < 2; it++) {
         const v = solveThrow(h, aim, speed, CFG.snowballGravity);
         const flight = v ? Math.hypot(aim.x - h.x, aim.z - h.z) / Math.max(1, Math.hypot(v.x, v.z)) : d / speed;
         const lead = this.skill * 0.9;
-        aim = { x: t.x + t.vx * flight * lead, y: t.y + (t.sliding ? 0.3 : 0.7), z: t.z + t.vz * flight * lead };
+        aim = { x: t.x + t.vx * flight * lead, y: t.y + t.h, z: t.z + t.vz * flight * lead };
       }
       const err = (0.25 + d * 0.05) * (1.3 - this.skill);
       aim.x += (Math.random() * 2 - 1) * err; aim.z += (Math.random() * 2 - 1) * err; aim.y += (Math.random() * 2 - 1) * err * 0.4;

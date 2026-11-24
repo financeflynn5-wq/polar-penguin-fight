@@ -4,6 +4,7 @@
 
 import { SnowField } from './SnowField';
 import { buildPlayground, Playground } from './Playground';
+import { IceShard, House, makeIceberg, makePillar, makeGingerbreadHouse, addLandmarkCollision } from './Landmarks';
 
 export interface V3 { x: number; y: number; z: number; }
 
@@ -21,9 +22,23 @@ export interface TeamBase {
 export interface Tree { x: number; z: number; y: number; h: number; r: number; cb: number; cw: number; }
 export interface Rock { x: number; z: number; y: number; r: number; seed: number; }
 
+/** A Conquest flag: stand inside the ring to take it for your team. */
+export interface CapturePointDef { name: string; x: number; y: number; z: number; r: number; owner: number; }
+
 export interface MapDef {
+  /** which map this is: buildMap(id) always builds the same map from the id alone */
+  id: string;
   name: string;
   field: SnowField;
+  /** ground height before anyone touches the snow (also used for the land outside the arena) */
+  ground: (x: number, z: number) => number;
+  /** the sled run, on maps that have one */
+  creekAt: ((x: number, z: number) => { d: number; t: number; tx: number; tz: number }) | null;
+  /** Conquest flags (empty on maps without them) */
+  points: CapturePointDef[];
+  /** ice pillars and icebergs: hard cover */
+  shards: IceShard[];
+  houses: House[];
   bases: TeamBase[];
   bigBallSpawns: V3[];
   flakeSpots: V3[];
@@ -31,7 +46,7 @@ export interface MapDef {
   rocks: Rock[];
   /** centre line of the sled run on the +x side (mirrored for -x); t runs 0 (top) to 1 (pond) */
   creek: { x: number; z: number; t: number }[];
-  pond: { x: number; z: number; r: number; y: number };
+  pond: { x: number; z: number; r: number; y: number } | null;
   playground: Playground;
   boardSpots: { x: number; z: number; name: string }[];
   bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
@@ -39,7 +54,7 @@ export interface MapDef {
 }
 
 // ── small deterministic noise ──
-function hash2(x: number, y: number) {
+export function hash2(x: number, y: number) {
   let h = Math.imul(x | 0, 374761393) + Math.imul(y | 0, 668265263);
   h = Math.imul(h ^ (h >>> 13), 1274126177);
   return ((h ^ (h >>> 16)) >>> 0) / 4294967295;
@@ -51,12 +66,12 @@ function vnoise(x: number, y: number) {
   const a = hash2(xi, yi), b = hash2(xi + 1, yi), c = hash2(xi, yi + 1), d = hash2(xi + 1, yi + 1);
   return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
 }
-function fbm(x: number, y: number) {
+export function fbm(x: number, y: number) {
   let s = 0, a = 0.5, f = 1;
   for (let o = 0; o < 4; o++) { s += a * (vnoise(x * f, y * f) * 2 - 1); a *= 0.5; f *= 2.03; }
   return s;
 }
-const smooth = (e0: number, e1: number, x: number) => {
+export const smooth = (e0: number, e1: number, x: number) => {
   const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
   return t * t * (3 - 2 * t);
 };
@@ -78,7 +93,9 @@ const HILL = { x: 0, z: -15, r: 15, h: 8 };
 const POND = { x: 0, z: 14, r: 8.5 };
 const POND_Y = 3.1;
 const FIELD = { nx: 288, ny: 52, nz: 208, cell: 0.5, x0: -72, z0: -52 };
-const TRAIL_Z = -40; // the hidden north trail behind Pine Ridge
+const TRAIL_Z = -40; // the north trail behind Pine Ridge
+const HOUSE = { x: 0, z: -35.5, y: 4.5 }; // the gingerbread house, in a hollow in the middle of Pine Ridge
+const BERG = { x: 0, z: 35.5, y: 4.9 }; // the big iceberg, down in the south
 const RIDGE_Z = -33;
 const PASS_X = 27; // gaps in the ridge
 
@@ -126,11 +143,11 @@ export function creekAt(x: number, z: number) {
   return creekOut;
 }
 
-const bump = (x: number, z: number, cx: number, cz: number, r: number) => {
+export const bump = (x: number, z: number, cx: number, cz: number, r: number) => {
   const d = Math.hypot(x - cx, z - cz);
   return d < r ? 0.5 + 0.5 * Math.cos(Math.PI * d / r) : 0;
 };
-const gauss = (v: number, w: number) => Math.exp(-(v * v) / (w * w));
+export const gauss = (v: number, w: number) => Math.exp(-(v * v) / (w * w));
 
 /** Terrain before the sled run is cut into it. */
 function rawHeight(ax: number, x: number, z: number): number {
@@ -144,9 +161,10 @@ function rawHeight(ax: number, x: number, z: number): number {
   h += bump(ax, z, 31, 33, 10.5) * 3.8;
   h += bump(ax, z, 13, 35, 7) * 1.8;
   h += bump(ax, z, 56, -22, 9) * 2.2;
-  // Pine Ridge across the north, with two passes through it and a sunken trail behind it
-  const ridgeMask = smooth(54, 44, ax) * (1 - 0.92 * gauss(ax - PASS_X, 3.4));
-  h += gauss(z - RIDGE_Z, 3.8) * 4.8 * ridgeMask;
+  // Pine Ridge across the north: a low rise now, with wide passes and a hollow in the middle for the gingerbread house,
+  // and a sunken trail behind it
+  const ridgeMask = smooth(54, 44, ax) * (1 - 0.92 * gauss(ax - PASS_X, 5.2)) * (1 - gauss(ax, 13));
+  h += gauss(z - RIDGE_Z, 3.8) * 3.0 * ridgeMask;
   h -= gauss(z - TRAIL_Z, 2.6) * 0.9 * smooth(60, 50, ax);
   // base plateaus with long ramps to slide down
   const db = Math.hypot(ax - BASE_X, z);
@@ -154,6 +172,9 @@ function rawHeight(ax: number, x: number, z: number): number {
   // the Big Hill
   const dh = Math.hypot(x - HILL.x, (z - HILL.z) * 1.1);
   h += (dh < HILL.r ? 0.5 + 0.5 * Math.cos(Math.PI * dh / HILL.r) : 0) * HILL.h;
+  // level ground for the gingerbread house and the iceberg
+  h = h + (HOUSE.y - h) * smooth(9, 4.8, Math.hypot(x - HOUSE.x, z - HOUSE.z));
+  h = h + (BERG.y - h) * smooth(11, 6.5, Math.hypot(x - BERG.x, z - BERG.z));
   return h;
 }
 
@@ -192,12 +213,11 @@ export function isIceSpot(x: number, z: number) {
   return creekAt(x, z).d < 1.7;
 }
 
-export function buildMap(): MapDef {
-  const { nx, ny, nz, cell } = FIELD;
-  const field = new SnowField(FIELD);
-
+/** Fill a snow field from a ground-height function: snow down to bedrock, and frozen water where `ice` says so. */
+export function fillField(field: SnowField, ground: (x: number, z: number) => number, ice: (x: number, z: number) => boolean) {
+  const { nx, ny, nz, cell } = field;
   const H = new Float32Array(nx * nz);
-  for (let k = 0; k < nz; k++) for (let i = 0; i < nx; i++) H[k * nx + i] = groundHeight(field.wx(i), field.wz(k));
+  for (let k = 0; k < nz; k++) for (let i = 0; i < nx; i++) H[k * nx + i] = ground(field.wx(i), field.wz(k));
   for (let k = 0; k < nz; k++) {
     for (let i = 0; i < nx; i++) {
       const x = field.wx(i), z = field.wz(k);
@@ -208,23 +228,26 @@ export function buildMap(): MapDef {
       const slopeK = 1 / Math.sqrt(1 + hx * hx + hz * hz);
       const col = k * nx + i;
       field.baseHeight[col] = h;
-      const ice = isIceSpot(x, z);
-      field.bedrock[col] = ice ? h - 0.05 : h - 1.6;
-      field.ice[col] = ice ? 1 : 0;
+      const frozen = ice(x, z);
+      field.bedrock[col] = frozen ? h - 0.05 : h - 1.6;
+      field.ice[col] = frozen ? 1 : 0;
       const base = col * ny;
       for (let j = 0; j < ny; j++) {
         const y = j * cell;
         const d = 128 + ((h - y) * slopeK / cell) * 80;
         field.density[base + j] = d <= 0 ? 0 : d >= 255 ? 255 : Math.round(d);
       }
-      if (ice) for (let j = 0; j < ny; j++) field.hard[base + j] = 255;
+      if (frozen) for (let j = 0; j < ny; j++) field.hard[base + j] = 255;
     }
   }
+}
 
-  const bases: TeamBase[] = [0, 1].map(team => {
+/** Two hilltop bases facing each other across x = 0. */
+export function makeBases(ground: (x: number, z: number) => number, baseX: number): TeamBase[] {
+  return [0, 1].map(team => {
     const s = team === 0 ? -1 : 1;
-    const cx = s * BASE_X;
-    const g = (x: number, z: number): V3 => ({ x, y: groundHeight(x, z), z });
+    const cx = s * baseX;
+    const g = (x: number, z: number): V3 => ({ x, y: ground(x, z), z });
     return {
       team,
       center: g(cx, 0),
@@ -236,51 +259,14 @@ export function buildMap(): MapDef {
       facing: team === 0 ? -Math.PI / 2 : Math.PI / 2,
     };
   });
+}
 
-  const bigBallSpawns: V3[] = [
-    { x: -2.2, y: 0, z: HILL.z - 1 }, { x: 2.2, y: 0, z: HILL.z - 1 },
-    { x: -BASE_X + 9, y: 0, z: -10 }, { x: BASE_X - 9, y: 0, z: -10 },
-    { x: -25, y: 0, z: -8 }, { x: 25, y: 0, z: -8 },
-    { x: -31, y: 0, z: 33 }, { x: 31, y: 0, z: 33 },
-  ].map(p => ({ ...p, y: groundHeight(p.x, p.z) }));
-
-  const flakeSpots: V3[] = [
-    { x: 0, z: HILL.z }, { x: 2.6, z: 2.5 }, { x: -10.5, z: 14 }, { x: 10.5, z: 14 }, { x: 0, z: 26 },
-    { x: -16, z: -3 }, { x: 16, z: -3 }, { x: -20, z: 19 }, { x: 20, z: 19 }, { x: -12, z: -27 }, { x: 12, z: -27 },
-    { x: 0, z: TRAIL_Z }, { x: -PASS_X, z: RIDGE_Z }, { x: PASS_X, z: RIDGE_Z }, { x: 0, z: 37 }, { x: -22, z: 36 }, { x: 22, z: 36 },
-  ].map(p => ({ x: p.x, y: groundHeight(p.x, p.z) + 1.1, z: p.z }));
-
-  // boulders: hard cover that snowballs can't chew through (mirrored)
-  const rocks: Rock[] = [];
-  for (const [x, z, r] of [[16, -4.5, 1.25], [33, 3, 1.05], [21, 15, 0.95], [38, -15, 1.35], [11, 30, 1.1], [44, -31, 1.3], [8, -25, 1.0], [29, 20.5, 0.9], [52, 27, 1.2]]) {
-    for (const s of [-1, 1]) rocks.push({ x: s * x, z, y: groundHeight(s * x, z), r, seed: Math.round(x * 31 + z * 17) });
-  }
-
-  // trees: thick woods across the north and south, a belt around the rim, and little copses for cover (mirrored)
-  const rand = mulberry32(1337);
+/**
+ * Scatter pines over the x > 0 half and mirror them. `density(x, z)` is the chance (0..1) that a tree may stand there.
+ */
+export function scatterTrees(ground: (x: number, z: number) => number, density: (x: number, z: number) => number, seed: number, tries: number): Tree[] {
+  const rand = mulberry32(seed);
   const trees: Tree[] = [];
-  const keepOut: [number, number, number][] = [
-    [BASE_X, 0, 15], [HILL.x, HILL.z, 6.5], [POND.x, POND.z, POND.r + 2.2],
-    ...bigBallSpawns.map(b => [Math.abs(b.x), b.z, 2.8] as [number, number, number]),
-    ...flakeSpots.map(f => [Math.abs(f.x), f.z, 2.2] as [number, number, number]),
-    ...rocks.map(r => [Math.abs(r.x), r.z, r.r + 1.4] as [number, number, number]),
-  ];
-  const density = (x: number, z: number) => {
-    // x >= 0 here
-    for (const [cx, cz, r] of keepOut) if (Math.hypot(x - cx, z - cz) < r) return 0;
-    if (x < 13 && z > -9 && z < 9) return 0; // playground
-    if (creekAt(x, z).d < 5.2) return 0; // sled run
-    if (Math.abs(z - TRAIL_Z) < 2.3 && x < 60) return 0; // north trail
-    if (Math.abs(x - PASS_X) < 3.2 && z < -27 && z > TRAIL_Z) return 0; // ridge passes
-    if (Math.hypot(x - BASE_X, z) < 24 && Math.abs(z) < 9) return 0; // the main ramp off each base
-    const ex = Math.max(0, x - 62) / 6, ez = Math.max(0, Math.abs(z) - 43.5) / 6;
-    if (ex + ez > 0.2) return 0.9; // rim belt
-    if (z < -28.5) return 0.85; // Pine Ridge woods
-    if (z > 28) return 0.62; // south woods
-    const n = fbm(x * 0.09 + 40.2, z * 0.09 + 13.7);
-    if (x > 9 && n > 0.2) return 0.5; // copses
-    return 0.012;
-  };
   const cellSize = 2.3;
   const grid = new Map<number, Tree[]>();
   const gkey = (x: number, z: number) => Math.floor(x / cellSize) * 4096 + Math.floor(z / cellSize) + 2048;
@@ -291,7 +277,7 @@ export function buildMap(): MapDef {
     }
     return false;
   };
-  for (let n = 0; n < 5200; n++) {
+  for (let n = 0; n < tries; n++) {
     const x = 1.3 + rand() * 69.5, z = (rand() * 2 - 1) * 51;
     const d = density(x, z);
     if (rand() > d) continue;
@@ -301,24 +287,91 @@ export function buildMap(): MapDef {
     const h = 3.4 + big * big * 5.2 + (d > 0.8 ? 0.8 : 0);
     // tall bare trunks in the thick woods, so you can see (and throw) under the boughs
     const cb = d > 0.55 ? 1.9 + h * 0.2 : 1.0 + h * 0.16;
-    const t: Tree = { x, z, y: groundHeight(x, z) - 0.3, h: h + (d > 0.55 ? 1.5 : 0), r: 0.26 + h * 0.022, cb, cw: 0.9 + h * 0.2 };
+    const t: Tree = { x, z, y: ground(x, z) - 0.3, h: h + (d > 0.55 ? 1.5 : 0), r: 0.26 + h * 0.022, cb, cw: 0.9 + h * 0.2 };
     trees.push(t, { ...t, x: -x });
     const key = gkey(x, z);
     const l = grid.get(key); if (l) l.push(t); else grid.set(key, [t]);
   }
+  return trees;
+}
+
+export function buildBayMap(): MapDef {
+  const field = new SnowField(FIELD);
+  fillField(field, groundHeight, isIceSpot);
+
+  const bases = makeBases(groundHeight, BASE_X);
+
+  const bigBallSpawns: V3[] = [
+    { x: -2.2, y: 0, z: HILL.z - 1 }, { x: 2.2, y: 0, z: HILL.z - 1 },
+    { x: -BASE_X + 9, y: 0, z: -10 }, { x: BASE_X - 9, y: 0, z: -10 },
+    { x: -25, y: 0, z: -8 }, { x: 25, y: 0, z: -8 },
+    { x: -31, y: 0, z: 33 }, { x: 31, y: 0, z: 33 },
+  ].map(p => ({ ...p, y: groundHeight(p.x, p.z) }));
+
+  // one snowflake waits inside the gingerbread house, another behind the iceberg: reasons to leave the middle
+  const flakeSpots: V3[] = [
+    { x: 0, z: HILL.z }, { x: 2.6, z: 2.5 }, { x: -10.5, z: 14 }, { x: 10.5, z: 14 }, { x: 0, z: 26 },
+    { x: -16, z: -3 }, { x: 16, z: -3 }, { x: -20, z: 19 }, { x: 20, z: 19 }, { x: -12, z: -27 }, { x: 12, z: -27 },
+    { x: HOUSE.x, z: HOUSE.z }, { x: -PASS_X, z: RIDGE_Z }, { x: PASS_X, z: RIDGE_Z }, { x: 0, z: 42.5 }, { x: -22, z: 36 }, { x: 22, z: 36 },
+    { x: -36, z: -38 }, { x: 36, z: -38 }, { x: -40, z: 34 }, { x: 40, z: 34 },
+  ].map(p => ({ x: p.x, y: groundHeight(p.x, p.z) + 1.1, z: p.z }));
+
+  // boulders: hard cover that snowballs can't chew through (mirrored)
+  const rocks: Rock[] = [];
+  for (const [x, z, r] of [[16, -4.5, 1.25], [33, 3, 1.05], [21, 15, 0.95], [38, -15, 1.35], [12.5, 29, 1.1], [44, -31, 1.3], [8, -25, 1.0], [29, 20.5, 0.9], [52, 27, 1.2]]) {
+    for (const s of [-1, 1]) rocks.push({ x: s * x, z, y: groundHeight(s * x, z), r, seed: Math.round(x * 31 + z * 17) });
+  }
+
+  // landmarks: the gingerbread house up north, the big iceberg down south, and ice pillars along the ways in between
+  const houses = [makeGingerbreadHouse(groundHeight, HOUSE.x, HOUSE.z)];
+  const shards = makeIceberg(groundHeight, BERG.x, BERG.z);
+  for (const [x, z, r, h] of [
+    [14.5, 11.5, 0.95, 4.2], [19, -20, 1.1, 5.0], [31, 6.5, 0.9, 3.6], [12.5, -31.5, 0.85, 3.8],
+    [39, -36.5, 1.0, 4.6], [21, 39, 1.05, 4.8], [38, 33, 0.9, 3.9], [10, 41, 0.8, 3.2], [27, -27, 0.9, 4.0], [41, 15.5, 0.85, 3.4],
+  ]) for (const s of [-1, 1]) shards.push(makePillar(groundHeight, s * x, z, r, h));
+
+  // trees: open country now. A belt around the rim, a scattering across the north and south, and a few small copses
+  // for cover, so you can see (and take) the ways round the sides instead of being funnelled into the middle
+  const keepOut: [number, number, number][] = [
+    [BASE_X, 0, 15], [HILL.x, HILL.z, 6.5], [POND.x, POND.z, POND.r + 2.2], [HOUSE.x, HOUSE.z, 11.5], [BERG.x, BERG.z, 12],
+    ...bigBallSpawns.map(b => [Math.abs(b.x), b.z, 2.8] as [number, number, number]),
+    ...flakeSpots.map(f => [Math.abs(f.x), f.z, 2.2] as [number, number, number]),
+    ...rocks.map(r => [Math.abs(r.x), r.z, r.r + 1.4] as [number, number, number]),
+    ...shards.map(sh => [Math.abs(sh.x), sh.z, sh.r + 1.6] as [number, number, number]),
+  ];
+  const density = (x: number, z: number) => {
+    // x >= 0 here
+    for (const [cx, cz, r] of keepOut) if (Math.hypot(x - cx, z - cz) < r) return 0;
+    if (x < 13 && z > -9 && z < 9) return 0; // playground
+    if (creekAt(x, z).d < 5.2) return 0; // sled run
+    if (Math.abs(z - TRAIL_Z) < 2.6 && x < 60) return 0; // north trail
+    if (Math.abs(x - PASS_X) < 5 && z < -26 && z > TRAIL_Z) return 0; // ridge passes
+    if (Math.hypot(x - BASE_X, z) < 24 && Math.abs(z) < 9) return 0; // the main ramp off each base
+    const ex = Math.max(0, x - 62) / 6, ez = Math.max(0, Math.abs(z) - 43.5) / 6;
+    if (ex + ez > 0.2) return 0.9; // rim belt
+    const n = fbm(x * 0.09 + 40.2, z * 0.09 + 13.7);
+    if (z < -28.5) return n > 0.05 ? 0.06 : 0.012; // Pine Ridge: scattered stands, not a wall of trunks
+    if (z > 28) return n > 0.1 ? 0.05 : 0.012; // south woods
+    if (x > 11 && n > 0.3) return 0.075; // copses
+    return 0.008;
+  };
+  const trees = scatterTrees(groundHeight, density, 1337, 5200);
 
   const playground = buildPlayground(groundHeight);
   for (const r of rocks) playground.cyls.push({ x: r.x, z: r.z, r: r.r * 0.86, y0: r.y - 1.5, y1: r.y + r.r * 0.95 });
+  addLandmarkCollision(playground, shards, houses);
   const boardSpots = [
     { x: 0, z: HILL.z - 2, name: 'on top of the Big Hill' },
     { x: 0, z: POND.z, name: 'out on the frozen pond' },
-    { x: 0, z: 36, name: 'in the south woods' },
+    { x: 0, z: 28, name: 'by the iceberg' },
     { x: -2.5, z: -6.5, name: 'behind the playground' },
-    { x: 0, z: TRAIL_Z, name: 'on the Pine Ridge trail' },
+    { x: 0, z: TRAIL_Z - 1.5, name: 'behind the gingerbread house' },
   ];
 
   return {
+    id: 'bay',
     name: 'Frostbite Bay',
+    ground: groundHeight, creekAt, points: [], shards, houses,
     field, bases, bigBallSpawns, flakeSpots, trees, rocks, playground, boardSpots,
     pond: { x: POND.x, z: POND.z, r: POND.r, y: POND_Y },
     bounds: { minX: -70.5, maxX: 70.5, minZ: -50.5, maxZ: 50.5 },
