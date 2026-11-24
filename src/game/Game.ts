@@ -448,9 +448,19 @@ export class Game {
       // enemies are a little "sticky" under the crosshair, more so far away where a penguin is only a few pixels
       const enemy = p.team !== me.team;
       const d = Math.hypot(p.x - ox, cy - oy, p.z - oz);
-      const t = raySphere(p.x, cy, p.z, enemy ? 0.62 + Math.min(0.7, d * 0.018) : 0.5);
-      // snow in front of them still blocks the shot
-      if (t > 0 && t < bestT + (enemy ? 0.8 : 0)) { bestT = Math.min(bestT, t); any = { x: p.x, y: cy, z: p.z }; this.aimTarget = enemy ? p : null; }
+      const t = raySphere(p.x, cy, p.z, enemy ? 0.52 + Math.min(0.22, d * 0.006) : 0.5);
+      // snow in front of them still blocks the shot; the throw goes where the crosshair is, pulled only a little toward them
+      if (t > 0 && t < bestT + (enemy ? 0.3 : 0)) {
+        bestT = Math.min(bestT, t);
+        const tc = (p.x - ox) * dir.x + (cy - oy) * dir.y + (p.z - oz) * dir.z;
+        const pull = enemy ? 0.25 : 0;
+        any = {
+          x: ox + dir.x * tc + (p.x - ox - dir.x * tc) * pull,
+          y: oy + dir.y * tc + (cy - oy - dir.y * tc) * pull,
+          z: oz + dir.z * tc + (p.z - oz - dir.z * tc) * pull,
+        };
+        this.aimTarget = enemy ? p : null;
+      }
     }
     for (const b of w.bigBalls) {
       const t = raySphere(b.x, b.y, b.z, b.r);
