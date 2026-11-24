@@ -524,10 +524,10 @@ export class World {
   private doPack(p: Penguin, dt: number, fx: number, fz: number) {
     if (p.carried >= CFG.maxCarry) { p.noSnowT = 0.4; return; }
     const want = CFG.packMass * dt / CFG.packTime[p.mitten];
-    const got = this.field.removeMass(p.x + fx * 0.6, p.y - 0.05, p.z + fz * 0.6, 0.55, want, 0.3);
+    const got = this.field.removeMass(p.x + fx * 0.6, p.y - 0.05, p.z + fz * 0.6, 0.5, want, 0.3, 0.7);
     if (got < want * 0.3) {
       // try right under our feet
-      const got2 = this.field.removeMass(p.x, p.y - 0.1, p.z, 0.6, want - got, 0.3);
+      const got2 = this.field.removeMass(p.x, p.y - 0.1, p.z, 0.55, want - got, 0.3, 0.7);
       if (got + got2 < want * 0.3) { p.noSnowT = 0.6; if (Math.random() < 0.05) this.emit({ type: 'noSnow', pid: p.id }); return; }
     }
     p.packProgress += dt / CFG.packTime[p.mitten];
@@ -571,15 +571,18 @@ export class World {
     if (!a) return;
     p.aimOk = true;
     const want = CFG.buildRate * dt * this.rateMult(p);
-    // scoop from the ground around our feet (behind and to the sides), so building digs a trench around you
-    p.digSide = (p.digSide + 1) % 5;
-    const ang = Math.PI * (0.55 + p.digSide * 0.225); // spread over the back half
-    const c = Math.cos(ang), s = Math.sin(ang);
-    const rx = -fz, rz = fx;
-    const dirX = fx * c + rx * s, dirZ = fz * c + rz * s;
-    const sx = p.x + dirX * 1.15, sz = p.z + dirZ * 1.15;
-    const sy = this.field.surfaceBelow(sx, p.y + 0.5, sz, 0.3, 1.5) ?? p.y;
-    const got = this.field.removeMass(sx, sy - 0.1, sz, 0.6, want, 0.5);
+    // scoop from the ground around our feet (behind and to the sides), so building leaves a shallow trench around you
+    let got = 0, sx = p.x, sy = p.y, sz = p.z;
+    for (let tries = 0; tries < 4 && got < want * 0.5; tries++) {
+      const ang = Math.PI * (0.45 + Math.random() * 1.1); // the back 200°
+      const rad = 0.9 + Math.random() * 1.2;
+      const c = Math.cos(ang), s = Math.sin(ang);
+      const rx = -fz, rz = fx;
+      const dirX = fx * c + rx * s, dirZ = fz * c + rz * s;
+      sx = p.x + dirX * rad; sz = p.z + dirZ * rad;
+      sy = this.field.surfaceBelow(sx, p.y + 0.5, sz, 0.4, 1.2) ?? p.y;
+      got += this.field.removeMass(sx, sy - 0.1, sz, 0.55, want - got, 0.5, 0.55);
+    }
     if (got <= 0) { p.noSnowT = 0.5; return; }
     // build toward the builder so walls grow out of surfaces
     const dx = p.x - a.x, dz = p.z - a.z, dl = Math.hypot(dx, dz) || 1;

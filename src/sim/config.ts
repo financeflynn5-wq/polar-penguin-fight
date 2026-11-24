@@ -20,7 +20,7 @@ export const CFG = {
   spawnProtect: 2.0,
 
   maxCarry: 5,
-  packTime: [0.8, 0.62, 0.48, 0.36], // per mitten level
+  packTime: [0.62, 0.5, 0.4, 0.3], // per mitten level
   packMass: 420, // snow used per snowball
   throwSpeedMin: 20,
   throwSpeedMax: 32,

@@ -215,7 +215,7 @@ export class SnowField {
   }
 
   /** Remove up to `mass` snow inside a sphere (never below bedrock). Packed snow resists by `hardResist` (0..1). */
-  removeMass(x: number, y: number, z: number, r: number, mass: number, hardResist = 0): number {
+  removeMass(x: number, y: number, z: number, r: number, mass: number, hardResist = 0, depthLimit = Infinity): number {
     if (mass <= 0) return 0;
     const c = this.cell;
     const i0 = Math.max(0, Math.floor((x - r - this.x0) / c)), i1 = Math.min(this.nx - 1, Math.ceil((x + r - this.x0) / c));
@@ -225,7 +225,9 @@ export class SnowField {
     const r2 = r * r;
     for (let k = k0; k <= k1; k++) for (let i = i0; i <= i1; i++) {
       const dx = this.x0 + i * c - x, dz = this.z0 + k * c - z;
-      const bed = this.bedrock[k * this.nx + i];
+      const col = k * this.nx + i;
+      // depthLimit: only scoop this far below the original ground (keeps dents shallow)
+      const bed = Math.max(this.bedrock[col], this.baseHeight[col] - depthLimit);
       for (let j = j0; j <= j1; j++) {
         if (j * c < bed) continue;
         const dy = j * c - y;
