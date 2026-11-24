@@ -4,7 +4,7 @@
 // Run: npm run test:online
 import { spawn } from 'node:child_process';
 import assert from 'node:assert/strict';
-import { buildMap } from '../src/world/MapDef';
+import { buildMap, mapForMode, Mode } from '../src/world/Maps';
 import { World, Penguin } from '../src/sim/World';
 import { NetClient } from '../src/net/NetClient';
 
@@ -12,6 +12,7 @@ const PORT = 8000 + Math.floor(Math.random() * 900);
 const LAG = Number(process.env.LAG ?? 60); // ms each way
 const JITTER = Number(process.env.JITTER ?? 25); // ms extra, random
 const SECONDS = Number(process.env.SECONDS ?? 20);
+const MODE = (process.env.MODE ?? 'tdm') as Mode;
 
 const server = spawn(process.execPath, ['server-dist/main.mjs'], { env: { ...process.env, PORT: String(PORT) }, stdio: ['ignore', 'pipe', 'inherit'] });
 await new Promise<void>(res => server.stdout!.on('data', d => { if (String(d).includes('server on')) res(); }));
@@ -20,11 +21,12 @@ interface Bot { name: string; net: NetClient; world: World | null; me: Penguin |
 
 function connect(name: string, size: number): Bot {
   const b: Bot = { name, net: null as any, world: null, me: null, corrections: [], starved: 0, frames: 0, matches: 0, events: 0 };
-  b.net = new NetClient(`ws://localhost:${PORT}/ws`, { name, hat: 'viking', size }, {
+  b.net = new NetClient(`ws://localhost:${PORT}/ws`, { name, hat: 'viking', size, mode: MODE }, {
     onMatch: (info, density, hard) => {
-      const map = buildMap();
+      assert.equal(info.mode, MODE);
+      const map = buildMap(mapForMode(info.mode));
       map.field.density.set(density); map.field.hard.set(hard);
-      b.world = new World(map, { teamSize: info.size, playerName: '', playerHat: '', roster: info.roster, meId: info.you });
+      b.world = new World(map, { teamSize: info.size, playerName: '', playerHat: '', roster: info.roster, meId: info.you, mode: info.mode });
       b.me = b.world.player;
       b.net.attach(b.world);
       b.matches++;

@@ -5,9 +5,11 @@
 //    server, and is quietly corrected whenever the server's version (30 times a second) disagrees;
 //  - everyone and everything else is shown about 0.1 s in the past, smoothly blended between snapshots;
 //  - snow changes are written straight into the local snow field, so the renderer re-meshes them;
+//  - turrets, flags and everyone's streak rewards are copied over as the server has them;
 //  - hits, splats, throws and the rest come through as the same GameEvents the offline game uses.
 import * as P from './Protocol';
-import { World, Penguin, PenguinInput, GameEvent, RosterEntry, emptyInput, Snowball, BigBall, Flake } from '../sim/World';
+import { World, Penguin, PenguinInput, GameEvent, RosterEntry, emptyInput, Snowball, BigBall, Flake, Turret } from '../sim/World';
+import type { Mode } from '../world/Maps';
 
 const STEP = 1 / P.TICK_HZ;
 const DELAY = 6; // ticks behind the server that other penguins are shown (100 ms): room for a late snapshot
@@ -22,7 +24,7 @@ export interface NetHooks {
   onClose(reason: string): void;
 }
 
-export interface JoinRequest { name: string; hat: string; size: number; }
+export interface JoinRequest { name: string; hat: string; size: number; mode: Mode; }
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 const lerpA = (a: number, b: number, t: number) => { let d = b - a; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; return a + d * t; };
@@ -165,7 +167,7 @@ export class NetClient {
     this.history.push({ seq, input });
     if (this.history.length > HISTORY) this.history.shift();
     if (this.predicting) w.predictPenguin(me, STEP);
-    else me.input.jump = false;
+    else { me.input.jump = false; me.input.reward = 0; } // sent once; a press while you're down isn't saved for later
   }
 
   /** Once a frame: send inputs, line up with the server, and show everyone else where they were 0.1 s ago. */
@@ -273,7 +275,7 @@ export class NetClient {
     for (const s of a.balls) {
       const e = bb.get(s.id) ?? s;
       const x = lerp(s.x, e.x, t), y = lerp(s.y, e.y, t), z = lerp(s.z, e.z, t);
-      balls.push({ id: s.id, owner: -1, team: s.team, x, y, z, px: x, py: y, pz: z, vx: s.vx, vy: s.vy, vz: s.vz, age: 0, alive: true });
+      balls.push({ id: s.id, owner: -1, team: s.team, x, y, z, px: x, py: y, pz: z, vx: s.vx, vy: s.vy, vz: s.vz, age: 0, alive: true, kind: s.kind });
     }
     w.snowballs = balls;
 
@@ -290,6 +292,17 @@ export class NetClient {
     const fl: Flake[] = [];
     for (const s of a.flakes) fl.push({ id: s.id, spot: s.spot, x: s.x, y: s.y, z: s.z, active: s.active, t: 0 });
     w.flakes = fl;
+
+    // turrets stand still; only their aim turns
+    const tb = new Map(b.turrets.map(s => [s.id, s]));
+    const turrets: Turret[] = [];
+    for (const s of a.turrets) {
+      const e = tb.get(s.id) ?? s;
+      turrets.push({ id: s.id, owner: s.owner, team: s.team, x: s.x, y: s.y, z: s.z, yaw: lerpA(s.yaw, e.yaw, t),
+        health: s.health, ammo: s.ammo, cd: 0, target: -1, scanT: 0, fireT: s.fireT, age: 0, alive: true });
+    }
+    w.turrets = turrets;
+    for (const s of a.points) { const pt = w.points[s.id]; if (pt) P.applyPoint(pt, s); }
 
     const ba = a.board, bz = b.board;
     w.board.active = ba.active; w.board.holder = ba.holder;

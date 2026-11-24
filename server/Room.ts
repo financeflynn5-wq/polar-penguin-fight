@@ -2,7 +2,7 @@
 // slot nobody is playing, and 30 times a second everyone gets a snapshot.
 import { deflateRaw, deflateRawSync } from 'node:zlib';
 import type { WebSocket } from 'ws';
-import { buildMap } from '../src/world/MapDef';
+import { buildMap, mapForMode, Mode, MapId } from '../src/world/Maps';
 import { World, PenguinInput, GameEvent, emptyInput } from '../src/sim/World';
 import { BotBrain } from '../src/sim/Bot';
 import * as P from '../src/net/Protocol';
@@ -28,8 +28,8 @@ export interface Client {
   starve?: number; // ticks since their last input arrived
 }
 
-// The untouched map is the same for every match, so pack it once.
-let pristine: Uint8Array | null = null;
+// The untouched map is the same for every match, so pack each one once.
+const pristine = new Map<MapId, Uint8Array>();
 function packField(d: Uint8Array, h: Uint8Array) {
   const all = new Uint8Array(d.length + h.length);
   all.set(d); all.set(h, d.length);
@@ -49,7 +49,7 @@ export class Room {
   private merged = new Map<string, GameEvent & { n?: number }>();
   private botSeed = 1;
 
-  constructor(readonly size: number, readonly key: string, private log: (s: string) => void = console.log) {
+  constructor(readonly size: number, readonly mode: Mode, readonly key: string, private log: (s: string) => void = console.log) {
     this.newMatch();
   }
 
@@ -60,13 +60,15 @@ export class Room {
 
   /** A fresh map, all bots, then everyone already here takes a slot again (on the same team when there's room). */
   private newMatch() {
-    const map = buildMap();
-    this.world = new World(map, { teamSize: this.size, playerName: '', playerHat: '', allBots: true });
+    const id = mapForMode(this.mode);
+    const map = buildMap(id);
+    this.world = new World(map, { teamSize: this.size, playerName: '', playerHat: '', allBots: true, mode: this.mode });
     this.bots.clear();
     const slots = [0, 0];
     this.world.penguins.forEach((p, i) => this.bots.set(p.id, new BotBrain(i, this.rnd, slots[p.team]++)));
     const f = this.world.field;
-    if (!pristine) pristine = new Uint8Array(deflateRawSync(packField(f.density, f.hard), { level: 6 }));
+    let packed = pristine.get(id);
+    if (!packed) { packed = new Uint8Array(deflateRawSync(packField(f.density, f.hard), { level: 6 })); pristine.set(id, packed); }
     this.shadowD = f.density.slice();
     this.shadowH = f.hard.slice();
     this.dirty.clear();
@@ -83,7 +85,7 @@ export class Room {
       const p = this.world.addHuman(c.name, c.hat, c.team)!;
       this.seat(c, p.id, p.team);
     }
-    for (const c of this.clients) this.sendMatch(c, pristine, true);
+    for (const c of this.clients) this.sendMatch(c, packed, true);
   }
 
   private seat(c: Client, id: number, team: number) {
@@ -127,7 +129,7 @@ export class Room {
   }
 
   private sendMatch(c: Client, field: Uint8Array, fresh: boolean) {
-    const info: P.MatchInfo = { you: c.penguinId, size: this.size, tick: this.tick, roster: this.world.roster(), phase: this.world.phase };
+    const info: P.MatchInfo = { you: c.penguinId, size: this.size, tick: this.tick, roster: this.world.roster(), phase: this.world.phase, mode: this.mode };
     const held = fresh ? [] : c.held ?? [];
     c.held = null;
     c.resync = false;
@@ -149,10 +151,11 @@ export class Room {
       c.lastSeq = seq;
       c.queue.push({ seq, input: P.unpackInput(rows[n], emptyInput()) });
     }
-    // too far ahead (a laggy burst): fold the oldest into the next, keeping its hop
+    // too far ahead (a laggy burst): fold the oldest into the next, keeping its hop and any reward it used
     while (c.queue.length > MAX_QUEUE) {
       const old = c.queue.shift()!;
       if (old.input.jump) c.queue[0].input.jump = true;
+      if (old.input.reward && !c.queue[0].input.reward) c.queue[0].input.reward = old.input.reward;
     }
   }
 
@@ -168,7 +171,7 @@ export class Room {
         // nothing new yet: keep doing the same thing for a moment, then stand still (a hidden tab sends nothing)
         c.starve = (c.starve ?? 0) + 1;
         if (c.starve > 15) { const yaw = c.last.yaw, pitch = c.last.pitch; c.last = emptyInput(); c.last.yaw = yaw; c.last.pitch = pitch; }
-        P.copyInput(c.last, p.input); p.input.jump = false; c.last.jump = false;
+        P.copyInput(c.last, p.input); p.input.jump = false; c.last.jump = false; p.input.reward = 0; c.last.reward = 0;
       }
     }
     for (const [id, brain] of this.bots) {

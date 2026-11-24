@@ -1,5 +1,5 @@
-import { World, Penguin } from '../sim/World';
-import { CFG, MITTEN_NAMES } from '../sim/config';
+import { World, Penguin, SplatCause } from '../sim/World';
+import { CFG, MITTEN_NAMES, REWARD_NAMES } from '../sim/config';
 
 const h = (html: string) => { const d = document.createElement('div'); d.innerHTML = html.trim(); return d.firstElementChild as HTMLElement; };
 const esc = (s: string) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
@@ -14,16 +14,21 @@ export class Hud {
   private splatT = 0;
   private lastCarried = -1;
   private showBoard = false;
+  private conquest: boolean;
+  private lastStreak = '';
+  private lastPoints = '';
 
-  constructor() {
+  constructor(w: World) {
+    const conquest = this.conquest = w.mode === 'conquest';
     this.el = h(`<div class="ui">
       <div class="frost"></div>
       <div class="splatfx"></div>
       <div class="score">
         <div class="team t0" id="s0">0</div>
-        <div class="mid"><div class="clock" id="clock">1:00</div><div class="phase" id="phase">Build phase</div><div class="goal">first to ${CFG.scoreToWin}</div></div>
+        <div class="mid"><div class="clock" id="clock">1:00</div><div class="phase" id="phase">Build phase</div><div class="goal">first to ${w.scoreToWin}</div></div>
         <div class="team t1" id="s1">0</div>
       </div>
+      ${conquest ? '<div class="points" id="points"></div>' : ''}
       <div class="feed" id="feed"></div>
       <div class="crosshair" id="cross">
         <svg viewBox="0 0 46 46"><circle cx="23" cy="23" r="18" fill="none" stroke="rgba(255,255,255,.25)" stroke-width="3"/>
@@ -36,6 +41,8 @@ export class Hud {
       <div class="toast" id="toast"></div>
       <div class="prompt" id="prompt"></div>
       <div class="status">
+        ${conquest ? '' : `<div class="card streak"><div class="label">Splat streak <b id="streakN">0</b></div><div class="rewards" id="rewards">${
+          REWARD_NAMES.map((n, i) => `<div class="rw" data-i="${i}"><span class="key">${i + 1}</span><span class="nm">${n}</span><span class="at">${CFG.streakAt[i]}</span></div>`).join('')}</div></div>`}
         <div class="card"><div class="label">Mittens</div><div class="mitten"><span id="mitName">Wool Mittens</span><span class="pip"></span><span class="pip"></span><span class="pip"></span></div></div>
         <div class="card"><div class="label">Health</div><div class="hearts" id="hearts"></div></div>
         <div class="card"><div class="label">Snowballs</div><div class="balls" id="balls"></div><div class="packbar"><div id="packbar"></div></div></div>
@@ -46,6 +53,8 @@ export class Hud {
         <div><span class="key">F</span>pack snowball</div>
         <div><span class="key">R</span>build (sweep to draw, hold to stack)</div>
         <div><span class="key">Q</span>dig &nbsp; <span class="key">G</span>giant snowball</div>
+        <div>hold <span class="key">T</span>build a turret (lots of snow)</div>
+        ${conquest ? '' : '<div><span class="key">1</span><span class="key">2</span><span class="key">3</span>streak rewards</div>'}
         <div><span class="key">E</span>grab &nbsp;·&nbsp; hold <span class="key">E</span>stash</div>
         <div><span class="key">Shift</span>belly slide &nbsp; <span class="key">Space</span>hop</div>
         <div><span class="key">Tab</span>scores</div>
@@ -81,10 +90,10 @@ export class Hud {
 
   splatScreen() { this.q('.splatfx').classList.add('on'); this.splatT = 0.25; }
 
-  feed(killer: Penguin | undefined, victim: Penguin, cause: 'snowball' | 'bigball') {
+  feed(killer: Penguin | undefined, victim: Penguin, cause: SplatCause) {
     const f = this.q('#feed');
     const k = killer ? `<span class="t${killer.team}">${esc(killer.name)}</span>` : '<span>Gravity</span>';
-    const icon = cause === 'bigball' ? 'flattened' : 'splatted';
+    const icon = cause === 'bigball' ? 'flattened' : cause === 'turret' ? 'turret got' : cause === 'avalanche' ? 'buried' : 'splatted';
     const row = h(`<div class="row">${k}<span class="ic">${icon}</span><span class="t${victim.team}">${esc(victim.name)}</span></div>`);
     f.prepend(row);
     while (f.children.length > 5) f.lastElementChild!.remove();
@@ -97,7 +106,36 @@ export class Hud {
     this.q('#s0').textContent = String(w.scores[0]);
     this.q('#s1').textContent = String(w.scores[1]);
     this.q('#clock').textContent = w.phase === 'end' ? '0:00' : fmt(w.phaseT);
-    this.q('#phase').textContent = w.phase === 'build' ? 'Build phase' : w.phase === 'fight' ? 'Team splat-match' : 'Match over';
+    this.q('#phase').textContent = w.phase === 'build' ? 'Build phase' : w.phase === 'fight' ? (this.conquest ? 'Conquest' : 'Team splat-match') : 'Match over';
+
+    if (this.conquest) {
+      // the flags: owner colour, a ring that fills as it's taken, and a blink while both teams are on it
+      const key = w.points.map(p => `${p.owner},${Math.round(p.cap * 30)},${p.n0 > 0 && p.n1 > 0 ? 1 : 0}`).join('|');
+      if (key !== this.lastPoints) {
+        this.lastPoints = key;
+        this.q('#points').innerHTML = w.points.map(p => {
+          const side = p.cap < 0 ? 0 : 1, amt = Math.abs(p.cap), col = side === 0 ? '#59a8ff' : '#ff9a5c';
+          const ring = amt > 0.01 ? `background: conic-gradient(${col} ${amt * 360}deg, rgba(255,255,255,.16) 0)` : '';
+          const mine = p.owner === me.team ? ' mine' : '';
+          return `<div class="pt o${p.owner < 0 ? 'n' : p.owner}${p.n0 > 0 && p.n1 > 0 ? ' fight' : ''}${mine}" style="${ring}"><span>${p.name}</span></div>`;
+        }).join('');
+      }
+    } else {
+      const key = `${me.streak}|${me.rewards.join(',')}|${me.frenzyT > 0 ? Math.ceil(me.frenzyT) : 0}`;
+      if (key !== this.lastStreak) {
+        this.lastStreak = key;
+        this.q('#streakN').textContent = String(me.streak);
+        const cycle = CFG.streakAt[CFG.streakAt.length - 1];
+        const lap = me.streak === 0 ? 0 : ((me.streak - 1) % cycle) + 1;
+        this.el.querySelectorAll<HTMLElement>('#rewards .rw').forEach((r, i) => {
+          const n = me.rewards[i];
+          r.classList.toggle('ready', n > 0);
+          r.classList.toggle('live', i === 0 && me.frenzyT > 0);
+          const left = CFG.streakAt[i] - lap;
+          r.querySelector('.at')!.textContent = i === 0 && me.frenzyT > 0 ? `${Math.ceil(me.frenzyT)}s` : n > 1 ? `x${n}` : n === 1 ? 'READY' : `${left > 0 ? left : left + cycle} more`;
+        });
+      }
+    }
 
     // hearts / balls / pack progress
     const hearts = this.q('#hearts').children;
@@ -127,6 +165,10 @@ export class Hud {
         if (n > 0 && me.carried < CFG.maxCarry) prompts.push(`<span class="key">E</span>Grab snowballs (${n})`);
         if (me.carried > 0) prompts.push(`Hold <span class="key">E</span>Stash ${me.carried}`);
       } else if (n > 0 && me.carried < CFG.maxCarry) prompts.push(`<span class="key">E</span>Steal snowballs (${n})!`);
+    }
+    if (me.alive && pile < 0 && me.carried > 0) {
+      const t = w.nearTurret(me);
+      if (t) prompts.push(`Hold <span class="key">E</span>Load the turret (${t.ammo} shots left)`);
     }
     if (me.alive && me.carried === 0 && w.phase === 'fight' && pile < 0) prompts.push(`Out of snowballs: hold <span class="key">F</span> to pack`);
     if (aimOkHint) prompts.push(aimOkHint);

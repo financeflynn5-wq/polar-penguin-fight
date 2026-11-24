@@ -30,7 +30,7 @@ export const CFG = {
   throwPerLevel: 0.07,
   snowballGravity: 9.5, // lower = flatter throws
   hitRadius: 0.5, // how close a snowball has to pass to count as a hit
-  aimAssist: 0.55, // how much a throw leads a moving penguin under the crosshair (0 = none)
+  aimAssist: 0.2, // how much a throw leads a moving penguin under the crosshair (0 = none)
   snowballRadius: 0.13,
 
   reach: 4.2, // dig / build reach
@@ -67,6 +67,42 @@ export const CFG = {
   buildPhase: 60,
   fightPhase: 300,
   scoreToWin: 25,
+
+  // snowman turrets
+  turretCost: 8200, // snow to build one (2040 = one cubic metre, so about 4 cubic metres)
+  turretRate: 2500, // snow scooped per second while holding T
+  turretHealth: 4, // snowball hits to knock one down
+  turretAmmo: 24, // snowballs it starts with
+  turretAmmoMax: 36,
+  turretAmmoPerBall: 3, // shots you load per snowball you hand it
+  turretRange: 25,
+  turretFireEvery: 1.3,
+  turretThrowSpeed: 30,
+  turretTurn: 2.6, // rad/s
+  turretSpread: 0.035, // aim error per metre to the target
+  turretRadius: 0.6,
+  turretHeight: 1.9,
+  maxTeamTurrets: 4,
+
+  // splat streak rewards (Team Deathmatch only)
+  streakAt: [3, 5, 7], // splats in one life for Snowball Frenzy, Insta-Turret, Avalanche
+  frenzyTime: 10,
+  frenzyCooldown: 0.13,
+  avalancheBalls: 34,
+  avalancheTime: 3.6,
+  avalancheRadius: 5.5,
+  avalancheDelay: 1.3,
+  avalancheRange: 75,
+
+  // Conquest
+  conquestBuildPhase: 45,
+  conquestFightPhase: 480,
+  conquestScore: 250, // first team to this many flag points wins
+  conquestRate: 0.5, // points per second for every flag you hold
+  captureTime: 7, // seconds for one penguin to take a neutral flag
+  captureCrowd: 3, // more penguins than this on a flag don't speed it up further
 };
+
+export const REWARD_NAMES = ['Snowball Frenzy', 'Insta-Turret', 'Avalanche'];
 
 export const MITTEN_NAMES = ['Wool Mittens', 'Frost Mittens', 'Glacier Mittens', 'Aurora Mittens'];

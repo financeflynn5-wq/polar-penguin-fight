@@ -13,7 +13,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { Room, Client } from './Room';
-import { PROTOCOL, TICK_HZ, TEAM_SIZES } from '../src/net/Protocol';
+import { PROTOCOL, TICK_HZ, TEAM_SIZES, MODES } from '../src/net/Protocol';
+import type { Mode } from '../src/world/Maps';
 import { HATS, emptyInput } from '../src/sim/World';
 import { cleanName } from './names.js';
 import { Bans, createArcade, ipOf } from './arcade.js';
@@ -35,9 +36,9 @@ const MIME: Record<string, string> = {
 const rooms: Room[] = [];
 let roomN = 0;
 const humans = () => rooms.reduce((n, r) => n + r.humans, 0);
-const roomFor = (size: number) => {
-  let r = rooms.find(r => r.size === size && r.open);
-  if (!r) { r = new Room(size, `${size}v${size}#${++roomN}`); rooms.push(r); console.log(`[${r.key}] room opened`); }
+const roomFor = (size: number, mode: Mode) => {
+  let r = rooms.find(r => r.size === size && r.mode === mode && r.open);
+  if (!r) { r = new Room(size, mode, `${mode}-${size}v${size}#${++roomN}`); rooms.push(r); console.log(`[${r.key}] room opened`); }
   return r;
 };
 
@@ -50,7 +51,7 @@ const arcade = createArcade({
   bans,
   sockets: () => wss.clients,
   players: () => rooms.flatMap(r => r.players().map(({ c, name }) => ({ id: `${r.key}|${(c.ws as any).arcadeId}`, name, room: r.key, ip: (c.ws as any).arcadeIp, ws: c.ws }))),
-  extra: () => ({ rooms: rooms.map(r => ({ room: r.key, players: r.humans, phase: r.world.phase })) }),
+  extra: () => ({ rooms: rooms.map(r => ({ room: r.key, mode: r.mode, players: r.humans, phase: r.world.phase })) }),
 });
 
 function serveFile(req: http.IncomingMessage, res: http.ServerResponse) {
@@ -75,7 +76,7 @@ const server = http.createServer((req, res) => {
       // the menu's live head count (also answers the GitHub Pages copy of the game, so it can offer online play)
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store', 'access-control-allow-origin': '*' });
       res.end(JSON.stringify({ game: 'polar-penguin-fight', protocol: PROTOCOL, players: humans(), max: MAX_PLAYERS,
-        rooms: rooms.map(r => ({ size: r.size, players: r.humans, phase: r.world.phase })) }));
+        rooms: rooms.map(r => ({ size: r.size, mode: r.mode, players: r.humans, phase: r.world.phase })) }));
       return;
     }
     if (!arcade(req, res)) serveFile(req, res);
@@ -126,12 +127,13 @@ wss.on('connection', (ws: WebSocket, _req: http.IncomingMessage, ip: string) => 
         if (msg.v !== PROTOCOL) { ws.send(JSON.stringify({ t: 'joinErr', err: 'The game was just updated. Refresh the page to play.' })); return; }
         if (humans() >= MAX_PLAYERS) { ws.send(JSON.stringify({ t: 'joinErr', err: `The server is full (${MAX_PLAYERS} players). Try again in a minute!` })); return; }
         const size = TEAM_SIZES.includes(msg.size) ? msg.size : 5;
+        const mode: Mode = MODES.includes(msg.mode) ? msg.mode : 'tdm';
         const hat = HATS.includes(msg.hat) ? msg.hat : 'beanie';
         const c: Client = {
           ws, name: cleanName(msg.name, 'Penguin', { max: 16, prefix: 'Penguin' }), hat, team: -1, penguinId: -1,
           queue: [], last: emptyInput(), lastSeq: -1, ack: 0, held: null, resync: false,
         };
-        const r = roomFor(size);
+        const r = roomFor(size, mode);
         if (!r.join(c)) { ws.send(JSON.stringify({ t: 'joinErr', err: 'That match just filled up. Try again!' })); return; }
         room = r; client = c;
       }

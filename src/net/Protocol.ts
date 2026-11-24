@@ -1,23 +1,25 @@
 // The online wire format, shared by the game server and the browser. No Three.js and no DOM.
 //
 // Browser → server: small JSON text messages.
-//   { t: 'join', v, name, hat, size }            join a 5v5 or 10v10 match
+//   { t: 'join', v, name, hat, size, mode }      join a 5v5 or 10v10 match of Team Deathmatch or Conquest
 //   { t: 'in', s, i: InputRow[] }                 one row per 60 Hz tick, s = sequence number of the first row
 //   { t: 'ping', c }                              round-trip timer
 //
 // Server → browser:
 //   JSON text: { t: 'roster', roster } when someone joins or leaves, { t: 'pong', c }, { t: 'joinErr', err }
 //   binary MSG_MATCH: a match starts (or you just joined one): match info JSON + the whole snow field, deflated
-//   binary MSG_SNAP: 30 times a second: every penguin, snowball, big ball, snowflake and the surfboard,
+//   binary MSG_SNAP: 30 times a second: every penguin, snowball, big ball, snowflake, turret and flag, the surfboard,
 //                    the snow that changed, and what happened (hits, splats, throws...)
-import type { World, Penguin, PenguinInput, Action, Phase, GameEvent, RosterEntry } from '../sim/World';
+import type { World, Penguin, PenguinInput, Action, Phase, GameEvent, RosterEntry, CapturePoint } from '../sim/World';
+import type { Mode } from '../world/Maps';
 
-export const PROTOCOL = 1;
+export const PROTOCOL = 2;
 export const TICK_HZ = 60;
 export const SNAP_EVERY = 2; // ticks per snapshot: 30 snapshots a second
 export const MSG_MATCH = 1;
 export const MSG_SNAP = 2;
 export const TEAM_SIZES = [5, 10];
+export const MODES: Mode[] = ['tdm', 'conquest'];
 
 export interface MatchInfo {
   you: number; // your penguin's id
@@ -25,17 +27,20 @@ export interface MatchInfo {
   tick: number;
   roster: RosterEntry[];
   phase: Phase;
+  mode: Mode;
 }
 
 // ───────────────────────── inputs ─────────────────────────
 export type InputRow = [number, number, number, number, number, number?, number?, number?];
-const B = { jump: 1, slide: 2, fire: 4, plow: 8, pack: 16, dig: 32, build: 64, use: 128, roll: 256 };
+const B = { jump: 1, slide: 2, fire: 4, plow: 8, pack: 16, dig: 32, build: 64, use: 128, roll: 256, turret: 512 };
+const REWARD_SHIFT = 10; // bits 10-11: which splat-streak reward to use (0 = none)
 
 const r3 = (v: number) => Math.round(v * 1000) / 1000;
 
 export function packInput(i: PenguinInput): InputRow {
   const bits = (i.jump ? B.jump : 0) | (i.slide ? B.slide : 0) | (i.fire ? B.fire : 0) | (i.plow ? B.plow : 0) | (i.pack ? B.pack : 0)
-    | (i.dig ? B.dig : 0) | (i.build ? B.build : 0) | (i.use ? B.use : 0) | (i.roll ? B.roll : 0);
+    | (i.dig ? B.dig : 0) | (i.build ? B.build : 0) | (i.use ? B.use : 0) | (i.roll ? B.roll : 0) | (i.turret ? B.turret : 0)
+    | ((i.reward & 3) << REWARD_SHIFT);
   const row: InputRow = [i.moveX, i.moveZ, r3(i.yaw), r3(i.pitch), bits];
   if (i.aim) row.push(r3(i.aim.x), r3(i.aim.y), r3(i.aim.z));
   return row;
@@ -51,6 +56,7 @@ export function unpackInput(row: unknown, out: PenguinInput) {
   const bits = num(r[4], 0, 0xffff) | 0;
   out.jump = !!(bits & B.jump); out.slide = !!(bits & B.slide); out.fire = !!(bits & B.fire); out.plow = !!(bits & B.plow);
   out.pack = !!(bits & B.pack); out.dig = !!(bits & B.dig); out.build = !!(bits & B.build); out.use = !!(bits & B.use); out.roll = !!(bits & B.roll);
+  out.turret = !!(bits & B.turret); out.reward = (bits >> REWARD_SHIFT) & 3;
   out.aim = r.length >= 8 ? { x: num(r[5], -500, 500), y: num(r[6], -50, 200), z: num(r[7], -500, 500) } : null;
   return out;
 }
@@ -58,7 +64,7 @@ export function unpackInput(row: unknown, out: PenguinInput) {
 export function copyInput(src: PenguinInput, out: PenguinInput) {
   out.moveX = src.moveX; out.moveZ = src.moveZ; out.yaw = src.yaw; out.pitch = src.pitch;
   out.jump = src.jump; out.slide = src.slide; out.fire = src.fire; out.plow = src.plow; out.pack = src.pack;
-  out.dig = src.dig; out.build = src.build; out.use = src.use; out.roll = src.roll;
+  out.dig = src.dig; out.build = src.build; out.use = src.use; out.roll = src.roll; out.turret = src.turret; out.reward = src.reward;
   out.aim = src.aim ? { x: src.aim.x, y: src.aim.y, z: src.aim.z } : null;
   return out;
 }
@@ -126,7 +132,7 @@ export function decodeMatch(buf: Uint8Array): { info: MatchInfo; field: Uint8Arr
 // ───────────────────────── snapshots ─────────────────────────
 const ACTIONS: Action[] = ['idle', 'plow', 'pack', 'dig', 'build', 'charge', 'throw', 'slide', 'down'];
 const PHASES: Phase[] = ['build', 'fight', 'end'];
-const F = { alive: 1, grounded: 2, sliding: 4, surfing: 8, onIce: 16, onProp: 32, onSlide: 64, charging: 128, aimOk: 256, slumping: 512 };
+const F = { alive: 1, grounded: 2, sliding: 4, surfing: 8, onIce: 16, onProp: 32, onSlide: 64, charging: 128, aimOk: 256, slumping: 512, turretAt: 1024 };
 
 export interface PenguinState {
   id: number;
@@ -137,10 +143,14 @@ export interface PenguinState {
   action: Action; charge: number; throwAnim: number; throwCd: number;
   carried: number; health: number; mitten: number; invuln: number; downT: number; packProgress: number;
   buildBlock: number; noSnowT: number; slideSlowT: number; plowLoad: number; splats: number; downs: number; lastHitBy: number;
+  streak: number; rewards: [number, number, number]; frenzyT: number;
+  turretSnow: number; turretAt: { x: number; y: number; z: number } | null; turretBlock: number;
 }
-export interface BallState { id: number; team: number; x: number; y: number; z: number; vx: number; vy: number; vz: number; }
+export interface BallState { id: number; team: number; kind: number; x: number; y: number; z: number; vx: number; vy: number; vz: number; }
 export interface BigBallState { id: number; x: number; y: number; z: number; r: number; vx: number; vy: number; vz: number; grounded: boolean; }
 export interface FlakeState { id: number; spot: number; x: number; y: number; z: number; active: boolean; }
+export interface TurretState { id: number; owner: number; team: number; x: number; y: number; z: number; yaw: number; health: number; ammo: number; fireT: number; }
+export interface PointState { id: number; owner: number; cap: number; n0: number; n1: number; }
 export interface Snapshot {
   tick: number; ack: number;
   phase: Phase; phaseT: number; scores: [number, number]; piles: [number, number]; winner: number;
@@ -148,6 +158,8 @@ export interface Snapshot {
   balls: BallState[];
   bigBalls: BigBallState[];
   flakes: FlakeState[];
+  turrets: TurretState[];
+  points: PointState[];
   board: { active: boolean; holder: number; x: number; y: number; z: number; yaw: number };
   snow: Uint8Array; // 5 bytes per changed voxel: 24-bit index, density, hardness
   events: GameEvent[];
@@ -168,7 +180,7 @@ export function encodeSnapshot(w: World, tick: number, snow: Uint8Array, events:
   for (const p of w.penguins) writePenguin(o, p);
   o.u16(w.snowballs.length);
   for (const b of w.snowballs) {
-    o.u32(b.id); o.u8(b.team); o.f32(b.x); o.f32(b.y); o.f32(b.z);
+    o.u32(b.id); o.u8((b.team & 3) | ((b.kind & 3) << 2)); o.f32(b.x); o.f32(b.y); o.f32(b.z);
     o.i16(clampI16(b.vx * 50)); o.i16(clampI16(b.vy * 50)); o.i16(clampI16(b.vz * 50));
   }
   o.u8(w.bigBalls.length);
@@ -178,6 +190,14 @@ export function encodeSnapshot(w: World, tick: number, snow: Uint8Array, events:
   }
   o.u8(w.flakes.length);
   for (const f of w.flakes) { o.u32(f.id); o.u8(f.spot); o.f32(f.x); o.f32(f.y); o.f32(f.z); o.u8(f.active ? 1 : 0); }
+  const turrets = w.turrets.filter(t => t.alive);
+  o.u8(turrets.length);
+  for (const t of turrets) {
+    o.u32(t.id); o.i16(t.owner); o.u8(t.team); o.f32(t.x); o.f32(t.y); o.f32(t.z); o.i16(clampI16(wrapA(t.yaw) * 10000));
+    o.u8(clampU8(t.health)); o.u8(clampU8(t.ammo)); o.u8(clampU8(t.fireT * 500));
+  }
+  o.u8(w.points.length);
+  for (const pt of w.points) { o.i8(pt.owner); o.i16(clampI16(pt.cap * 10000)); o.u8(clampU8(pt.n0)); o.u8(clampU8(pt.n1)); }
   const bd = w.board;
   o.u8(bd.active ? 1 : 0); o.i16(bd.holder); o.f32(bd.x); o.f32(bd.y); o.f32(bd.z); o.i16(clampI16(wrapA(bd.yaw) * 10000));
   o.u32(snow.length / 5); o.bytes(snow);
@@ -193,13 +213,16 @@ function writePenguin(o: Writer, p: Penguin) {
   o.i16(clampI16(wrapA(p.yaw) * 10000)); o.i16(clampI16(wrapA(p.lookYaw) * 10000)); o.i16(clampI16(p.lookPitch * 10000));
   o.u16((p.alive ? F.alive : 0) | (p.grounded ? F.grounded : 0) | (p.sliding ? F.sliding : 0) | (p.surfing ? F.surfing : 0)
     | (p.onIce ? F.onIce : 0) | (p.onProp ? F.onProp : 0) | (p.onSlide ? F.onSlide : 0) | (p.charging ? F.charging : 0)
-    | (p.aimOk ? F.aimOk : 0) | (p.slumping ? F.slumping : 0));
+    | (p.aimOk ? F.aimOk : 0) | (p.slumping ? F.slumping : 0) | (p.turretAt ? F.turretAt : 0));
   o.u8(Math.max(0, ACTIONS.indexOf(p.action)));
   o.u8(clampU8(p.charge * 255)); o.u8(clampU8(p.throwAnim * 1000)); o.u8(clampU8(p.throwCd * 500));
   o.u8(clampU8(p.carried)); o.u8(clampU8(p.health)); o.u8(clampU8(p.mitten));
   o.u8(clampU8(p.invuln * 50)); o.u8(clampU8(p.downT * 50)); o.u8(clampU8(p.packProgress * 255));
   o.u8(clampU8(p.buildBlock)); o.u8(clampU8(p.noSnowT * 200)); o.u8(clampU8(p.slideSlowT * 200));
   o.u16(clampU16(p.plowLoad)); o.u16(clampU16(p.splats)); o.u16(clampU16(p.downs)); o.i16(clampI16(p.lastHitBy));
+  o.u8(clampU8(p.streak)); o.u8(clampU8(p.rewards[0])); o.u8(clampU8(p.rewards[1])); o.u8(clampU8(p.rewards[2]));
+  o.u8(clampU8(p.frenzyT * 20)); o.u16(clampU16(p.turretSnow)); o.u8(clampU8(p.turretBlock));
+  if (p.turretAt) { o.f32(p.turretAt.x); o.f32(p.turretAt.y); o.f32(p.turretAt.z); }
 }
 
 function readPenguin(r: Reader): PenguinState {
@@ -214,13 +237,16 @@ function readPenguin(r: Reader): PenguinState {
   const invuln = r.u8() / 50, downT = r.u8() / 50, packProgress = r.u8() / 255;
   const buildBlock = r.u8(), noSnowT = r.u8() / 200, slideSlowT = r.u8() / 200;
   const plowLoad = r.u16(), splats = r.u16(), downs = r.u16(), lastHitBy = r.i16();
+  const streak = r.u8(), rewards: [number, number, number] = [r.u8(), r.u8(), r.u8()];
+  const frenzyT = r.u8() / 20, turretSnow = r.u16(), turretBlock = r.u8();
+  const turretAt = fl & F.turretAt ? { x: r.f32(), y: r.f32(), z: r.f32() } : null;
   return {
     id, x, y, z, vx, vy, vz, yaw, lookYaw, lookPitch,
     alive: !!(fl & F.alive), grounded: !!(fl & F.grounded), sliding: !!(fl & F.sliding), surfing: !!(fl & F.surfing),
     onIce: !!(fl & F.onIce), onProp: !!(fl & F.onProp), onSlide: !!(fl & F.onSlide), charging: !!(fl & F.charging),
     aimOk: !!(fl & F.aimOk), slumping: !!(fl & F.slumping),
     action, charge, throwAnim, throwCd, carried, health, mitten, invuln, downT, packProgress, buildBlock, noSnowT, slideSlowT,
-    plowLoad, splats, downs, lastHitBy,
+    plowLoad, splats, downs, lastHitBy, streak, rewards, frenzyT, turretSnow, turretAt, turretBlock,
   };
 }
 
@@ -237,8 +263,8 @@ export function decodeSnapshot(buf: Uint8Array): Snapshot {
   for (let n = r.u8(); n > 0; n--) penguins.push(readPenguin(r));
   const balls: BallState[] = [];
   for (let n = r.u16(); n > 0; n--) {
-    const id = r.u32(), team = r.u8(), x = r.f32(), y = r.f32(), z = r.f32();
-    balls.push({ id, team, x, y, z, vx: r.i16() / 50, vy: r.i16() / 50, vz: r.i16() / 50 });
+    const id = r.u32(), tk = r.u8(), x = r.f32(), y = r.f32(), z = r.f32();
+    balls.push({ id, team: tk & 3, kind: (tk >> 2) & 3, x, y, z, vx: r.i16() / 50, vy: r.i16() / 50, vz: r.i16() / 50 });
   }
   const bigBalls: BigBallState[] = [];
   for (let n = r.u8(); n > 0; n--) {
@@ -250,12 +276,19 @@ export function decodeSnapshot(buf: Uint8Array): Snapshot {
     const id = r.u32(), spot = r.u8(), x = r.f32(), y = r.f32(), z = r.f32();
     flakes.push({ id, spot, x, y, z, active: r.u8() === 1 });
   }
+  const turrets: TurretState[] = [];
+  for (let n = r.u8(); n > 0; n--) {
+    const id = r.u32(), owner = r.i16(), team = r.u8(), x = r.f32(), y = r.f32(), z = r.f32(), yaw = r.i16() / 10000;
+    turrets.push({ id, owner, team, x, y, z, yaw, health: r.u8(), ammo: r.u8(), fireT: r.u8() / 500 });
+  }
+  const points: PointState[] = [];
+  for (let n = r.u8(), id = 0; id < n; id++) points.push({ id, owner: r.i8(), cap: r.i16() / 10000, n0: r.u8(), n1: r.u8() });
   const active = r.u8() === 1, holder = r.i16(), bx = r.f32(), by = r.f32(), bz = r.f32(), byaw = r.i16() / 10000;
   const snow = r.bytes(r.u32() * 5);
   const evLen = r.u32();
   const events = evLen ? JSON.parse(dec.decode(r.bytes(evLen))) as GameEvent[] : [];
   return {
-    tick, ack, phase, phaseT, scores, piles, winner, penguins, balls, bigBalls, flakes,
+    tick, ack, phase, phaseT, scores, piles, winner, penguins, balls, bigBalls, flakes, turrets, points,
     board: { active, holder, x: bx, y: by, z: bz, yaw: byaw }, snow, events,
   };
 }
@@ -266,7 +299,7 @@ export function applyPenguinState(p: Penguin, s: PenguinState) {
   p.yaw = s.yaw; p.lookYaw = s.lookYaw; p.lookPitch = s.lookPitch;
   p.alive = s.alive; p.grounded = s.grounded; p.sliding = s.sliding; p.surfing = s.surfing; p.onIce = s.onIce;
   p.onProp = s.onProp; p.onSlide = s.onSlide; p.charging = s.charging; p.aimOk = s.aimOk; p.slumping = s.slumping;
-  p.action = s.action; p.charge = s.charge; p.throwAnim = s.throwAnim; p.throwCd = s.throwCd;
+  p.action = s.action; p.charge = s.charge; p.throwAnim = s.throwAnim; p.throwCd = s.throwCd; p.frenzyT = s.frenzyT;
   applyPenguinStats(p, s);
   p.slideSlowT = s.slideSlowT; p.plowLoad = s.plowLoad;
 }
@@ -276,6 +309,16 @@ export function applyPenguinStats(p: Penguin, s: PenguinState) {
   p.carried = s.carried; p.health = s.health; p.mitten = s.mitten; p.invuln = s.invuln; p.downT = s.downT;
   p.packProgress = s.packProgress; p.buildBlock = s.buildBlock; p.noSnowT = s.noSnowT;
   p.splats = s.splats; p.downs = s.downs; p.lastHitBy = s.lastHitBy;
+  p.streak = s.streak; p.rewards[0] = s.rewards[0]; p.rewards[1] = s.rewards[1]; p.rewards[2] = s.rewards[2];
+  p.turretSnow = s.turretSnow; p.turretBlock = s.turretBlock;
+  if (!s.turretAt) p.turretAt = null;
+  else if (p.turretAt) { p.turretAt.x = s.turretAt.x; p.turretAt.y = s.turretAt.y; p.turretAt.z = s.turretAt.z; }
+  else p.turretAt = { x: s.turretAt.x, y: s.turretAt.y, z: s.turretAt.z };
+}
+
+/** Copy a flag's networked state onto the client's copy of it (its name and place come from the map). */
+export function applyPoint(pt: CapturePoint, s: PointState) {
+  pt.owner = s.owner; pt.cap = s.cap; pt.n0 = s.n0; pt.n1 = s.n1;
 }
 
 // ───────────────────────── snow changes ─────────────────────────

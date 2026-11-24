@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { buildMap, MapDef } from '../world/MapDef';
+import { MapDef } from '../world/MapDef';
+import { buildMap, MapId, mapForMode } from '../world/Maps';
 import { ISO } from '../world/SnowField';
 import { SnowRenderer } from '../render/SnowRenderer';
 import { Environment } from '../render/Environment';
@@ -10,14 +11,17 @@ import { PlaygroundView } from '../render/PlaygroundView';
 import { Decals } from '../render/Decals';
 import { World, Penguin, GameEvent, solveThrow, lookVelocity, MatchOptions } from '../sim/World';
 import { BotBrain } from '../sim/Bot';
-import { CFG, MITTEN_NAMES } from '../sim/config';
+import { CFG, MITTEN_NAMES, REWARD_NAMES } from '../sim/config';
+import { LandmarksView } from '../render/Landmarks';
+import { TurretsView } from '../render/Turrets';
+import { FlagsView } from '../render/Flags';
+import { TEAM_NAMES } from '../render/Environment';
 import { Input } from './Input';
 import { Audio } from './Audio';
 import { Hud } from '../ui/Hud';
 import { PostFX } from '../render/PostFX';
 import { NetClient } from '../net/NetClient';
 import type { MatchInfo } from '../net/Protocol';
-import { TEAM_NAMES } from '../render/Environment';
 
 const STEP = 1 / 60;
 
@@ -42,6 +46,12 @@ export class Game {
   private props!: Props;
   private playground!: PlaygroundView;
   private decals!: Decals;
+  private landmarks!: LandmarksView;
+  private turretsView!: TurretsView;
+  private flagsView!: FlagsView;
+  mapId: MapId = 'bay';
+  private rewardQueued = 0;
+  private taughtTurret = false;
   private trails = new Map<number, { dist: number; side: number; x: number; z: number }>();
   private models = new Map<number, PenguinModel>();
   private modelKeys = new Map<number, string>();
@@ -93,6 +103,7 @@ export class Game {
     };
     this.input.onKey = code => {
       if (code === 'Tab') this.hud?.setBoard(true);
+      if (code === 'Digit1' || code === 'Digit2' || code === 'Digit3') this.rewardQueued = +code.slice(5);
     };
     window.addEventListener('keyup', e => { if (e.code === 'Tab') this.hud?.setBoard(false); });
     window.addEventListener('resize', () => this.resize());
@@ -120,14 +131,15 @@ export class Game {
     this.camera.updateProjectionMatrix();
   }
 
-  private loadMap(snow?: { density: Uint8Array; hard: Uint8Array }) {
+  private loadMap(id: MapId = this.mapId, snow?: { density: Uint8Array; hard: Uint8Array }) {
+    this.mapId = id;
     // clear old
     while (this.scene.children.length) this.scene.remove(this.scene.children[0]);
     this.models.forEach(m => m.dispose(this.scene));
     this.models.clear();
     this.modelKeys.clear();
     this.env?.dispose();
-    this.map = buildMap();
+    this.map = buildMap(id);
     if (snow && snow.density.length === this.map.field.density.length) {
       // online: the server's snow, exactly as it is in the match right now
       this.map.field.density.set(snow.density);
@@ -145,6 +157,12 @@ export class Game {
     this.scene.add(this.playground.group);
     this.decals = new Decals(this.map.field);
     this.scene.add(this.decals.group);
+    this.landmarks = new LandmarksView(this.map);
+    this.scene.add(this.landmarks.group);
+    this.turretsView = new TurretsView();
+    this.scene.add(this.turretsView.group);
+    this.flagsView = new FlagsView(this.map);
+    this.scene.add(this.flagsView.group);
     this.trails.clear();
   }
 
@@ -156,7 +174,7 @@ export class Game {
     this.input.unlock();
     this.hud?.destroy(); this.hud = null;
     if (this.net) { this.net.close(); this.net = null; }
-    if (this.world) { this.world = null; this.loadMap(); }
+    if (this.world || this.mapId !== 'bay') { this.world = null; this.loadMap('bay'); }
     const b = this.map.bases[0];
     const p = new Penguin(0, '', 0, 'beanie', false);
     p.x = b.center.x + 4; p.z = b.center.z + 3;
@@ -174,7 +192,8 @@ export class Game {
   // ───────────────────────── match ─────────────────────────
   startMatch(opts: MatchOptions) {
     if (this.menuPenguin) { this.menuPenguin.dispose(this.scene); this.menuPenguin = null; }
-    if (this.world) this.loadMap();
+    const mapId = mapForMode(opts.mode ?? 'tdm');
+    if (this.world || mapId !== this.mapId) this.loadMap(mapId);
     this.world = new World(this.map, opts);
     this.bots.clear();
     let rndSeed = 1;
@@ -186,7 +205,7 @@ export class Game {
       this.models.set(p.id, m);
       if (p.bot) this.bots.set(p.id, new BotBrain(i, rnd, slots[p.team]++));
     });
-    this.hud = new Hud();
+    this.hud = new Hud(this.world);
     this.mode = 'play';
     this.input.enabled = true;
     this.input.yaw = this.world.player.yaw;
@@ -195,7 +214,9 @@ export class Game {
     this.countdownLast = -1;
     this.audio.unlock();
     this.audio.whistle();
-    this.hud.banner('BUILD PHASE', `${CFG.buildPhase} seconds to build your fort and pack snowballs!`, 3.5);
+    if (this.world.mode === 'conquest') this.hud.banner('CONQUEST', `${this.world.buildLen} seconds to fortify flag A: build walls, pack snowballs, hold T for a turret`, 4.5);
+    else this.hud.banner('BUILD PHASE', `${this.world.buildLen} seconds to build your fort and pack snowballs!`, 3.5);
+    this.rewardQueued = 0;
     this.input.lock();
   }
 
@@ -205,14 +226,15 @@ export class Game {
     this.net = net;
     if (this.menuPenguin) { this.menuPenguin.dispose(this.scene); this.menuPenguin = null; }
     this.hud?.destroy(); this.hud = null;
-    this.loadMap({ density, hard });
-    this.world = new World(this.map, { teamSize: info.size, playerName: '', playerHat: '', roster: info.roster, meId: info.you });
+    this.loadMap(mapForMode(info.mode), { density, hard });
+    this.world = new World(this.map, { teamSize: info.size, playerName: '', playerHat: '', mode: info.mode, roster: info.roster, meId: info.you });
     this.bots.clear();
     this.trails.clear();
     this.refreshModels();
     net.attach(this.world);
     const me = this.world.player;
-    this.hud = new Hud();
+    this.hud = new Hud(this.world);
+    this.rewardQueued = 0;
     this.mode = 'play';
     this.input.enabled = true;
     this.input.yaw = this.map.bases[me.team].facing;
@@ -223,7 +245,7 @@ export class Game {
     this.audio.whistle();
     this.world.phase = info.phase;
     const team = TEAM_NAMES[me.team];
-    const sub = info.phase === 'build' ? 'Build your fort and pack snowballs: the fight starts soon!'
+    const sub = info.phase === 'build' ? (info.mode === 'conquest' ? 'Fortify your flag: build walls, pack snowballs, hold T for a turret' : 'Build your fort and pack snowballs: the fight starts soon!')
       : info.phase === 'fight' ? 'The fight is on! Grab snowballs from your stockpile with E' : 'This match is wrapping up: the next one starts in a moment';
     this.hud.banner(first ? `YOU'RE ON ${team.toUpperCase()}` : 'NEW MATCH', sub, 3.5);
     this.hooks?.onMatchStart?.();
@@ -273,6 +295,7 @@ export class Game {
     }
     this.env.update(this.time, this.camera, window.innerHeight);
     this.playground.update(this.time);
+    this.flagsView.update(this.mode === 'play' ? this.world : null, this.time, dt);
     this.decals.update(this.time);
     this.snow.update(this.camera.position, this.mode === 'menu' ? 8 : 4, this.time);
     this.particles.update(dt, window.innerHeight * this.pixelRatio(), this.camera.fov);
@@ -316,11 +339,14 @@ export class Game {
     pi.build = playing && (inp.down('KeyR') || inp.down('KeyC'));
     pi.use = playing && inp.down('KeyE');
     pi.roll = playing && inp.down('KeyG');
+    pi.turret = playing && inp.down('KeyT');
+    if (this.rewardQueued && playing) pi.reward = this.rewardQueued;
+    this.rewardQueued = 0;
 
     // camera first (so aiming uses this frame's view)
     this.updateCamera(dt, me);
     this.computeAim(me);
-    pi.aim = (pi.dig || pi.build) ? this.aimSnow : this.throwAim(me);
+    pi.aim = (pi.dig || pi.build || pi.turret) ? this.aimSnow : this.throwAim(me);
 
     // fixed-step simulation
     if (this.net) {
@@ -360,6 +386,7 @@ export class Game {
     // a wisp of snow behind every flying snowball so you can follow it
     for (const b of w.snowballs) this.particles.spawn(PKind.Puff, b.px + (b.x - b.px) * alpha, b.py + (b.y - b.py) * alpha, b.pz + (b.z - b.pz) * alpha, 0, 0.1, 0, 0.1, 0.3);
     this.props.update(w, alpha, dt, this.time);
+    this.turretsView.update(w, dt, this.time, this.camera.position);
     this.updateAimVisuals(me);
 
     // audio beds
@@ -381,15 +408,21 @@ export class Game {
     // build-phase countdown
     if (w.phase === 'build') {
       const s = Math.ceil(w.phaseT);
-      if (s <= 5 && s !== this.countdownLast && s > 0) { this.countdownLast = s; this.hud!.banner(String(s), 'Get ready to throw!', 0.9); this.audio.countdown(false); }
+      if (s <= 5 && s !== this.countdownLast && s > 0) { this.countdownLast = s; this.hud!.banner(String(s), w.mode === 'conquest' ? 'Get ready to take the flags!' : 'Get ready to throw!', 0.9); this.audio.countdown(false); }
     }
 
     // HUD
     let hint: string | null = null;
     if ((pi.dig || pi.build) && !this.aimInReach(me)) hint = 'Aim closer to dig or build';
+    if (pi.turret && !pi.build && !pi.dig) {
+      hint = me.turretBlock === 2 ? 'A turret can\'t stand there'
+        : me.turretBlock === 3 ? 'Too close to another turret'
+        : me.turretBlock === 4 ? `Your team already has ${CFG.maxTeamTurrets} turrets`
+        : me.turretAt ? `Building a turret: ${Math.floor(Math.min(1, me.turretSnow / CFG.turretCost) * 100)}% (keep holding T)` : hint;
+    }
     if (pi.build && me.buildBlock === 1) hint = 'Too tall to reach from here: get closer or climb up';
     if (pi.build && me.slumping) hint = 'Too thin to go higher: the snow is sliding down to widen the base';
-    if (me.noSnowT > 0 && (pi.pack || pi.build || pi.dig || pi.roll)) hint = me.carried >= CFG.maxCarry && pi.pack ? 'Your mittens are full (5): stash or throw!' : 'No loose snow here';
+    if (me.noSnowT > 0 && (pi.pack || pi.build || pi.dig || pi.roll || pi.turret)) hint = me.carried >= CFG.maxCarry && pi.pack ? 'Your mittens are full (5): stash or throw!' : 'No loose snow here';
     if (w.phase === 'build' && pi.fire && me.carried > 0) hint = 'No throwing until the fight starts!';
     this.hud!.update(w, me, dt, hint);
   }
@@ -431,7 +464,7 @@ export class Game {
   private aimInReach(me: Penguin) {
     const a = this.aimSnow;
     if (!a) return false;
-    return Math.hypot(a.x - me.x, a.y - (me.y + 0.8), a.z - me.z) <= CFG.reach + (me.input.build ? 1.2 : 0.3);
+    return Math.hypot(a.x - me.x, a.y - (me.y + 0.8), a.z - me.z) <= CFG.reach + (me.input.build ? 1.2 : me.input.turret ? 0.8 : 0.3);
   }
 
   private updateCamera(dt: number, me: Penguin) {
@@ -442,7 +475,7 @@ export class Game {
     const yaw = inp.yaw, pitch = inp.pitch;
     const fx = -Math.sin(yaw) * Math.cos(pitch), fy = Math.sin(pitch), fz = -Math.cos(yaw) * Math.cos(pitch);
     const rx = Math.cos(yaw), rz = -Math.sin(yaw);
-    let want = me.sliding ? 5.6 : me.charging ? 3.9 : me.input.build ? 5.6 : 4.8;
+    let want = me.sliding ? 5.6 : me.charging ? 3.9 : me.input.build || me.input.turret ? 5.6 : 4.8;
     if (!me.alive) want = 6.5;
     this.camDist += (want - this.camDist) * Math.min(1, dt * 6);
     const pivY = py + (me.sliding ? 1.0 : 1.5);
@@ -522,9 +555,19 @@ export class Game {
       // enemies are a little "sticky" under the crosshair, more so far away where a penguin is only a few pixels
       const enemy = p.team !== me.team;
       const d = Math.hypot(p.x - ox, cy - oy, p.z - oz);
-      const t = raySphere(p.x, cy, p.z, enemy ? 0.62 + Math.min(0.7, d * 0.018) : 0.5);
-      // snow in front of them still blocks the shot
-      if (t > 0 && t < bestT + (enemy ? 0.8 : 0)) { bestT = Math.min(bestT, t); any = { x: p.x, y: cy, z: p.z }; this.aimTarget = enemy ? p : null; }
+      const t = raySphere(p.x, cy, p.z, enemy ? 0.52 + Math.min(0.22, d * 0.006) : 0.5);
+      // snow in front of them still blocks the shot; the throw goes where the crosshair is, pulled only a little toward them
+      if (t > 0 && t < bestT + (enemy ? 0.3 : 0)) {
+        bestT = Math.min(bestT, t);
+        const tc = (p.x - ox) * dir.x + (cy - oy) * dir.y + (p.z - oz) * dir.z;
+        const pull = enemy ? 0.25 : 0;
+        any = {
+          x: ox + dir.x * tc + (p.x - ox - dir.x * tc) * pull,
+          y: oy + dir.y * tc + (cy - oy - dir.y * tc) * pull,
+          z: oz + dir.z * tc + (p.z - oz - dir.z * tc) * pull,
+        };
+        this.aimTarget = enemy ? p : null;
+      }
     }
     for (const b of w.bigBalls) {
       const t = raySphere(b.x, b.y, b.z, b.r);
@@ -551,10 +594,16 @@ export class Game {
     const pi = me.input;
     const f = this.map.field;
     const marker = this.props.aimMarker, ghost = this.props.buildGhost;
-    const showMarker = me.alive && (pi.dig || pi.build) && this.aimSnow && this.aimInReach(me);
-    marker.visible = !!showMarker;
-    ghost.visible = !!showMarker && pi.build;
-    if (showMarker && this.aimSnow) {
+    const turreting = pi.turret && !pi.build && !pi.dig;
+    const showMarker = me.alive && (pi.dig || pi.build || turreting) && (me.turretAt || (this.aimSnow && this.aimInReach(me)));
+    marker.visible = !!showMarker && !turreting;
+    ghost.visible = !!showMarker && (pi.build || turreting);
+    if (showMarker && turreting) {
+      // a ring on the snow where the snowman will stand (it locks in once you start scooping)
+      const a = me.turretAt ?? this.aimSnow!;
+      ghost.position.set(a.x, a.y + 0.08, a.z);
+      (ghost.material as THREE.MeshBasicMaterial).color.set(me.turretBlock ? 0xff5a5a : 0x9dffb0);
+    } else if (showMarker && this.aimSnow) {
       const a = this.aimSnow;
       const mat = marker.material as THREE.MeshBasicMaterial;
       if (pi.build) {
@@ -574,7 +623,7 @@ export class Game {
     }
     // throw arc: faint whenever you're holding snowballs, bold while you wind up
     const w = this.world!;
-    const busy = pi.dig || pi.build || pi.plow || pi.pack;
+    const busy = pi.dig || pi.build || pi.plow || pi.pack || pi.turret;
     if (me.alive && w.phase === 'fight' && me.carried > 0 && (me.charging || !busy)) {
       const speed = this.throwSpeed(me);
       const h = w.handPos(me);
@@ -703,7 +752,67 @@ export class Game {
         const victim = w.penguin(e.pid)!;
         const killer = w.penguin(e.by);
         H.feed(killer, victim, e.cause);
-        if (e.by === me.id && e.pid !== me.id) H.banner('SPLAT!', `You got ${victim.name}`, 1.3);
+        if (e.by === me.id && e.pid !== me.id) H.banner('SPLAT!', e.cause === 'turret' ? `Your turret got ${victim.name}` : `You got ${victim.name}`, 1.3);
+        break;
+      }
+      case 'turretBuilt': {
+        P.burst(e.x, e.y + 0.9, e.z, 46, 3.5, 1.4);
+        P.sparkle(e.x, e.y + 1.4, e.z, 24, 0.9, 0.97, 1.0);
+        A.packDone(e.x, e.y, e.z); A.crush(e.x, e.y, e.z, 0.35);
+        if (e.pid === me.id) {
+          if (!this.taughtTurret) { this.taughtTurret = true; H.banner('TURRET UP!', 'It throws at any enemy it can see. Hold E beside it to hand it your snowballs', 3.4); }
+          else H.toast('Turret up!', 1.6);
+        }
+        break;
+      }
+      case 'turretFire': A.whoosh(e.x, e.y, e.z, 0.15); P.burst(e.x, e.y, e.z, 5, 1.8, 0.4); break;
+      case 'turretHit': {
+        P.burst(e.x, e.y, e.z, 22, 3.5, 1.1); A.splatSnow(e.x, e.y, e.z);
+        if (e.by === me.id) { H.hitMarker(e.health <= 0); A.hitMarker(); }
+        break;
+      }
+      case 'turretDown': {
+        P.burst(e.x, e.y + 0.9, e.z, 110, 6, 1.5); A.crush(e.x, e.y, e.z, 0.8);
+        if (e.by === me.id) H.toast('Turret knocked down!', 1.6);
+        else if (e.owner === me.id && e.by >= 0) H.toast('Your turret got knocked down!', 2);
+        break;
+      }
+      case 'turretLoad': if (e.pid === me.id) { A.stash(); H.toast(`Loaded ${e.n * CFG.turretAmmoPerBall} shots into the turret`, 1.6); } break;
+      case 'streak': {
+        if (e.pid !== me.id) {
+          const p = w.penguin(e.pid);
+          if (p && e.reward >= 0 && e.streak >= CFG.streakAt[1]) H.toast(`${p.name} is on a ${e.streak} splat streak!`, 2);
+          break;
+        }
+        if (e.reward >= 0) { A.flake(me.x, me.y, me.z); H.banner(`${e.streak} SPLAT STREAK!`, `${REWARD_NAMES[e.reward]} ready: press ${e.reward + 1}`, 2.8); }
+        break;
+      }
+      case 'reward': {
+        const p = w.penguin(e.pid);
+        if (e.reward === 2) {
+          this.turretsView.barrage(e.x, e.y, e.z, p ? p.team : 0, CFG.avalancheDelay + CFG.avalancheTime + 0.6);
+          A.whistle();
+          if (e.pid === me.id) H.banner('AVALANCHE!', 'Snowballs incoming', 1.8);
+          else if (p && p.team !== me.team && Math.hypot(e.x - me.x, e.z - me.z) < CFG.avalancheRadius + 6) H.banner('AVALANCHE!', 'Get out of the ring!', 1.8);
+        } else if (e.reward === 0) {
+          P.sparkle(e.x, e.y + 1, e.z, 50, 1.0, 0.8, 0.4); A.flake(e.x, e.y, e.z);
+          if (e.pid === me.id) H.banner('SNOWBALL FRENZY!', `Unlimited snowballs for ${CFG.frenzyTime} seconds: hold the mouse down`, 2.2);
+        }
+        break;
+      }
+      case 'rewardFail': if (e.pid === me.id) { A.noSnow(); H.toast('No room for a turret there: aim at open snow near you', 2); } break;
+      case 'capture': {
+        const pt = w.points[e.point];
+        P.sparkle(pt.x, pt.y + 5, pt.z, 80, e.team === 0 ? 0.3 : 1.0, e.team === 0 ? 0.6 : 0.5, e.team === 0 ? 1.0 : 0.2);
+        A.flake(pt.x, pt.y, pt.z);
+        if (e.team === me.team) H.banner(`FLAG ${pt.name} IS OURS!`, 'Hold it to keep scoring', 2.2);
+        else H.banner(`${TEAM_NAMES[e.team].toUpperCase()} TOOK ${pt.name}!`, 'Take it back', 2.2);
+        break;
+      }
+      case 'neutral': {
+        const pt = w.points[e.point];
+        H.toast(e.team === me.team ? `We lost flag ${pt.name}!` : `Flag ${pt.name} is up for grabs!`, 2.2);
+        if (e.team === me.team) A.noSnow();
         break;
       }
       case 'grab':
@@ -721,7 +830,11 @@ export class Game {
       case 'jump': if (e.pid === me.id) A.jump(me.x, me.y, me.z); break;
       case 'slideStart': { const p = w.penguin(e.pid)!; A.slide(p.x, p.y, p.z); P.burst(p.x, p.y, p.z, 12, 2, 0.8); break; }
       case 'phase':
-        if (e.phase === 'fight') { H.banner('FIGHT!', 'Splat the other team. First to ' + CFG.scoreToWin + ' wins!', 2.2); A.whistle(); }
+        if (e.phase === 'fight') {
+          if (w.mode === 'conquest') H.banner('TAKE THE FLAGS!', `Stand in a flag's ring to take it. First to ${w.scoreToWin} points wins!`, 3);
+          else H.banner('FIGHT!', 'Splat the other team. First to ' + w.scoreToWin + ' wins!', 2.2);
+          A.whistle();
+        }
         break;
       case 'gameOver': {
         const win = e.winner === me.team;

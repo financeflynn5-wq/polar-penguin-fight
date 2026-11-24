@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { MapDef, mulberry32, groundHeight } from '../world/MapDef';
+import { MapDef, mulberry32 } from '../world/MapDef';
 import { makeSnowMaterial } from './SnowRenderer';
 
 export const TEAM_COLORS = [0x2f8cff, 0xff6a2b];
@@ -48,7 +48,7 @@ const SKY_FRAG = `varying vec3 vDir; uniform vec3 uSun; uniform float uTime;
 
 /** Shared by every material that should melt away when it gets between the camera and your penguin. */
 const SEE = { uSeeA: { value: new THREE.Vector3() }, uSeeB: { value: new THREE.Vector3() } };
-function seeThrough<T extends THREE.Material>(mat: T): T {
+export function seeThrough<T extends THREE.Material>(mat: T): T {
   mat.onBeforeCompile = (sh) => {
     sh.uniforms.uSeeA = SEE.uSeeA; sh.uniforms.uSeeB = SEE.uSeeB;
     sh.vertexShader = sh.vertexShader
@@ -193,7 +193,7 @@ export class Environment {
     const x1 = f.x0 + (f.nx - 1) * f.cell, z1 = f.z0 + (f.nz - 1) * f.cell;
     for (let k = 0; k < n; k++) for (let i = 0; i < n; i++) {
       const x = -half + i * step, z = -half + k * step;
-      let y = outerHeight(x, z);
+      let y = outerHeight(this.map.ground, x, z);
       // inside the arena the real snow field takes over: tuck this sheet underneath it
       if (x > f.x0 + 0.1 && x < x1 - 0.1 && z > f.z0 + 0.1 && z < z1 - 0.1) y -= 5;
       const o = (k * n + i) * 3;
@@ -279,7 +279,7 @@ export class Environment {
       const d = Math.max(Math.abs(x) - 72, Math.abs(z) - 52);
       if (rand() > 1.05 - d / 150) continue; // thins out with distance
       const h = 4.5 + rand() * rand() * 7;
-      all.push({ x, z, y: outerHeight(x, z) - 0.3, h, r: 0.3, cb: 1.0 + h * 0.16, cw: 0.9 + h * 0.2 });
+      all.push({ x, z, y: outerHeight(this.map.ground, x, z) - 0.3, h, r: 0.3, cb: 1.0 + h * 0.16, cw: 0.9 + h * 0.2 });
     }
 
     const trunk = new THREE.InstancedMesh(trunkGeo, trunkMat, all.length);
@@ -345,6 +345,7 @@ export class Environment {
 
   private addPond() {
     const pd = this.map.pond;
+    if (!pd) return;
     const ice = new THREE.Mesh(new THREE.CircleGeometry(pd.r - 0.2, 64), new THREE.MeshPhysicalMaterial({
       color: 0x8fcdee, roughness: 0.06, metalness: 0.0, transparent: true, opacity: 0.86, clearcoat: 1, clearcoatRoughness: 0.04, envMapIntensity: 1.6,
     }));
@@ -450,7 +451,7 @@ export class Environment {
 }
 
 /** Land height outside the arena: the rim carries on into rolling foothills that climb toward the mountains. */
-export function outerHeight(x: number, z: number) {
+export function outerHeight(groundHeight: (x: number, z: number) => number, x: number, z: number) {
   const d = Math.max(0, Math.max(Math.abs(x) - 72, Math.abs(z) - 52));
   const t = Math.min(1, d / 70);
   const roll = Math.sin(x * 0.021 + 1.3) * Math.cos(z * 0.024 + 0.4) * 7 + Math.sin(x * 0.05 + z * 0.043) * 2.2;
