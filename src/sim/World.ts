@@ -1,9 +1,13 @@
-// The game simulation: penguins, snowballs, big rolling snowballs, snowflakes, stockpiles and the match.
+// The game simulation: penguins, snowballs, big rolling snowballs, snowflakes, stockpiles, snowman turrets,
+// Conquest flags, splat-streak rewards and the match.
 // No Three.js and no DOM, so the game server can run this exact code later.
 import { SnowField, ISO } from '../world/SnowField';
-import { MapDef, V3, mulberry32, creekAt } from '../world/MapDef';
+import { MapDef, V3, mulberry32 } from '../world/MapDef';
+import type { Mode } from '../world/Maps';
 import { CFG } from './config';
 import { boxGround, boxPush, pointInBoxes, slideY } from '../world/Playground';
+
+export type { Mode };
 
 export interface PenguinInput {
   moveX: number; // strafe (-1 left .. 1 right)
@@ -18,16 +22,19 @@ export interface PenguinInput {
   build: boolean; // held
   use: boolean; // held: tap = grab, hold = stash
   roll: boolean; // held: scoop up a new giant snowball in front of you
+  turret: boolean; // held: scoop snow into a snowman turret at the aim point
+  reward: number; // edge, consumed by the sim: 1..3 = use that splat-streak reward
   aim: V3 | null; // point under the crosshair
 }
 
 export const emptyInput = (): PenguinInput => ({
   moveX: 0, moveZ: 0, yaw: 0, pitch: 0, jump: false, slide: false, fire: false,
-  plow: false, pack: false, dig: false, build: false, use: false, roll: false, aim: null,
+  plow: false, pack: false, dig: false, build: false, use: false, roll: false, turret: false, reward: 0, aim: null,
 });
 
 export type Action = 'idle' | 'plow' | 'pack' | 'dig' | 'build' | 'charge' | 'throw' | 'slide' | 'down';
 export type Phase = 'build' | 'fight' | 'end';
+export type SplatCause = 'snowball' | 'bigball' | 'turret' | 'avalanche';
 
 export type GameEvent =
   | { type: 'plow'; pid: number; x: number; y: number; z: number; fx: number; fz: number; mass: number }
@@ -39,7 +46,7 @@ export type GameEvent =
   | { type: 'throw'; pid: number; x: number; y: number; z: number; power: number }
   | { type: 'snowHit'; x: number; y: number; z: number; nx: number; ny: number; nz: number }
   | { type: 'hit'; pid: number; by: number; x: number; y: number; z: number; health: number }
-  | { type: 'splat'; pid: number; by: number; x: number; y: number; z: number; cause: 'snowball' | 'bigball' }
+  | { type: 'splat'; pid: number; by: number; x: number; y: number; z: number; cause: SplatCause }
   | { type: 'respawn'; pid: number }
   | { type: 'grab'; pid: number; n: number; team: number; stolen: boolean }
   | { type: 'stash'; pid: number; n: number }
@@ -53,6 +60,16 @@ export type GameEvent =
   | { type: 'launch'; pid: number }
   | { type: 'collapse'; x: number; y: number; z: number; drop: number; mass: number }
   | { type: 'ballMade'; pid: number; x: number; y: number; z: number }
+  | { type: 'turretBuilt'; pid: number; tid: number; x: number; y: number; z: number; free: boolean }
+  | { type: 'turretFire'; tid: number; x: number; y: number; z: number }
+  | { type: 'turretHit'; tid: number; by: number; x: number; y: number; z: number; health: number }
+  | { type: 'turretDown'; tid: number; team: number; owner: number; by: number; x: number; y: number; z: number }
+  | { type: 'turretLoad'; pid: number; tid: number; n: number }
+  | { type: 'streak'; pid: number; streak: number; reward: number } // reward: -1, or the index it just earned
+  | { type: 'reward'; pid: number; reward: number; x: number; y: number; z: number }
+  | { type: 'rewardFail'; pid: number }
+  | { type: 'capture'; point: number; team: number; from: number } // `team` took the flag
+  | { type: 'neutral'; point: number; team: number } // `team` lost the flag
   | { type: 'gameOver'; winner: number };
 
 export class Penguin {
@@ -96,6 +113,19 @@ export class Penguin {
   buildBlock = 0;
   /** the new snow is sliding down the sides because the pile is too thin to go higher */
   slumping = false;
+  /** splats since this penguin last went down (Team Deathmatch streak rewards) */
+  streak = 0;
+  /** rewards earned and not used yet: [Snowball Frenzy, Insta-Turret, Avalanche] */
+  rewards = [0, 0, 0];
+  /** Snowball Frenzy time left: unlimited snowballs and rapid throws */
+  frenzyT = 0;
+  /** snow scooped so far toward the turret this penguin is building, and where it will stand */
+  turretSnow = 0;
+  turretAt: V3 | null = null;
+  /** why the turret isn't going up: 0 fine, 1 aim closer, 2 can't stand there, 3 too close to another, 4 the team has enough */
+  turretBlock = 0;
+  /** where this penguin last went down (Conquest brings you back at the nearest flag you hold) */
+  downX = 0; downZ = 0;
 
   constructor(public id: number, public name: string, public team: number, public hat: string, public bot: boolean) {}
 }
@@ -104,6 +134,8 @@ export interface Snowball {
   id: number; owner: number; team: number;
   x: number; y: number; z: number; px: number; py: number; pz: number;
   vx: number; vy: number; vz: number; age: number; alive: boolean;
+  /** 0 = thrown by a penguin, 1 = thrown by a turret, 2 = fell out of an Avalanche */
+  kind: number;
 }
 
 export interface BigBall {
@@ -121,7 +153,31 @@ export interface Flake { id: number; spot: number; x: number; y: number; z: numb
 
 export interface Surfboard { x: number; y: number; z: number; vy: number; holder: number; active: boolean; yaw: number; }
 
-export interface MatchOptions { teamSize: number; playerName: string; playerHat: string; }
+/** A snowman turret: throws snowballs at enemies it can see until it runs out or gets knocked down. */
+export interface Turret {
+  id: number; owner: number; team: number;
+  x: number; y: number; z: number;
+  yaw: number; // where it's looking
+  health: number; ammo: number;
+  cd: number; // seconds until it can throw again
+  target: number; // penguin id, or -1
+  scanT: number;
+  fireT: number; // counts down after each throw (for the arm swing)
+  age: number;
+  alive: boolean;
+}
+
+/** A Conquest flag. cap runs from -1 (all Team Blizzard) to +1 (all Team Sunrise). */
+export interface CapturePoint {
+  id: number; name: string; x: number; y: number; z: number; r: number;
+  owner: number; cap: number;
+  n0: number; n1: number; // penguins of each team standing on it right now
+}
+
+/** An Avalanche on its way: after `wait`, `left` snowballs rain down around the spot. */
+export interface Barrage { owner: number; team: number; x: number; y: number; z: number; wait: number; left: number; acc: number; }
+
+export interface MatchOptions { teamSize: number; playerName: string; playerHat: string; mode?: Mode; }
 
 const BOT_NAMES = ['Waddles', 'Sir Flaps', 'Pebble', 'Captain Ice', 'Nugget', 'Biscuit', 'Frosty', 'Wobbles', 'Sleet', 'Mittens',
   'Slushie', 'Tux', 'Puddles', 'Blizzard Bob', 'Chilly Willy Jr', 'Flipper', 'Snowcone', 'Sprinkles', 'Popsicle', 'Gizmo',
@@ -143,6 +199,14 @@ export class World {
   scores = [0, 0];
   phase: Phase = 'build';
   phaseT = CFG.buildPhase;
+  readonly mode: Mode;
+  turrets: Turret[] = [];
+  points: CapturePoint[] = [];
+  barrages: Barrage[] = [];
+  readonly scoreToWin: number;
+  readonly buildLen: number;
+  readonly fightLen: number;
+  private capAcc = [0, 0];
   time = 0;
   events: GameEvent[] = [];
   winner = -1;
@@ -153,6 +217,13 @@ export class World {
 
   constructor(readonly map: MapDef, readonly opts: MatchOptions) {
     this.field = map.field;
+    this.mode = opts.mode ?? 'tdm';
+    const conquest = this.mode === 'conquest';
+    this.scoreToWin = conquest ? CFG.conquestScore : CFG.scoreToWin;
+    this.buildLen = conquest ? CFG.conquestBuildPhase : CFG.buildPhase;
+    this.fightLen = conquest ? CFG.conquestFightPhase : CFG.fightPhase;
+    this.phaseT = this.buildLen;
+    if (conquest) this.points = map.points.map((d, id) => ({ id, name: d.name, x: d.x, y: d.y, z: d.z, r: d.r, owner: d.owner, cap: d.owner < 0 ? 0 : d.owner === 0 ? -1 : 1, n0: 0, n1: 0 }));
     // teams: player on team 0, bots fill the rest
     const names = [...BOT_NAMES].sort(() => this.rand() - 0.5);
     const player = new Penguin(this.nextId++, opts.playerName || 'You', 0, opts.playerHat, false);
@@ -178,7 +249,7 @@ export class World {
   spawn(p: Penguin, index?: number) {
     const base = this.map.bases[p.team];
     const list = base.spawns;
-    const s = list[(index ?? Math.floor(this.rand() * list.length)) % list.length];
+    const s = (index === undefined ? this.flagSpawn(p) : null) ?? list[(index ?? Math.floor(this.rand() * list.length)) % list.length];
     p.x = s.x + (this.rand() - 0.5) * 0.6; p.z = s.z + (this.rand() - 0.5) * 0.6;
     const g = this.field.surfaceBelow(p.x, 25, p.z, 0, 30);
     p.y = (g ?? s.y) + 0.05;
@@ -189,6 +260,25 @@ export class World {
     p.alive = true; p.health = CFG.maxHealth; p.invuln = CFG.spawnProtect; p.sinceHit = 99;
     p.carried = 0; p.packProgress = 0; p.charge = 0; p.charging = false; p.sliding = false;
     p.action = 'idle';
+  }
+
+  /**
+   * Conquest: come back at the flag your team holds that is nearest to where you went down (on your own base's side
+   * of it), unless your base is nearer or the other team is standing on that flag.
+   */
+  private flagSpawn(p: Penguin): V3 | null {
+    if (this.mode !== 'conquest' || this.phase !== 'fight') return null;
+    const base = this.map.bases[p.team].center;
+    let best: CapturePoint | null = null, bd = Math.hypot(p.downX - base.x, p.downZ - base.z);
+    for (const pt of this.points) {
+      if (pt.owner !== p.team || (p.team === 0 ? pt.n1 : pt.n0) > 0) continue;
+      const d = Math.hypot(p.downX - pt.x, p.downZ - pt.z);
+      if (d < bd) { bd = d; best = pt; }
+    }
+    if (!best) return null;
+    const a = Math.atan2(base.z - best.z, base.x - best.x) + (this.rand() - 0.5) * 1.5;
+    const r = best.r + 1.5 + this.rand() * 2;
+    return { x: best.x + Math.cos(a) * r, y: best.y, z: best.z + Math.sin(a) * r };
   }
 
   // ───────────────────────── main step ─────────────────────────
@@ -202,6 +292,9 @@ export class World {
     this.stepBigBalls(dt);
     this.stepFlakes(dt);
     this.stepBoard(dt);
+    this.stepTurrets(dt);
+    this.stepBarrages(dt);
+    this.stepPoints(dt);
     // snow that lost its support falls
     this.field.settle(3, (x, y, z, drop, mass) => { if (mass > 300) this.emit({ type: 'collapse', x, y, z, drop, mass }); });
   }
@@ -210,10 +303,10 @@ export class World {
     if (this.phase === 'end') return;
     this.phaseT -= dt;
     if (this.phase === 'build' && this.phaseT <= 0) {
-      this.phase = 'fight'; this.phaseT = CFG.fightPhase;
+      this.phase = 'fight'; this.phaseT = this.fightLen;
       this.emit({ type: 'phase', phase: 'fight' });
     } else if (this.phase === 'fight') {
-      if (this.phaseT <= 0 || this.scores[0] >= CFG.scoreToWin || this.scores[1] >= CFG.scoreToWin) {
+      if (this.phaseT <= 0 || this.scores[0] >= this.scoreToWin || this.scores[1] >= this.scoreToWin) {
         this.phase = 'end'; this.phaseT = 0;
         this.winner = this.scores[0] === this.scores[1] ? -1 : this.scores[0] > this.scores[1] ? 0 : 1;
         this.emit({ type: 'phase', phase: 'end' });
@@ -231,6 +324,8 @@ export class World {
     p.invuln = Math.max(0, p.invuln - dt);
     p.noSnowT = Math.max(0, p.noSnowT - dt);
     p.sinceHit += dt;
+    p.frenzyT = Math.max(0, p.frenzyT - dt);
+    const reward = inp.reward; inp.reward = 0;
 
     if (!p.alive) {
       p.action = 'down';
@@ -281,7 +376,7 @@ export class World {
       if (inp.plow) action = 'plow';
       else if (inp.pack) action = 'pack';
       else if (inp.dig) action = 'dig';
-      else if (inp.build) action = 'build';
+      else if (inp.build || inp.turret) action = 'build';
     }
     if (p.throwAnim > 0 && action === 'idle') action = 'throw';
     p.action = action;
@@ -307,9 +402,9 @@ export class World {
         const s2 = Math.hypot(p.vx, p.vz);
         if (s2 > 0) { const k = Math.max(0, s2 - fr) / s2; p.vx *= k; p.vz *= k; }
       }
-      if (ice && p.grounded) {
+      if (ice && p.grounded && this.map.creekAt) {
         // on the sled run the ice carries you round the bends, like a luge track (you can still steer out of it)
-        const c = creekAt(p.x, p.z);
+        const c = this.map.creekAt(p.x, p.z);
         const sp = Math.hypot(p.vx, p.vz);
         if (c.d < 2.2 && sp > 1 && (p.vx * c.tx + p.vz * c.tz) > 0) {
           const k = Math.min(1, CFG.sledAssist * dt);
@@ -376,7 +471,10 @@ export class World {
     else p.plowLoad *= 0.9;
     if (action === 'pack') this.doPack(p, dt, fwdX, fwdZ);
     if (action === 'dig') this.doDig(p, dt, fwdX, fwdZ);
-    if (action === 'build') this.doBuild(p, dt, fwdX, fwdZ); else { p.buildBlock = 0; p.slumping = false; }
+    const turreting = action === 'build' && inp.turret && !inp.build;
+    if (action === 'build' && !turreting) this.doBuild(p, dt, fwdX, fwdZ); else { p.buildBlock = 0; p.slumping = false; }
+    if (turreting) this.doTurret(p, dt, fwdX, fwdZ); else { p.turretBlock = 0; this.dropTurretSnow(p); }
+    if (reward) this.useReward(p, reward - 1);
     p.rollCd = Math.max(0, p.rollCd - dt);
     if (inp.roll && busy && !p.charging && p.rollCd <= 0) this.startBigBall(p, fwdX, fwdZ);
 
@@ -391,7 +489,7 @@ export class World {
           this.piles[p.team] += p.carried;
           this.emit({ type: 'stash', pid: p.id, n: p.carried });
           p.carried = 0;
-        }
+        } else if (p.carried > 0) this.loadTurret(p);
       }
     } else if (p.useT >= 0) {
       if (!p.useDone) this.tryGrab(p);
@@ -512,6 +610,13 @@ export class World {
       const lim = sl.width / 2 - 0.1;
       if (p.x < sl.x - lim) { p.x = sl.x - lim; p.vx = Math.max(0, p.vx); }
       if (p.x > sl.x + lim) { p.x = sl.x + lim; p.vx = Math.min(0, p.vx); }
+    }
+    // snowman turrets
+    for (const t of this.turrets) {
+      if (!t.alive || p.y > t.y + CFG.turretHeight || head < t.y) continue;
+      const dx = p.x - t.x, dz = p.z - t.z;
+      const d = Math.hypot(dx, dz), min = CFG.turretRadius * 0.85 + r;
+      if (d < min && d > 1e-4) { p.x = t.x + dx / d * min; p.z = t.z + dz / d * min; const vn = (p.vx * dx + p.vz * dz) / d; if (vn < 0) { p.vx -= vn * dx / d; p.vz -= vn * dz / d; } }
     }
     // big balls (pushing them happens in stepBigBalls)
     for (const b of this.bigBalls) {
@@ -772,9 +877,10 @@ export class World {
     const h = this.handPos(p);
     const v = solveThrow(h, p.input.aim, speed, CFG.snowballGravity) ?? lookVelocity(p.lookYaw, p.lookPitch + 0.07, speed);
     this.snowballs.push({ id: this.nextId++, owner: p.id, team: p.team, x: h.x, y: h.y, z: h.z, px: h.x, py: h.y, pz: h.z,
-      vx: v.x + p.vx * 0.3, vy: v.y, vz: v.z + p.vz * 0.3, age: 0, alive: true });
-    p.carried--;
-    p.throwCd = CFG.throwCooldown;
+      vx: v.x + p.vx * 0.3, vy: v.y, vz: v.z + p.vz * 0.3, age: 0, alive: true, kind: 0 });
+    // Snowball Frenzy: the snowballs don't run out and the arm doesn't rest
+    if (p.frenzyT <= 0) p.carried--;
+    p.throwCd = p.frenzyT > 0 ? CFG.frenzyCooldown : CFG.throwCooldown;
     p.throwAnim = 0.25;
     this.emit({ type: 'throw', pid: p.id, x: h.x, y: h.y, z: h.z, power: p.charge });
   }
@@ -801,6 +907,15 @@ export class World {
             d = Math.hypot(b.x - p.x, b.y - cy, b.z - p.z);
           }
           if (d < hitR) { this.hitPenguin(p, b); b.alive = false; break; }
+        }
+        if (!b.alive) break;
+        // enemy turrets take the hit (your own team's snowballs fly straight past theirs)
+        for (const t of this.turrets) {
+          if (!t.alive || t.team === b.team) continue;
+          if (b.y > t.y - 0.1 && b.y < t.y + CFG.turretHeight && Math.hypot(b.x - t.x, b.z - t.z) < CFG.turretRadius + CFG.snowballRadius) {
+            this.hitTurret(t, b.owner, b.x, b.y, b.z);
+            b.alive = false; break;
+          }
         }
         if (!b.alive) break;
         // big balls soak it up
@@ -852,12 +967,15 @@ export class World {
     const sp = Math.hypot(b.vx, b.vz) || 1;
     p.vx += b.vx / sp * 1.6; p.vz += b.vz / sp * 1.6;
     this.emit({ type: 'hit', pid: p.id, by: b.owner, x: b.x, y: b.y, z: b.z, health: p.health });
-    if (p.health <= 0) this.splat(p, b.owner, 'snowball');
+    if (p.health <= 0) this.splat(p, b.owner, b.kind === 1 ? 'turret' : b.kind === 2 ? 'avalanche' : 'snowball');
   }
 
-  splat(p: Penguin, by: number, cause: 'snowball' | 'bigball') {
+  splat(p: Penguin, by: number, cause: SplatCause) {
     if (!p.alive) return;
     p.alive = false;
+    p.downX = p.x; p.downZ = p.z;
+    p.frenzyT = 0;
+    this.dropTurretSnow(p);
     p.downT = CFG.respawnTime;
     p.downs++;
     p.sliding = false; p.charging = false; p.charge = 0;
@@ -865,8 +983,14 @@ export class World {
     const killer = this.penguin(by);
     if (killer && killer.team !== p.team) {
       killer.splats++;
-      if (this.phase === 'fight') this.scores[killer.team]++;
+      // Team Deathmatch scores splats and counts streaks; Conquest scores flags instead
+      if (this.phase === 'fight' && this.mode === 'tdm') {
+        this.scores[killer.team]++;
+        // only splats you land yourself build a streak: turrets and Avalanches don't feed it
+        if (cause === 'snowball' || cause === 'bigball') this.addStreak(killer);
+      }
     }
+    p.streak = 0;
     this.emit({ type: 'splat', pid: p.id, by, x: p.x, y: p.y, z: p.z, cause });
     p.carried = 0;
     if (this.board.holder === p.id) {
@@ -1028,6 +1152,20 @@ export class World {
           const vn = (b.vx * dx + b.vz * dz) / d; if (vn < 0) { b.vx -= 1.6 * vn * dx / d; b.vz -= 1.6 * vn * dz / d; }
         }
       }
+      // snowman turrets: a rolling ball flattens them (not your own team's), a slow one just bumps
+      for (const t of this.turrets) {
+        if (!t.alive) continue;
+        const dx = b.x - t.x, dz = b.z - t.z, d = Math.hypot(dx, dz), min = b.r + CFG.turretRadius;
+        if (d >= min || d < 1e-4 || b.y - b.r > t.y + CFG.turretHeight) continue;
+        const pusher = this.penguin(b.lastPusher);
+        if (Math.hypot(b.vx, b.vz) > 2.5 && !(pusher && pusher.team === t.team)) {
+          this.destroyTurret(t, pusher ? pusher.id : -1);
+          b.vx *= 0.75; b.vz *= 0.75;
+        } else {
+          b.x = t.x + dx / d * min; b.z = t.z + dz / d * min;
+          const vn = (b.vx * dx + b.vz * dz) / d; if (vn < 0) { b.vx -= 1.5 * vn * dx / d; b.vz -= 1.5 * vn * dz / d; }
+        }
+      }
       // arena edge
       const bd = this.map.bounds;
       if (b.x < bd.minX + b.r || b.x > bd.maxX - b.r || b.z < bd.minZ + b.r || b.z > bd.maxZ - b.r) {
@@ -1083,11 +1221,274 @@ export class World {
     return tmpN;
   }
 
+  // ───────────────────────── snowman turrets ─────────────────────────
+  /** Where a turret would stand if you aimed here: on the snow, clear of trees, props and other solid things. */
+  private turretSpot(x: number, y: number, z: number): V3 | null {
+    const g = this.field.surfaceBelow(x, y + 0.6, z, 0.3, 2.5);
+    if (g === null) return null;
+    const bd = this.map.bounds;
+    if (x < bd.minX + 1 || x > bd.maxX - 1 || z < bd.minZ + 1 || z > bd.maxZ - 1) return null;
+    const pg = this.map.playground;
+    if (pointInBoxes(pg.boxes, x, g + 0.6, z, 0.45)) return null;
+    for (const c of pg.cyls) if (g < c.y1 && Math.hypot(x - c.x, z - c.z) < c.r + 0.5) return null;
+    for (const t of this.map.trees) if (Math.hypot(x - t.x, z - t.z) < t.r + 0.6) return null;
+    for (const b of this.map.bases) {
+      if (Math.hypot(x - b.igloo.x, z - b.igloo.z) < 3.1) return null;
+      if (Math.hypot(x - b.stockpile.x, z - b.stockpile.z) < 1.6) return null;
+    }
+    return { x, y: g, z };
+  }
+
+  /**
+   * Hold T: scoop the snow around you into a snowman at the aim point. It takes a lot (CFG.turretCost), so you leave a
+   * proper crater. Let go early and what you've gathered stays there as a mound.
+   */
+  private doTurret(p: Penguin, dt: number, fx: number, fz: number) {
+    p.turretBlock = 0;
+    const f = this.field;
+    if (!p.turretAt) {
+      // aiming at snow within reach puts it there; aiming anywhere else puts it a couple of steps in front of you
+      const a = this.aimInReach(p, 0.8) ?? { x: p.x + fx * 2.3, y: p.y + 0.6, z: p.z + fz * 2.3 };
+      const spot = this.turretSpot(a.x, a.y, a.z);
+      if (!spot) { p.turretBlock = 2; return; }
+      if (this.turrets.some(t => t.alive && Math.hypot(t.x - spot.x, t.z - spot.z) < 2.4)) { p.turretBlock = 3; return; }
+      if (this.turrets.filter(t => t.alive && t.team === p.team && t.owner !== p.id).length >= CFG.maxTeamTurrets) { p.turretBlock = 4; return; }
+      p.turretAt = spot; p.turretSnow = 0;
+    }
+    const at = p.turretAt;
+    if (Math.hypot(at.x - p.x, at.z - p.z) > CFG.reach + 2.5) { this.dropTurretSnow(p); return; } // walked off and left it
+    p.aimOk = true;
+    const want = CFG.turretRate * dt * this.rateMult(p);
+    let got = 0, sx = p.x, sy = p.y, sz = p.z;
+    for (let tries = 0; tries < 7 && got < want * 0.7; tries++) {
+      const ang = Math.random() * Math.PI * 2;
+      const rad = 0.9 + Math.random() * 2.1;
+      const qx = p.x + Math.cos(ang) * rad, qz = p.z + Math.sin(ang) * rad;
+      if (Math.hypot(qx - at.x, qz - at.z) < 1.5) continue; // not from under the snowman
+      const qy = f.surfaceBelow(qx, p.y + 0.5, qz, 0.4, 1.4);
+      if (qy === null) continue;
+      const g = f.removeMass(qx, qy - 0.1, qz, 0.7, want - got, 0.45, 1.0);
+      if (g > 0) { got += g; sx = qx; sy = qy; sz = qz; }
+    }
+    if (got <= 0) { p.noSnowT = 0.5; return; }
+    p.turretSnow += got;
+    const done = Math.min(1, p.turretSnow / CFG.turretCost);
+    this.emit({ type: 'build', pid: p.id, x: sx, y: sy, z: sz, tx: at.x, ty: at.y + 0.3 + done * 1.3, tz: at.z, mass: got });
+    if (p.turretSnow >= CFG.turretCost) {
+      p.turretSnow = 0; p.turretAt = null;
+      this.spawnTurret(p, at, false);
+    }
+  }
+
+  /** Stopped building a turret part-way: the snow gathered so far stays where the snowman was going, as a mound. */
+  private dropTurretSnow(p: Penguin) {
+    const at = p.turretAt;
+    if (at && p.turretSnow > 0) this.field.pourColumns(at.x, at.z, 1.0, p.turretSnow * 0.9, at.y, at.y + 1.5);
+    p.turretSnow = 0; p.turretAt = null;
+  }
+
+  /** Each penguin keeps one turret: a new one melts their old one. */
+  private spawnTurret(p: Penguin, at: V3, free: boolean) {
+    const old = this.turrets.find(t => t.alive && t.owner === p.id);
+    if (old) this.destroyTurret(old, -1);
+    const t: Turret = {
+      id: this.nextId++, owner: p.id, team: p.team, x: at.x, y: at.y, z: at.z, yaw: p.lookYaw,
+      health: CFG.turretHealth, ammo: CFG.turretAmmo, cd: 1.2, target: -1, scanT: 0, fireT: 0, age: 0, alive: true,
+    };
+    this.turrets.push(t);
+    this.emit({ type: 'turretBuilt', pid: p.id, tid: t.id, x: t.x, y: t.y, z: t.z, free });
+    return t;
+  }
+
+  private hitTurret(t: Turret, by: number, x: number, y: number, z: number) {
+    t.health--;
+    this.emit({ type: 'turretHit', tid: t.id, by, x, y, z, health: t.health });
+    if (t.health <= 0) this.destroyTurret(t, by);
+  }
+
+  private destroyTurret(t: Turret, by: number) {
+    if (!t.alive) return;
+    t.alive = false;
+    this.field.pourColumns(t.x, t.z, 1.1, CFG.turretCost * 0.4, t.y, t.y + 1.4);
+    this.emit({ type: 'turretDown', tid: t.id, team: t.team, owner: t.owner, by, x: t.x, y: t.y, z: t.z });
+  }
+
+  /** The nearest of your team's turrets you could hand snowballs to (it has room and you're beside it). */
+  nearTurret(p: Penguin): Turret | null {
+    let best: Turret | null = null, bd = CFG.turretRadius + 1.7;
+    for (const t of this.turrets) {
+      if (!t.alive || t.team !== p.team || t.ammo > CFG.turretAmmoMax - CFG.turretAmmoPerBall) continue;
+      const d = Math.hypot(t.x - p.x, t.z - p.z);
+      if (d < bd && Math.abs(t.y - p.y) < 2) { bd = d; best = t; }
+    }
+    return best;
+  }
+
+  private loadTurret(p: Penguin) {
+    const t = this.nearTurret(p);
+    if (!t) return;
+    const n = Math.min(p.carried, Math.floor((CFG.turretAmmoMax - t.ammo) / CFG.turretAmmoPerBall));
+    if (n <= 0) return;
+    t.ammo += n * CFG.turretAmmoPerBall;
+    p.carried -= n;
+    this.emit({ type: 'turretLoad', pid: p.id, tid: t.id, n });
+  }
+
+  private turretTarget(t: Turret) {
+    let best = -1, bd = CFG.turretRange;
+    const ox = t.x, oy = t.y + 1.3, oz = t.z;
+    for (const e of this.penguins) {
+      if (e.team === t.team || !e.alive || e.invuln > 0) continue;
+      const dx = e.x - ox, dy = e.y + 0.7 - oy, dz = e.z - oz;
+      const d = Math.hypot(dx, dy, dz);
+      if (d >= bd || d < 0.5) continue;
+      const hit = this.field.raycast(ox, oy, oz, dx / d, dy / d, dz / d, d, 0.35);
+      if (hit && hit.t < d - 0.6) continue; // snow in the way
+      bd = d; best = e.id;
+    }
+    return best;
+  }
+
+  private stepTurrets(dt: number) {
+    const f = this.field;
+    for (const t of this.turrets) {
+      if (!t.alive) continue;
+      t.age += dt;
+      t.cd = Math.max(0, t.cd - dt);
+      t.fireT = Math.max(0, t.fireT - dt);
+      // it sits on the snow: dig under it and it drops, bury it and it rides up
+      const g = f.surfaceBelow(t.x, t.y + 0.8, t.z, 0.8, 6);
+      if (g !== null) t.y = g > t.y ? Math.min(g, t.y + 3 * dt) : Math.max(g, t.y - 9 * dt);
+      if (this.phase !== 'fight') continue;
+      t.scanT -= dt;
+      if (t.scanT <= 0) { t.scanT = 0.25; t.target = this.turretTarget(t); }
+      const e = t.target >= 0 ? this.penguin(t.target) : undefined;
+      if (!e || !e.alive) { t.target = -1; continue; }
+      const my = t.y + 1.3;
+      const d = Math.hypot(e.x - t.x, e.z - t.z);
+      const flight = d / CFG.turretThrowSpeed;
+      const ax = e.x + e.vx * flight * 0.6, az = e.z + e.vz * flight * 0.6, ay = e.y + (e.sliding ? 0.3 : 0.7);
+      let turn = Math.atan2(-(ax - t.x), -(az - t.z)) - t.yaw;
+      while (turn > Math.PI) turn -= Math.PI * 2;
+      while (turn < -Math.PI) turn += Math.PI * 2;
+      const max = CFG.turretTurn * dt;
+      t.yaw += Math.max(-max, Math.min(max, turn));
+      if (t.ammo > 0 && t.cd <= 0 && Math.abs(turn) < 0.15) {
+        const err = d * CFG.turretSpread;
+        const aim = { x: ax + (this.rand() * 2 - 1) * err, y: ay + (this.rand() * 2 - 1) * err * 0.4, z: az + (this.rand() * 2 - 1) * err };
+        const from = { x: t.x - Math.sin(t.yaw) * 0.75, y: my, z: t.z - Math.cos(t.yaw) * 0.75 };
+        const v = solveThrow(from, aim, CFG.turretThrowSpeed, CFG.snowballGravity);
+        if (v) {
+          this.snowballs.push({ id: this.nextId++, owner: t.owner, team: t.team, x: from.x, y: from.y, z: from.z, px: from.x, py: from.y, pz: from.z,
+            vx: v.x, vy: v.y, vz: v.z, age: 0, alive: true, kind: 1 });
+          t.ammo--; t.cd = CFG.turretFireEvery; t.fireT = 0.3;
+          this.emit({ type: 'turretFire', tid: t.id, x: from.x, y: from.y, z: from.z });
+        }
+      }
+    }
+    if (this.turrets.some(t => !t.alive)) this.turrets = this.turrets.filter(t => t.alive);
+  }
+
+  // ───────────────────────── splat-streak rewards (Team Deathmatch) ─────────────────────────
+  private addStreak(k: Penguin) {
+    k.streak++;
+    const cycle = CFG.streakAt[CFG.streakAt.length - 1];
+    const reward = CFG.streakAt.indexOf(((k.streak - 1) % cycle) + 1);
+    if (reward >= 0) k.rewards[reward]++;
+    this.emit({ type: 'streak', pid: k.id, streak: k.streak, reward });
+  }
+
+  /** 0 = Snowball Frenzy, 1 = Insta-Turret (at the aim point if it's close, else right in front), 2 = Avalanche at the aim point. */
+  private useReward(p: Penguin, r: number) {
+    if (this.mode !== 'tdm' || this.phase !== 'fight' || r < 0 || r > 2 || !(p.rewards[r] > 0)) return;
+    const a = p.input.aim;
+    const fx = -Math.sin(p.lookYaw), fz = -Math.cos(p.lookYaw);
+    let x = p.x, y = p.y, z = p.z;
+    if (r === 0) {
+      p.frenzyT = CFG.frenzyTime; p.carried = CFG.maxCarry; p.throwCd = 0;
+    } else if (r === 1) {
+      x = p.x + fx * 1.8; z = p.z + fz * 1.8;
+      if (a) { const d = Math.hypot(a.x - p.x, a.z - p.z); if (d > 1 && d < CFG.reach + 2) { x = a.x; y = a.y; z = a.z; } }
+      const spot = this.turretSpot(x, y, z);
+      if (!spot || this.turrets.some(t => t.alive && Math.hypot(t.x - spot.x, t.z - spot.z) < 2.4)) { this.emit({ type: 'rewardFail', pid: p.id }); return; }
+      this.dropTurretSnow(p);
+      this.spawnTurret(p, spot, true);
+      x = spot.x; y = spot.y; z = spot.z;
+    } else {
+      x = p.x + fx * 16; z = p.z + fz * 16;
+      if (a) {
+        const d = Math.hypot(a.x - p.x, a.z - p.z) || 1, k = Math.min(1, CFG.avalancheRange / d);
+        x = p.x + (a.x - p.x) * k; z = p.z + (a.z - p.z) * k;
+      }
+      y = this.field.surfaceBelow(x, 26, z, 0, 30) ?? p.y;
+      this.barrages.push({ owner: p.id, team: p.team, x, y, z, wait: CFG.avalancheDelay, left: CFG.avalancheBalls, acc: 0 });
+    }
+    p.rewards[r]--;
+    this.emit({ type: 'reward', pid: p.id, reward: r, x, y, z });
+  }
+
+  private stepBarrages(dt: number) {
+    if (!this.barrages.length) return;
+    for (const b of this.barrages) {
+      if (b.wait > 0) { b.wait -= dt; continue; }
+      b.acc += dt * CFG.avalancheBalls / CFG.avalancheTime;
+      while (b.acc >= 1 && b.left > 0) {
+        b.acc--; b.left--;
+        const a = this.rand() * Math.PI * 2, r = Math.sqrt(this.rand()) * CFG.avalancheRadius;
+        const x = b.x + Math.cos(a) * r, z = b.z + Math.sin(a) * r, y = b.y + 24;
+        this.snowballs.push({ id: this.nextId++, owner: b.owner, team: b.team, x, y, z, px: x, py: y, pz: z,
+          vx: (this.rand() - 0.5) * 2.4, vy: -15, vz: (this.rand() - 0.5) * 2.4, age: 0, alive: true, kind: 2 });
+      }
+    }
+    this.barrages = this.barrages.filter(b => b.left > 0);
+  }
+
+  // ───────────────────────── Conquest flags ─────────────────────────
+  /** Stand on a flag with more penguins than the other team to pull it your way; every flag you hold scores over time. */
+  private stepPoints(dt: number) {
+    if (!this.points.length) return;
+    for (const pt of this.points) { pt.n0 = 0; pt.n1 = 0; }
+    for (const p of this.penguins) {
+      if (!p.alive) continue;
+      for (const pt of this.points) {
+        if (Math.hypot(p.x - pt.x, p.z - pt.z) < pt.r && Math.abs(p.y - pt.y) < 8) { if (p.team === 0) pt.n0++; else pt.n1++; }
+      }
+    }
+    if (this.phase !== 'fight') return;
+    for (const pt of this.points) {
+      const diff = pt.n1 - pt.n0;
+      if (diff !== 0) {
+        pt.cap += Math.sign(diff) * Math.pow(Math.min(CFG.captureCrowd, Math.abs(diff)), 0.75) / CFG.captureTime * dt;
+      } else if (pt.n0 === 0) {
+        // nobody home: it settles back to whoever holds it
+        const rest = pt.owner < 0 ? 0 : pt.owner === 0 ? -1 : 1;
+        const step = dt / (CFG.captureTime * 2.5);
+        pt.cap += Math.max(-step, Math.min(step, rest - pt.cap));
+      }
+      pt.cap = Math.max(-1, Math.min(1, pt.cap));
+      const side = pt.cap <= -1 ? 0 : pt.cap >= 1 ? 1 : -1;
+      if (side >= 0 && pt.owner !== side) {
+        const from = pt.owner;
+        pt.owner = side;
+        this.emit({ type: 'capture', point: pt.id, team: side, from });
+      } else if ((pt.owner === 0 && pt.cap >= 0) || (pt.owner === 1 && pt.cap <= 0)) {
+        this.emit({ type: 'neutral', point: pt.id, team: pt.owner });
+        pt.owner = -1;
+      }
+    }
+    for (let t = 0; t < 2; t++) {
+      let held = 0;
+      for (const pt of this.points) if (pt.owner === t) held++;
+      this.capAcc[t] += held * CFG.conquestRate * dt;
+      while (this.capAcc[t] >= 1) { this.capAcc[t]--; this.scores[t]++; }
+    }
+  }
+
   // ───────────────────────── the surfboard ─────────────────────────
   private stepBoard(dt: number) {
     const bd = this.board;
     if (!bd.active) {
-      if (this.phase === 'fight' && CFG.fightPhase - this.phaseT > CFG.boardSpawnDelay) {
+      if (this.phase === 'fight' && this.fightLen - this.phaseT > CFG.boardSpawnDelay) {
         const spot = this.map.boardSpots[Math.floor(this.rand() * this.map.boardSpots.length)];
         bd.active = true; bd.holder = -1; bd.x = spot.x; bd.z = spot.z;
         bd.y = (this.field.surfaceBelow(spot.x, 25, spot.z, 0, 30) ?? 5) + 2; bd.vy = 0;
