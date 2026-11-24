@@ -2,6 +2,7 @@ import './style.css';
 import { Game } from './game/Game';
 import { HATS, World } from './sim/World';
 import { TEAM_NAMES } from './render/Environment';
+import { NetClient, serverStatus, serverUrl } from './net/NetClient';
 
 const HAT_LABELS: Record<string, [string, string]> = {
   none: ['—', 'None'], beanie: ['🧶', 'Beanie'], tophat: ['🎩', 'Top hat'], propeller: ['🌀', 'Propeller'], viking: ['🪓', 'Viking'],
@@ -33,7 +34,12 @@ const menu = el(`<div class="menu">
     <button class="mode" data-size="5"><b>5 v 5</b><span>Bots fill the empty slots</span></button>
     <button class="mode" data-size="10"><b>10 v 10</b><span>Total snow chaos</span></button>
   </div></div>
-  <button class="btn" id="play">Play</button>
+  <div class="playrow">
+    <button class="btn" id="playOnline">Play online</button>
+    <button class="btn" id="play">Play</button>
+    <button class="btn blue small" id="practice">Practice with bots</button>
+  </div>
+  <div class="online" id="online"></div>
   <div class="howto">
     <div><b>One minute build phase:</b> hold R and sweep the crosshair to draw snow walls, hold still to stack them higher. Dig trenches and tunnels, pack snowballs and stash them in your stockpile.</div>
     <div><b>Then fight:</b> 3 hits and you're splatted back to base. First team to 25 splats wins.</div>
@@ -46,6 +52,10 @@ const menu = el(`<div class="menu">
   <div class="foot">Best on a computer with a mouse. Map: Frostbite Bay.</div>
 </div>`);
 document.body.appendChild(menu);
+const playOnlineBtn = menu.querySelector('#playOnline') as HTMLButtonElement;
+const playBtn = menu.querySelector('#play') as HTMLButtonElement;
+const practiceBtn = menu.querySelector('#practice') as HTMLButtonElement;
+const onlineEl = menu.querySelector('#online') as HTMLElement;
 const nameInput = menu.querySelector('#name') as HTMLInputElement;
 nameInput.value = name;
 nameInput.addEventListener('input', () => { name = nameInput.value.trim() || 'Penguin'; store.set('name', name); });
@@ -71,9 +81,54 @@ function start() {
   menu.classList.add('hidden');
   pause.classList.add('hidden');
   end.classList.add('hidden');
+  online = false;
   game.startMatch({ teamSize, playerName: name || 'Penguin', playerHat: hat });
 }
-menu.querySelector('#play')!.addEventListener('click', start);
+playBtn.addEventListener('click', start);
+practiceBtn.addEventListener('click', start);
+
+// ───────── online ─────────
+// Shown when a game server answers: the page is being served by it, or the build/URL points at one (VITE_SERVER, ?server=).
+let online = false; // the current or last match was online
+let serverUp = false;
+let joining = false;
+async function checkServer() {
+  if (!menu.classList.contains('hidden') || !serverUp) {
+    const st = await serverStatus();
+    serverUp = !!st;
+    playOnlineBtn.classList.toggle('hidden', !serverUp);
+    practiceBtn.classList.toggle('hidden', !serverUp);
+    playBtn.classList.toggle('hidden', serverUp);
+    if (!joining) onlineEl.textContent = st ? `${st.players} ${st.players === 1 ? 'penguin' : 'penguins'} online now · bots fill the empty slots` : '';
+  }
+}
+checkServer();
+setInterval(checkServer, 10000);
+
+function playOnline() {
+  if (joining) return;
+  joining = true;
+  online = true;
+  game.audio.unlock(); game.audio.click();
+  onlineEl.textContent = 'Joining a match…';
+  playOnlineBtn.disabled = true;
+  let started = false;
+  const net = new NetClient(serverUrl(), { name: name || 'Penguin', hat, size: teamSize }, {
+    onMatch: (info, density, hard) => {
+      started = true; joining = false; playOnlineBtn.disabled = false;
+      menu.classList.add('hidden');
+      game.beginOnlineMatch(net, info, density, hard);
+    },
+    onRoster: () => game.refreshModels(),
+    onClose: reason => {
+      joining = false; playOnlineBtn.disabled = false;
+      if (game.net !== net && started) return; // we already left
+      if (started) { toMenu(); }
+      onlineEl.textContent = reason;
+    },
+  });
+}
+playOnlineBtn.addEventListener('click', playOnline);
 
 // pause overlay (pointer lock lost)
 const pause = el(`<div class="overlay dim hidden"><div class="panel">
@@ -101,20 +156,33 @@ const end = el(`<div class="overlay dim hidden"><div class="panel">
   <div class="result-big" id="endScore">25 – 18</div>
   <p id="endSub"></p>
   <div class="mvp" id="endMvp"></div>
+  <p class="next hidden" id="endNext">Next match starts in a few seconds…</p>
   <div class="row"><button class="btn" id="again">Play again</button><button class="btn blue" id="menuBtn">Menu</button></div>
 </div></div>`);
 document.body.appendChild(end);
-end.querySelector('#again')!.addEventListener('click', start);
+const againBtn = end.querySelector('#again') as HTMLButtonElement;
+againBtn.addEventListener('click', () => {
+  if (online && game.net) { end.classList.add('hidden'); game.resume(); return; } // stay for the next match
+  if (online && serverUp) { end.classList.add('hidden'); toMenu(); playOnline(); return; }
+  start();
+});
 end.querySelector('#menuBtn')!.addEventListener('click', () => { end.classList.add('hidden'); toMenu(); });
 
 function toMenu() {
+  pause.classList.add('hidden');
+  end.classList.add('hidden');
   game.enterMenu();
   game.setMenuHat(hat);
   menu.classList.remove('hidden');
+  checkServer();
 }
 
 game.hooks = {
-  onPauseChange: p => { pause.classList.toggle('hidden', !p); },
+  onPauseChange: p => {
+    pause.classList.toggle('hidden', !p);
+    (pause.querySelector('p') as HTMLElement).textContent = game.net ? 'The match keeps going while you\'re here. Click Resume to jump back in.' : 'Click Resume to jump back in.';
+  },
+  onMatchStart: () => { end.classList.add('hidden'); },
   onGameOver: (w: World) => {
     setTimeout(() => {
       const me = w.player;
@@ -124,6 +192,11 @@ game.hooks = {
       (end.querySelector('#endSub') as HTMLElement).textContent = w.winner < 0 ? 'Nobody wins the bay today.' : `${TEAM_NAMES[w.winner]} wins Frostbite Bay!`;
       const mvp = [...w.penguins].sort((a, b) => b.splats - a.splats || a.downs - b.downs)[0];
       (end.querySelector('#endMvp') as HTMLElement).textContent = `MVP: ${mvp.name} with ${mvp.splats} splats · You: ${me.splats} splats, ${me.downs} downs`;
+      const live = !!game.net;
+      (end.querySelector('#endNext') as HTMLElement).classList.toggle('hidden', !live);
+      againBtn.textContent = live ? 'Stay for the next match' : 'Play again';
+      (end.querySelector('#menuBtn') as HTMLElement).textContent = live ? 'Leave' : 'Menu';
+      if (w !== game.world) return; // a new match already started
       end.classList.remove('hidden');
     }, 1800);
   },

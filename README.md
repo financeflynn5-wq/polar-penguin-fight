@@ -2,7 +2,7 @@
 
 A penguin snowball-fight arena that runs in the browser. Built live on stream by Future Flynn, all week, for game night on Saturday.
 
-Push and pile real 3D snow, pat it into forts, dig tunnels, pack snowballs (carry 5, stash the rest in your team's stockpile), belly slide down hills, shove big snowballs downhill to flatten forts, and grab shiny snowflakes in no-man's-land to upgrade your mittens. 30 second build phase, then team splat-match: 3 hits sends you back to base, first team to 25 splats wins. 5v5 or 10v10, bots fill the empty slots.
+Push and pile real 3D snow, pat it into forts, dig tunnels, pack snowballs (carry 5, stash the rest in your team's stockpile), belly slide down hills, shove big snowballs downhill to flatten forts, and grab shiny snowflakes in no-man's-land to upgrade your mittens. One minute build phase, then team splat-match: 3 hits sends you back to base, first team to 25 splats wins. 5v5 or 10v10, bots fill the empty slots.
 
 ## Play locally
 
@@ -39,10 +39,49 @@ The static site lands in `dist/` and works from any sub-path (GitHub Pages, an i
 
 Every push to `main` builds the game and publishes `dist/` to the `gh-pages` branch, which GitHub Pages serves at https://financeflynn5-wq.github.io/polar-penguin-fight/
 
+## Online play
+
+`npm run build` also bundles the game server into `server-dist/main.mjs`. One Node process serves the game page and runs the online matches on `/ws`, the same way Flynn's other server games work.
+
+```
+npm run build
+npm start                 # http://localhost:8080, open it in a few tabs to play each other
+```
+
+- **Matches:** pick 5v5 or 10v10 on the menu and press **Play online**. You take a bot's place on the team with fewer people; when you leave, a bot takes your penguin back. When every slot in a match is a person, the next person starts a new match of that size. After the results screen the next match starts by itself and everyone stays in.
+- **Practice with bots** is the offline game, and it's all the GitHub Pages copy offers until it knows where the server is.
+- **Settings** (environment): `PORT` (8080), `MAX_PLAYERS` across all matches (40), `MAX_CONN_PER_IP` (6). Each player downloads about 30 KB/s.
+- `GET /status` is the menu's head count, `GET /healthz` is for hosts and the Flynn Arcade hub (`server/arcade.js` and `server/names.js` are the same files Time of War, Flynn Fall and Scrapforge use: kick/ban hooks and the stream-safe name filter).
+
+### Putting it on a server
+
+With Docker (Flynn's Hetzner box, or anything that runs containers):
+
+```
+docker build -t polar-penguin-fight .
+docker run -d --restart unless-stopped -p 8080:8080 --name penguin polar-penguin-fight
+```
+
+Then point a subdomain at port 8080 with whatever already fronts the other games (for example `penguin.5-222-13-73.sslip.io`). The reverse proxy must pass WebSocket upgrades on `/ws` (Caddy does by default).
+
+Without Docker: `npm ci && npm run build && PORT=8080 node server-dist/main.mjs` on Node 22.
+
+To make the GitHub Pages copy offer online play too, set the repository variable `GAME_SERVER_URL` (Settings → Secrets and variables → Actions → Variables) to the server's address, such as `https://penguin.5-222-13-73.sslip.io`, and push. Any copy of the game also takes `?server=https://…` in its address.
+
+For the Flynn Arcade hub, add `{ "id": "penguin", "name": "Polar Penguin Fight", "dir": "<this folder>", "subdomain": "penguin", "port": 5188, "build": false, "start": "server-dist/main.mjs" }` to `hub/config.json` and run `npm run build` here after pulling.
+
+### How online works
+
+- The server runs the real match with the same code as the offline game (`src/sim`), 60 steps a second, and sends a binary snapshot 30 times a second: every penguin, snowball, big ball, snowflake and the surfboard, the snow voxels that changed, and the events (hits, splats, throws). See `src/net/Protocol.ts`.
+- Your own penguin moves the moment you press a key: the browser runs the same movement code ahead of the server and quietly corrects itself when the server disagrees (`src/net/NetClient.ts`). Everyone else is shown 0.1 s in the past, blended between snapshots.
+- The server does all the digging, building, packing, throwing, hits and pickups.
+- Tests: `npm run test:net` plays a match with three fake players in-process and checks that each one's copy of the snow matches the server's exactly. `npm run test:online` starts the real server and connects two headless players over a laggy connection (`LAG=120 JITTER=60 npm run test:online` for a bad one) and reports how far prediction drifts.
+
 ## How it's put together
 
 - `src/world/SnowField.ts`: the snow is a 3D density grid (0.5 m voxels). Push, dig, build, pack and the big-ball smashing are all edits to this grid.
 - `src/render/SnowMesher.ts`: Surface Nets turns the grid into smooth snow meshes, re-meshed in 16³ chunks as the snow changes.
-- `src/sim/`: the game rules, penguins, snowballs, big balls, snowflakes and bots. No Three.js here, so the same code can run on the multiplayer server.
+- `src/sim/`: the game rules, penguins, snowballs, big balls, snowflakes and bots. No Three.js here, so the same code runs on the multiplayer server.
+- `src/net/`, `server/`: online play (see above).
 - `src/render/`, `src/ui/`, `src/game/`: visuals, particles, HUD, menus, procedural sound.
 - `src/sim/config.ts`: every gameplay number in one place for tuning.

@@ -15,12 +15,17 @@ import { Input } from './Input';
 import { Audio } from './Audio';
 import { Hud } from '../ui/Hud';
 import { PostFX } from '../render/PostFX';
+import { NetClient } from '../net/NetClient';
+import type { MatchInfo } from '../net/Protocol';
+import { TEAM_NAMES } from '../render/Environment';
 
 const STEP = 1 / 60;
 
 export interface GameHooks {
   onGameOver: (w: World) => void;
   onPauseChange: (paused: boolean) => void;
+  /** online: a new match started (the server moves everyone on after the results screen) */
+  onMatchStart?: () => void;
 }
 
 export class Game {
@@ -39,6 +44,9 @@ export class Game {
   private decals!: Decals;
   private trails = new Map<number, { dist: number; side: number; x: number; z: number }>();
   private models = new Map<number, PenguinModel>();
+  private modelKeys = new Map<number, string>();
+  /** online play: the connection to the game server (null offline) */
+  net: NetClient | null = null;
   private bots = new Map<number, BotBrain>();
   private hud: Hud | null = null;
   private acc = 0;
@@ -80,6 +88,9 @@ export class Game {
       if (this.mode !== 'play') return;
       this.setPaused(!locked && this.world?.phase !== 'end');
     };
+    this.input.onLockError = () => {
+      if (this.mode === 'play' && !this.input.locked && this.world?.phase !== 'end') this.setPaused(true);
+    };
     this.input.onKey = code => {
       if (code === 'Tab') this.hud?.setBoard(true);
     };
@@ -109,13 +120,19 @@ export class Game {
     this.camera.updateProjectionMatrix();
   }
 
-  private loadMap() {
+  private loadMap(snow?: { density: Uint8Array; hard: Uint8Array }) {
     // clear old
     while (this.scene.children.length) this.scene.remove(this.scene.children[0]);
     this.models.forEach(m => m.dispose(this.scene));
     this.models.clear();
+    this.modelKeys.clear();
     this.env?.dispose();
     this.map = buildMap();
+    if (snow && snow.density.length === this.map.field.density.length) {
+      // online: the server's snow, exactly as it is in the match right now
+      this.map.field.density.set(snow.density);
+      this.map.field.hard.set(snow.hard);
+    }
     this.env = new Environment(this.scene, this.map, this.renderer);
     this.snow = new SnowRenderer(this.map.field);
     this.snow.buildAll();
@@ -138,6 +155,7 @@ export class Game {
     this.input.enabled = false;
     this.input.unlock();
     this.hud?.destroy(); this.hud = null;
+    if (this.net) { this.net.close(); this.net = null; }
     if (this.world) { this.world = null; this.loadMap(); }
     const b = this.map.bases[0];
     const p = new Penguin(0, '', 0, 'beanie', false);
@@ -179,6 +197,53 @@ export class Game {
     this.audio.whistle();
     this.hud.banner('BUILD PHASE', `${CFG.buildPhase} seconds to build your fort and pack snowballs!`, 3.5);
     this.input.lock();
+  }
+
+  /** Online: the server started a match (or we just joined one). Build its world from the server's roster and snow. */
+  beginOnlineMatch(net: NetClient, info: MatchInfo, density: Uint8Array, hard: Uint8Array) {
+    const first = this.mode !== 'play' || this.net !== net;
+    this.net = net;
+    if (this.menuPenguin) { this.menuPenguin.dispose(this.scene); this.menuPenguin = null; }
+    this.hud?.destroy(); this.hud = null;
+    this.loadMap({ density, hard });
+    this.world = new World(this.map, { teamSize: info.size, playerName: '', playerHat: '', roster: info.roster, meId: info.you });
+    this.bots.clear();
+    this.trails.clear();
+    this.refreshModels();
+    net.attach(this.world);
+    const me = this.world.player;
+    this.hud = new Hud();
+    this.mode = 'play';
+    this.input.enabled = true;
+    this.input.yaw = this.map.bases[me.team].facing;
+    this.input.pitch = -0.12;
+    this.acc = 0;
+    this.countdownLast = -1;
+    this.audio.unlock();
+    this.audio.whistle();
+    this.world.phase = info.phase;
+    const team = TEAM_NAMES[me.team];
+    const sub = info.phase === 'build' ? 'Build your fort and pack snowballs: the fight starts soon!'
+      : info.phase === 'fight' ? 'The fight is on! Grab snowballs from your stockpile with E' : 'This match is wrapping up: the next one starts in a moment';
+    this.hud.banner(first ? `YOU'RE ON ${team.toUpperCase()}` : 'NEW MATCH', sub, 3.5);
+    this.hooks?.onMatchStart?.();
+    if (first) this.input.lock();
+    else if (!this.input.locked) this.setPaused(true);
+  }
+
+  /** Make sure every penguin has a model that matches its hat and name (online, people join and leave mid-match). */
+  refreshModels() {
+    const w = this.world;
+    if (!w) return;
+    for (const p of w.penguins) {
+      const key = `${p.team}|${p.hat}|${p.name}`;
+      if (this.modelKeys.get(p.id) === key) continue;
+      this.models.get(p.id)?.dispose(this.scene);
+      const m = new PenguinModel(p.team, p.hat, p.name, true);
+      this.scene.add(m.root);
+      this.models.set(p.id, m);
+      this.modelKeys.set(p.id, key);
+    }
   }
 
   setPaused(p: boolean) {
@@ -258,7 +323,14 @@ export class Game {
     pi.aim = (pi.dig || pi.build) ? this.aimSnow : this.throwAim(me);
 
     // fixed-step simulation
-    if (!this.paused) {
+    if (this.net) {
+      // online: the server runs the match; we step only our own penguin ahead of it and show everyone else
+      this.acc += dt;
+      let steps = 0;
+      while (this.acc >= STEP && steps < 5) { this.net.step(w, me); this.acc -= STEP; steps++; }
+      if (steps === 5) this.acc = 0;
+      this.net.present(w, me, dt);
+    } else if (!this.paused) {
       this.acc += dt;
       let steps = 0;
       while (this.acc >= STEP && steps < 5) {
@@ -272,7 +344,7 @@ export class Game {
       }
       if (steps === 5) this.acc = 0;
     }
-    const alpha = this.paused ? 1 : this.acc / STEP;
+    const alpha = this.paused && !this.net ? 1 : this.acc / STEP;
 
     this.handleEvents(w, me);
 
@@ -282,6 +354,7 @@ export class Game {
       if (!m) continue;
       m.camDist = this.camera.position.distanceTo(m.root.position);
       m.update(p, alpha, dt, this.time, p === me);
+      if (p === me && this.net) { const o = this.net.drawOffset; m.root.position.x += o.x; m.root.position.y += o.y; m.root.position.z += o.z; }
     }
     this.updateTrails(w);
     // a wisp of snow behind every flying snowball so you can follow it
@@ -364,7 +437,8 @@ export class Game {
   private updateCamera(dt: number, me: Penguin) {
     const inp = this.input;
     const alpha = this.acc / STEP;
-    const px = me.px + (me.x - me.px) * alpha, py = me.py + (me.y - me.py) * alpha, pz = me.pz + (me.z - me.pz) * alpha;
+    const o = this.net?.drawOffset;
+    const px = me.px + (me.x - me.px) * alpha + (o?.x ?? 0), py = me.py + (me.y - me.py) * alpha + (o?.y ?? 0), pz = me.pz + (me.z - me.pz) * alpha + (o?.z ?? 0);
     const yaw = inp.yaw, pitch = inp.pitch;
     const fx = -Math.sin(yaw) * Math.cos(pitch), fy = Math.sin(pitch), fz = -Math.cos(yaw) * Math.cos(pitch);
     const rx = Math.cos(yaw), rz = -Math.sin(yaw);

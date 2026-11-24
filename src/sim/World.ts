@@ -121,7 +121,18 @@ export interface Flake { id: number; spot: number; x: number; y: number; z: numb
 
 export interface Surfboard { x: number; y: number; z: number; vy: number; holder: number; active: boolean; yaw: number; }
 
-export interface MatchOptions { teamSize: number; playerName: string; playerHat: string; }
+/** Who is in the match, as the server tells an online client. */
+export interface RosterEntry { id: number; name: string; team: number; hat: string; bot: boolean; }
+
+export interface MatchOptions {
+  teamSize: number; playerName: string; playerHat: string;
+  /** server: every slot starts as a bot, and humans take bots' places as they join */
+  allBots?: boolean;
+  /** online client: build the penguins from the server's roster (the server runs the match, this world only mirrors it) */
+  roster?: RosterEntry[];
+  /** online client: which roster entry is you */
+  meId?: number;
+}
 
 const BOT_NAMES = ['Waddles', 'Sir Flaps', 'Pebble', 'Captain Ice', 'Nugget', 'Biscuit', 'Frosty', 'Wobbles', 'Sleet', 'Mittens',
   'Slushie', 'Tux', 'Puddles', 'Blizzard Bob', 'Chilly Willy Jr', 'Flipper', 'Snowcone', 'Sprinkles', 'Popsicle', 'Gizmo',
@@ -149,13 +160,27 @@ export class World {
   private nextId = 1;
   private bigBallTimer = 0;
   private rand = mulberry32(Date.now() & 0xffff);
+  private botNames: string[] = [];
   readonly playerId: number;
+  /** online client: only step your own penguin's movement; the server does the snow, throws, pickups and respawns */
+  private predicting = false;
 
   constructor(readonly map: MapDef, readonly opts: MatchOptions) {
     this.field = map.field;
+    if (opts.roster) {
+      // an online client's mirror of the server's match: you first, then everyone else
+      const me = opts.roster.find(r => r.id === opts.meId) ?? opts.roster[0];
+      for (const r of [me, ...opts.roster.filter(r => r !== me)]) this.penguins.push(new Penguin(r.id, r.name, r.team, r.hat, r.bot));
+      this.playerId = me.id;
+      this.nextId = Math.max(0, ...opts.roster.map(r => r.id)) + 1;
+      return;
+    }
     // teams: player on team 0, bots fill the rest
     const names = [...BOT_NAMES].sort(() => this.rand() - 0.5);
-    const player = new Penguin(this.nextId++, opts.playerName || 'You', 0, opts.playerHat, false);
+    this.botNames = names;
+    const player = opts.allBots
+      ? new Penguin(this.nextId++, names[names.length - 1], 0, HATS[1 + Math.floor(this.rand() * (HATS.length - 1))], true)
+      : new Penguin(this.nextId++, opts.playerName || 'You', 0, opts.playerHat, false);
     this.penguins.push(player);
     this.playerId = player.id;
     let n = 0;
@@ -174,6 +199,49 @@ export class World {
   get player() { return this.penguins[0]; }
   penguin(id: number) { return this.penguins.find(p => p.id === id); }
   emit(e: GameEvent) { this.events.push(e); }
+
+  roster(): RosterEntry[] { return this.penguins.map(p => ({ id: p.id, name: p.name, team: p.team, hat: p.hat, bot: p.bot })); }
+
+  /**
+   * Server: a person joins and takes a bot's place on the team with fewer people (or the team they ask for, if it has room).
+   * Returns null when every slot already has a person in it.
+   */
+  addHuman(name: string, hat: string, wantTeam = -1): Penguin | null {
+    const humans = [0, 0];
+    for (const p of this.penguins) if (!p.bot) humans[p.team]++;
+    const open = (t: number) => this.penguins.some(p => p.bot && p.team === t);
+    let team = wantTeam === 0 || wantTeam === 1 ? wantTeam : -1;
+    if (team < 0 || !open(team)) team = !open(0) ? 1 : !open(1) ? 0 : humans[0] < humans[1] ? 0 : humans[1] < humans[0] ? 1 : this.scores[0] <= this.scores[1] ? 0 : 1;
+    if (!open(team)) return null;
+    // take the bot that's least busy: dead, or the one furthest from the action
+    const bots = this.penguins.filter(p => p.bot && p.team === team);
+    const home = this.map.bases[team].center;
+    bots.sort((a, b) => (a.alive ? 1 : 0) - (b.alive ? 1 : 0) || Math.hypot(a.x - home.x, a.z - home.z) - Math.hypot(b.x - home.x, b.z - home.z));
+    const p = bots[0];
+    if (this.board.holder === p.id) { this.board.holder = -1; this.board.x = p.x; this.board.y = p.y + 0.6; this.board.z = p.z; this.board.vy = 4; p.surfing = false; }
+    p.bot = false; p.name = name; p.hat = hat;
+    p.splats = 0; p.downs = 0; p.mitten = 0;
+    p.input = emptyInput();
+    this.spawn(p);
+    return p;
+  }
+
+  /** Server: a person left; a bot takes over their penguin. */
+  removeHuman(id: number) {
+    const p = this.penguin(id);
+    if (!p || p.bot) return;
+    const used = new Set(this.penguins.map(q => q.name));
+    p.bot = true;
+    p.name = this.botNames.find(n => !used.has(n)) ?? BOT_NAMES[Math.floor(this.rand() * BOT_NAMES.length)];
+    p.input = emptyInput();
+  }
+
+  /** Online client: step just your own penguin's movement ahead of the server, with no side effects on the match. */
+  predictPenguin(p: Penguin, dt: number) {
+    p.px = p.x; p.py = p.y; p.pz = p.z;
+    this.predicting = true;
+    try { this.stepPenguin(p, dt); } finally { this.predicting = false; }
+  }
 
   spawn(p: Penguin, index?: number) {
     const base = this.map.bases[p.team];
@@ -236,12 +304,12 @@ export class World {
       p.action = 'down';
       p.downT -= dt;
       p.vx *= 0.9; p.vz *= 0.9;
-      if (p.downT <= 0) { this.spawn(p); this.emit({ type: 'respawn', pid: p.id }); }
+      if (p.downT <= 0 && !this.predicting) { this.spawn(p); this.emit({ type: 'respawn', pid: p.id }); }
       return;
     }
     if (this.phase === 'end') { p.vx = p.vz = 0; p.action = 'idle'; return; }
 
-    if (p.health < CFG.maxHealth && p.sinceHit > CFG.regenDelay) { p.health++; p.sinceHit = CFG.regenDelay * 0.5; }
+    if (p.health < CFG.maxHealth && p.sinceHit > CFG.regenDelay && !this.predicting) { p.health++; p.sinceHit = CFG.regenDelay * 0.5; }
 
     const fwdX = -Math.sin(p.lookYaw), fwdZ = -Math.cos(p.lookYaw);
     const rightX = Math.cos(p.lookYaw), rightZ = -Math.sin(p.lookYaw);
@@ -273,7 +341,10 @@ export class World {
         p.charge = Math.min(1, p.charge + dt / CFG.throwChargeTime);
         action = p.sliding ? 'slide' : 'charge';
       } else {
-        if (p.carried > 0 && this.phase === 'fight') this.throwSnowball(p);
+        if (p.carried > 0 && this.phase === 'fight') {
+          // a predicting client only plays the arm swing; the server throws the real snowball
+          if (this.predicting) { p.throwCd = CFG.throwCooldown; p.throwAnim = 0.25; } else this.throwSnowball(p);
+        }
         p.charging = false; p.charge = 0;
       }
     }
@@ -371,6 +442,7 @@ export class World {
     }
 
     // ── snow work ──
+    if (this.predicting) return; // the server digs, builds, packs and runs the stockpiles
     p.aimOk = false;
     if (action === 'plow') this.doPlow(p, dt, fwdX, fwdZ);
     else p.plowLoad *= 0.9;
@@ -558,7 +630,7 @@ export class World {
       const top = f.surfaceBelow(p.x, p.y + 3, p.z, 0, 3.2);
       if (top !== null && top > p.y) { p.y = top; p.vy = 0; }
     }
-    if (p.y < -4) { p.y = 30; this.spawn(p); }
+    if (p.y < -4 && !this.predicting) { p.y = 30; this.spawn(p); }
   }
 
   /** Riding the playground slide: follow the ramp, speed up downhill, and launch off the lip at the end. */

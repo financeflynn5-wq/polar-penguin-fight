@@ -26,6 +26,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+        env:
+          # the online game server this copy of the game connects to (a repository variable; empty = practice with bots only)
+          VITE_SERVER: ${{ vars.GAME_SERVER_URL }}
       - name: Push dist to gh-pages
         run: |
           cd dist
