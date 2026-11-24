@@ -161,3 +161,8 @@ canvas { display: block; }
 .mvp { font: 700 16px 'Nunito'; color: var(--gold); }
 .small-note { font: 700 12px 'Nunito'; color: rgba(200,225,250,.6); margin-top: 10px; }
 @media (max-width: 720px) { .controls { display: none; } .logo { font-size: 42px; } }
+
+.playrow { display: flex; flex-direction: column; gap: 10px; }
+.online { min-height: 18px; font: 700 13px 'Nunito'; color: #bfe6ff; text-align: center; }
+.panel .next { font: 700 15px 'Nunito'; color: #bfe6ff; }
+.btn:disabled { opacity: .6; cursor: progress; }

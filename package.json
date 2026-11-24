@@ -5,15 +5,24 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && tsc --noEmit -p server && vite build && npm run build:server",
+    "build:server": "esbuild server/main.ts --bundle --platform=node --format=esm --target=node20 --outfile=server-dist/main.mjs --external:bufferutil --external:utf-8-validate --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\" --log-level=warning",
+    "start": "node server-dist/main.mjs",
+    "server": "npm run build:server && node server-dist/main.mjs",
     "preview": "vite preview --host",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p server",
+    "test:net": "esbuild test/net.test.ts --bundle --platform=node --format=esm --outfile=server-dist/net.test.mjs --log-level=warning && node server-dist/net.test.mjs",
+    "test:online": "npm run build:server && esbuild test/netclient.test.ts --bundle --platform=node --format=esm --outfile=server-dist/netclient.test.mjs --log-level=warning && node server-dist/netclient.test.mjs"
   },
   "dependencies": {
-    "three": "0.180.0"
+    "three": "0.180.0",
+    "ws": "8.18.3"
   },
   "devDependencies": {
+    "@types/node": "22.18.12",
     "@types/three": "0.180.0",
+    "@types/ws": "8.18.1",
+    "esbuild": "0.25.11",
     "typescript": "5.9.3",
     "vite": "7.1.12"
   }

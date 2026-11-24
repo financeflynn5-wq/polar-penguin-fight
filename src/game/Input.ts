@@ -10,6 +10,8 @@ export class Input {
   enabled = false;
   onLockChange: ((locked: boolean) => void) | null = null;
   onKey: ((code: string) => void) | null = null;
+  /** the browser refused to capture the mouse (e.g. no recent click): ask for a click */
+  onLockError: (() => void) | null = null;
 
   constructor(private canvas: HTMLCanvasElement) {
     window.addEventListener('keydown', e => {
@@ -35,6 +37,7 @@ export class Input {
       this.pitch -= e.movementY * s;
       this.pitch = Math.max(-1.2, Math.min(0.95, this.pitch));
     });
+    document.addEventListener('pointerlockerror', () => this.onLockError?.());
     document.addEventListener('pointerlockchange', () => {
       this.locked = document.pointerLockElement === this.canvas;
       if (!this.locked) { this.mouse = [false, false, false]; this.keys.clear(); }
@@ -44,10 +47,13 @@ export class Input {
 
   lock() {
     const c = this.canvas as any;
+    const plain = () => {
+      try { const r = c.requestPointerLock(); if (r && r.catch) r.catch(() => this.onLockError?.()); } catch { this.onLockError?.(); }
+    };
     try {
       const r = c.requestPointerLock({ unadjustedMovement: true });
-      if (r && r.catch) r.catch(() => c.requestPointerLock());
-    } catch { c.requestPointerLock(); }
+      if (r && r.catch) r.catch(plain);
+    } catch { plain(); }
   }
 
   unlock() { if (document.pointerLockElement) document.exitPointerLock(); }
