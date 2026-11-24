@@ -1,0 +1,155 @@
+// All sound is synthesized: crunchy snow, whooshes, splats, chimes. No audio files to load.
+export class Audio {
+  private ctx: AudioContext | null = null;
+  private master!: GainNode;
+  private noise!: AudioBuffer;
+  private plowGain: GainNode | null = null;
+  private plowFilter: BiquadFilterNode | null = null;
+  private rumbleGain: GainNode | null = null;
+  private windGain: GainNode | null = null;
+  listener = { x: 0, y: 0, z: 0, yaw: 0 };
+  volume = 0.7;
+  muted = false;
+
+  unlock() {
+    if (this.ctx) { if (this.ctx.state === 'suspended') this.ctx.resume(); return; }
+    const AC = (window.AudioContext || (window as any).webkitAudioContext);
+    if (!AC) return;
+    this.ctx = new AC();
+    this.master = this.ctx.createGain();
+    this.master.gain.value = this.volume;
+    this.master.connect(this.ctx.destination);
+    const len = this.ctx.sampleRate * 2;
+    this.noise = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+    const d = this.noise.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    // looping beds: plow crunch, big-ball rumble, wind
+    this.plowGain = this.loopNoise(1800, 0.9, 'bandpass');
+    this.plowFilter = (this.plowGain as any)._filter;
+    this.rumbleGain = this.loopNoise(140, 0.7, 'lowpass');
+    this.windGain = this.loopNoise(500, 0.4, 'lowpass');
+    this.windGain.gain.value = 0.05;
+  }
+
+  setMuted(m: boolean) { this.muted = m; if (this.master) this.master.gain.value = m ? 0 : this.volume; }
+
+  private loopNoise(freq: number, q: number, type: BiquadFilterType) {
+    const ctx = this.ctx!;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise; src.loop = true;
+    const f = ctx.createBiquadFilter(); f.type = type; f.frequency.value = freq; f.Q.value = q;
+    const g = ctx.createGain(); g.gain.value = 0;
+    src.connect(f); f.connect(g); g.connect(this.master);
+    src.start();
+    (g as any)._filter = f;
+    return g;
+  }
+
+  /** distance attenuation + stereo pan relative to the listener */
+  private spatial(x?: number, y?: number, z?: number) {
+    if (x === undefined || y === undefined || z === undefined) return { gain: 1, pan: 0 };
+    const dx = x - this.listener.x, dz = z - this.listener.z, dy = y - this.listener.y;
+    const d = Math.hypot(dx, dy, dz);
+    const gain = 1 / (1 + d * d * 0.012);
+    const rx = Math.cos(this.listener.yaw), rz = -Math.sin(this.listener.yaw);
+    const pan = d > 0.5 ? Math.max(-1, Math.min(1, (dx * rx + dz * rz) / d)) * 0.8 : 0;
+    return { gain, pan };
+  }
+
+  private out(gain: number, pan: number) {
+    const ctx = this.ctx!;
+    const g = ctx.createGain(); g.gain.value = gain;
+    const p = ctx.createStereoPanner(); p.pan.value = pan;
+    g.connect(p); p.connect(this.master);
+    return g;
+  }
+
+  private noiseBurst(dur: number, freq: number, q: number, vol: number, type: BiquadFilterType = 'bandpass', sweepTo?: number, x?: number, y?: number, z?: number) {
+    if (!this.ctx || this.muted) return;
+    const sp = this.spatial(x, y, z);
+    if (sp.gain * vol < 0.004) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    const src = ctx.createBufferSource(); src.buffer = this.noise;
+    src.playbackRate.value = 0.8 + Math.random() * 0.4;
+    const f = ctx.createBiquadFilter(); f.type = type; f.frequency.setValueAtTime(freq, t); f.Q.value = q;
+    if (sweepTo) f.frequency.exponentialRampToValueAtTime(sweepTo, t + dur);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.008); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    src.connect(f); f.connect(g); g.connect(this.out(sp.gain, sp.pan));
+    src.start(t, Math.random() * 1.5); src.stop(t + dur + 0.05);
+  }
+
+  private tone(freq: number, dur: number, vol: number, type: OscillatorType = 'sine', slideTo?: number, delay = 0, x?: number, y?: number, z?: number) {
+    if (!this.ctx || this.muted) return;
+    const sp = this.spatial(x, y, z);
+    if (sp.gain * vol < 0.004) return;
+    const ctx = this.ctx, t = ctx.currentTime + delay;
+    const o = ctx.createOscillator(); o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.01); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.connect(g); g.connect(this.out(sp.gain, sp.pan));
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  crunch(x?: number, y?: number, z?: number, vol = 0.25) { this.noiseBurst(0.07 + Math.random() * 0.05, 1500 + Math.random() * 1500, 1.2, vol, 'bandpass', undefined, x, y, z); }
+  step(x: number, y: number, z: number) { this.noiseBurst(0.05, 2400 + Math.random() * 800, 1.5, 0.08, 'bandpass', undefined, x, y, z); }
+  pat(x: number, y: number, z: number) { this.noiseBurst(0.05, 900 + Math.random() * 400, 2, 0.18, 'bandpass', undefined, x, y, z); }
+  packDone(x: number, y: number, z: number) { this.noiseBurst(0.08, 700, 2, 0.3, 'bandpass', undefined, x, y, z); this.tone(660, 0.12, 0.08, 'triangle', 880, 0.04, x, y, z); }
+  whoosh(x: number, y: number, z: number, power: number) { this.noiseBurst(0.18 + power * 0.1, 500, 1.5, 0.22 + power * 0.1, 'bandpass', 2200, x, y, z); }
+  splatSnow(x: number, y: number, z: number) { this.noiseBurst(0.12, 900, 0.9, 0.35, 'lowpass', 300, x, y, z); }
+  hit(x: number, y: number, z: number) {
+    this.noiseBurst(0.14, 1200, 0.8, 0.5, 'lowpass', 400, x, y, z);
+    this.tone(180, 0.15, 0.25, 'sine', 70, 0, x, y, z);
+    this.tone(900 + Math.random() * 200, 0.12, 0.07, 'square', 500, 0.03, x, y, z); // squawk
+  }
+  splat(x: number, y: number, z: number) {
+    this.noiseBurst(0.35, 1500, 0.6, 0.7, 'lowpass', 200, x, y, z);
+    this.tone(140, 0.35, 0.4, 'sine', 45, 0, x, y, z);
+    this.tone(700, 0.25, 0.1, 'square', 250, 0.05, x, y, z);
+  }
+  hitMarker() { this.tone(1500, 0.06, 0.12, 'triangle', 1900); }
+  jump(x: number, y: number, z: number) { this.tone(420, 0.12, 0.08, 'sine', 700, 0, x, y, z); }
+  slide(x: number, y: number, z: number) { this.noiseBurst(0.4, 3000, 1, 0.15, 'highpass', 1200, x, y, z); this.tone(500, 0.18, 0.08, 'sine', 300, 0, x, y, z); }
+  crush(x: number, y: number, z: number, vol: number) { this.noiseBurst(0.3, 400, 0.7, Math.min(0.9, vol), 'lowpass', 120, x, y, z); }
+  flake(x: number, y: number, z: number) { [880, 1175, 1568, 2093].forEach((f, i) => this.tone(f, 0.35, 0.12, 'triangle', undefined, i * 0.07, x, y, z)); }
+  grab() { this.tone(520, 0.08, 0.12, 'triangle', 780); this.tone(780, 0.1, 0.1, 'triangle', 1040, 0.06); }
+  stash() { [700, 600, 500].forEach((f, i) => this.tone(f, 0.08, 0.1, 'triangle', undefined, i * 0.05)); }
+  click() { this.tone(900, 0.05, 0.08, 'triangle', 1200); }
+  noSnow() { this.tone(240, 0.12, 0.08, 'square', 200); }
+  whistle() {
+    if (!this.ctx || this.muted) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    const o = ctx.createOscillator(); o.type = 'sine';
+    const lfo = ctx.createOscillator(); lfo.frequency.value = 28;
+    const lg = ctx.createGain(); lg.gain.value = 120;
+    lfo.connect(lg); lg.connect(o.frequency);
+    o.frequency.value = 2300;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.18, t + 0.03);
+    g.gain.setValueAtTime(0.18, t + 0.5); g.gain.linearRampToValueAtTime(0, t + 0.7);
+    o.connect(g); g.connect(this.master);
+    o.start(t); lfo.start(t); o.stop(t + 0.75); lfo.stop(t + 0.75);
+  }
+  fanfare(win: boolean) {
+    const notes = win ? [523, 659, 784, 1047] : [440, 392, 349, 262];
+    notes.forEach((f, i) => this.tone(f, 0.4, 0.15, 'triangle', undefined, i * 0.15));
+  }
+  countdown(final: boolean) { this.tone(final ? 1046 : 523, final ? 0.4 : 0.15, 0.15, 'triangle'); }
+
+  /** continuous sounds, called every frame */
+  setPlow(amount: number) {
+    if (!this.plowGain || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    this.plowGain.gain.setTargetAtTime(this.muted ? 0 : Math.min(0.5, amount), t, 0.06);
+    if (this.plowFilter) this.plowFilter.frequency.setTargetAtTime(1200 + Math.random() * 900, t, 0.03);
+  }
+  setRumble(amount: number) {
+    if (!this.rumbleGain || !this.ctx) return;
+    this.rumbleGain.gain.setTargetAtTime(this.muted ? 0 : Math.min(0.7, amount), this.ctx.currentTime, 0.1);
+  }
+  setWind(amount: number) {
+    if (!this.windGain || !this.ctx) return;
+    this.windGain.gain.setTargetAtTime(this.muted ? 0 : amount, this.ctx.currentTime, 0.3);
+  }
+}
