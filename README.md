@@ -37,6 +37,8 @@ npm run build
 
 The static site lands in `dist/` and works from any sub-path (GitHub Pages, an iframe on the site, or the game server).
 
+Every push to `main` builds the game and publishes `dist/` to the `gh-pages` branch, which GitHub Pages serves at https://financeflynn5-wq.github.io/polar-penguin-fight/
+
 ## How it's put together
 
 - `src/world/SnowField.ts`: the snow is a 3D density grid (0.5 m voxels). Push, dig, build, pack and the big-ball smashing are all edits to this grid.
