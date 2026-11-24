@@ -6,7 +6,7 @@ Push and pile real 3D snow, pat it into forts, dig tunnels, pack snowballs (carr
 
 ## Game modes
 
-- **Team Deathmatch** on Frostbite Bay: first team to 25 splats. Splat streaks of 3, 5 and 7 earn a Snowball Frenzy, an Insta-Turret and an Avalanche.
+- **Team Deathmatch** on Frostbite Bay: first team to 25 splats. Splat streaks of 3, 5 and 7 earn a Snowball Frenzy, an Insta-Turret and an Avalanche. Each team comes back along a spawn line that runs the whole length of its side of the map (not at the igloo), and has three stockpiles on that line: one by the igloo and one at a camp at each end. The far north (the Drifts) and the far south (the Inlet, a strip of sea ice) are ways round the middle.
 - **Conquest** on Glacier Gap: three flags (A, B, C). Stand in a flag's ring to take it, held flags earn points, first team to 250 wins. You respawn at a flag your team holds, so build forts and snowman turrets around them. No splat streaks here.
 
 Snowman turrets work in both modes: hold T to scoop a lot of snow into one. It throws at any enemy it can see, runs out of snowballs unless you hand it more (hold E beside it), and four hits knock it down.

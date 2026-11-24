@@ -81,7 +81,7 @@ menu.querySelectorAll<HTMLButtonElement>('.mode[data-mode]').forEach(b => b.addE
   mode = b.dataset.mode as Mode; store.set('mode', mode); game.audio.unlock(); game.audio.click(); syncMenu();
 }));
 const HOW_MODE: Record<Mode, string> = {
-  tdm: `<b>Team Deathmatch:</b> 3 hits and you're splatted back to base. First team to ${CFG.scoreToWin} splats wins. <b>Splat streaks</b> earn rewards: ${CFG.streakAt[0]} in one life for a Snowball Frenzy, ${CFG.streakAt[1]} for an instant turret, ${CFG.streakAt[2]} for an Avalanche. Use them with 1, 2 and 3.`,
+  tdm: `<b>Team Deathmatch:</b> 3 hits and you're splatted. You come back somewhere along your team's side of the map, and there's a stockpile at each end of it as well as at the igloo. First team to ${CFG.scoreToWin} splats wins. <b>Splat streaks</b> earn rewards: ${CFG.streakAt[0]} in one life for a Snowball Frenzy, ${CFG.streakAt[1]} for an instant turret, ${CFG.streakAt[2]} for an Avalanche. Use them with 1, 2 and 3.`,
   conquest: `<b>Conquest:</b> three flags, A, B and C. Stand in a flag's ring to take it, and every flag your team holds keeps scoring points. First to ${CFG.conquestScore} wins. You come back at the nearest flag you hold, so wall yours in and guard it with turrets.`,
 };
 function syncMenu() {

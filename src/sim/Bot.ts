@@ -42,6 +42,7 @@ export class BotBrain {
   private holdSpot: V3 | null = null;
   private rewardT = 0;
   private detourT = 0;
+  private homeZ: number | null = null; // where along the team's line this bot builds
   private rnd: () => number;
 
   /** slot = this bot's number within its own team, so both teams get the same mix of jobs */
@@ -68,9 +69,13 @@ export class BotBrain {
     this.turretWait -= dt;
 
     const conquest = w.mode === 'conquest';
-    const base = w.map.bases[p.team];
-    const enemyBase = w.map.bases[1 - p.team];
+    const front = w.front(p.team);
+    // the nearest of the team's stockpiles is "home" for grabbing, stashing and falling back
+    const pile = w.nearestPile(p.team, p.x, p.z);
+    const base = { center: front.center, facing: front.facing, stockpile: pile };
+    const enemyBase = w.front(1 - p.team);
     const toCenter = p.team === 0 ? 1 : -1;
+    if (this.homeZ === null) this.homeZ = p.z;
 
     // ── choose a goal ──
     if (w.phase === 'build') {
@@ -120,7 +125,7 @@ export class BotBrain {
         // during the fight, don't pack in the open next to an enemy: back off toward home (in Conquest, hold the flag instead)
         if (w.phase === 'fight' && this.targetVisible && this.targetDist(w, p) < 12 && this.targetId >= 0) {
           const pt = conquest ? w.points[this.objective] : undefined;
-          if (!pt || Math.hypot(p.x - pt.x, p.z - pt.z) > pt.r) { inp.pack = false; this.moveTo(w, p, base.center, 2, dt); }
+          if (!pt || Math.hypot(p.x - pt.x, p.z - pt.z) > pt.r) { inp.pack = false; this.moveTo(w, p, base.stockpile, 2, dt); }
         }
         break;
       }
@@ -147,7 +152,7 @@ export class BotBrain {
         break;
       }
       case 'retreat': {
-        this.moveTo(w, p, base.center, 2, dt);
+        this.moveTo(w, p, base.stockpile, 2, dt);
         if (Math.hypot(p.vx, p.vz) > 3 && this.downhill(w, p)) inp.slide = true;
         break;
       }
@@ -155,11 +160,12 @@ export class BotBrain {
       case 'fight': this.doFight(w, p, dt); break;
       case 'advance': {
         if (!this.advanceSpot || Math.hypot(p.x - this.advanceSpot.x, p.z - this.advanceSpot.z) < 2.5 || Math.random() < 0.002) {
-          // spread out three ways: past the gingerbread house in the north, through the middle, or round the iceberg in the south
-          const lane = (this.index + Math.floor(this.t / 40)) % 3;
-          const x = toCenter * -(lane === 2 ? 3 + Math.random() * 16 : 7 + Math.random() * 14);
-          const z = lane === 0 ? -41 + Math.random() * 12 : lane === 1 ? 27 + Math.random() * 14 : (Math.random() * 2 - 1) * 22;
-          this.advanceSpot = { x: base.center.x * 0 + x, y: 0, z };
+          // spread out across the whole width of the map: every bot has its own lane, and now and then moves over one
+          const bd = w.map.bounds, lanes = 6;
+          const lane = (this.index * 5 + Math.floor(this.t / 40)) % lanes;
+          const x = w.map.midLineX + toCenter * -(3 + Math.random() * 17);
+          const z = bd.minZ + 10 + (lane + Math.random()) * (bd.maxZ - bd.minZ - 20) / lanes;
+          this.advanceSpot = { x, y: 0, z };
         }
         this.moveTo(w, p, this.advanceSpot, 1, dt);
         if (Math.hypot(p.vx, p.vz) > 3.5 && this.downhill(w, p) && Math.hypot(p.x - this.advanceSpot.x, p.z - this.advanceSpot.z) > 10) inp.slide = true;
@@ -213,7 +219,7 @@ export class BotBrain {
       const side = this.index % 2 ? 1 : -1;
       const home = w.mode === 'conquest' ? w.points[this.objective >= 0 ? this.objective : p.team === 0 ? 0 : w.points.length - 1] : undefined;
       // Conquest: just inside the fort, on the enemy's side of the flag. Deathmatch: out on the lip of the base.
-      this.turretSpot = home ? { x: home.x + toCenter * 2.6, y: 0, z: home.z + side * 2.4 } : { x: base.center.x + toCenter * 25, y: 0, z: side * 8 };
+      this.turretSpot = home ? { x: home.x + toCenter * 2.6, y: 0, z: home.z + side * 2.4 } : { x: base.center.x + toCenter * 25, y: 0, z: (this.homeZ ?? 0) + side * 6 };
     }
     const spot = this.turretSpot;
     const stand = { x: spot.x - toCenter * 2.4, y: 0, z: spot.z };
@@ -396,7 +402,8 @@ export class BotBrain {
     if (!this.buildSpot) {
       const row = this.index % 3;
       const lane = ((this.index * 7) % 5) - 2;
-      this.buildSpot = { x: base.center.x + toCenter * (13 + row * 6), y: 0, z: lane * 6.5 + (row % 2) * 3 };
+      // out in front of the stretch of the line this bot started on
+      this.buildSpot = { x: base.center.x + toCenter * (13 + row * 6), y: 0, z: (this.homeZ ?? 0) + lane * 2.2 + (row % 2) * 3 };
       // Conquest: thicken the old fort round our home flag instead, on the side the enemy comes from
       if (w.mode === 'conquest') {
         const home = w.points[p.team === 0 ? 0 : w.points.length - 1];
@@ -422,8 +429,8 @@ export class BotBrain {
         this.buildT = 0;
         const rx = Math.cos(yaw), rz = -Math.sin(yaw);
         this.buildSpot = { x: this.buildSpot.x + rx * this.wallSide * 1.4, y: 0, z: this.buildSpot.z + rz * this.wallSide * 1.4 };
-        const mid = w.mode === 'conquest' ? w.points[p.team === 0 ? 0 : w.points.length - 1].z : 0;
-        if (Math.abs(this.buildSpot.z - mid) > (w.mode === 'conquest' ? 4.5 : 20)) this.wallSide *= -1;
+        const mid = w.mode === 'conquest' ? w.points[p.team === 0 ? 0 : w.points.length - 1].z : this.homeZ ?? 0;
+        if (Math.abs(this.buildSpot.z - mid) > (w.mode === 'conquest' ? 4.5 : 11)) this.wallSide *= -1;
       }
     }
   }

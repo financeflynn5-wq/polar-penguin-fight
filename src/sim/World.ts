@@ -2,7 +2,7 @@
 // Conquest flags, splat-streak rewards and the match.
 // No Three.js and no DOM, so the game server can run this exact code later.
 import { SnowField, ISO } from '../world/SnowField';
-import { MapDef, V3, mulberry32 } from '../world/MapDef';
+import { MapDef, V3, Front, mulberry32 } from '../world/MapDef';
 import type { Mode } from '../world/Maps';
 import { CFG } from './config';
 import { boxGround, boxPush, pointInBoxes, slideY } from '../world/Playground';
@@ -286,7 +286,7 @@ export class World {
     if (!open(team)) return null;
     // take the bot that's least busy: dead, or the one furthest from the action
     const bots = this.penguins.filter(p => p.bot && p.team === team);
-    const home = this.map.bases[team].center;
+    const home = this.front(team).center;
     bots.sort((a, b) => (a.alive ? 1 : 0) - (b.alive ? 1 : 0) || Math.hypot(a.x - home.x, a.z - home.z) - Math.hypot(b.x - home.x, b.z - home.z));
     const p = bots[0];
     if (this.board.holder === p.id) { this.board.holder = -1; this.board.x = p.x; this.board.y = p.y + 0.6; this.board.z = p.z; this.board.vy = 4; p.surfing = false; }
@@ -315,10 +315,39 @@ export class World {
     try { this.stepPenguin(p, dt); } finally { this.predicting = false; }
   }
 
+  /** Where a team lives right now: its spawn line and its stockpiles. */
+  front(team: number): Front { return this.map.bases[team]; }
+
+  /** The nearest place this team can grab and stash snowballs. */
+  nearestPile(team: number, x: number, z: number): V3 {
+    const list = this.front(team).stockpiles;
+    let best = list[0], bd = Infinity;
+    for (const s of list) { const d = Math.hypot(s.x - x, s.z - z); if (d < bd) { bd = d; best = s; } }
+    return best;
+  }
+
+  /**
+   * Somewhere along the team's spawn line. At the start everyone is spread evenly along it; after that you come back
+   * at a random spot on it, away from any enemy who has pushed up that far.
+   */
+  private lineSpawn(p: Penguin, first: boolean): V3 {
+    const list = this.front(p.team).spawns;
+    if (first) {
+      const mates = this.penguins.filter(q => q.team === p.team);
+      return list[Math.floor((mates.indexOf(p) + 0.5) * list.length / Math.max(1, mates.length)) % list.length];
+    }
+    let pick = list[Math.floor(this.rand() * list.length)];
+    for (let tries = 0; tries < 6; tries++) {
+      const s = pick;
+      if (!this.penguins.some(e => e.alive && e.team !== p.team && Math.hypot(e.x - s.x, e.z - s.z) < 13)) break;
+      pick = list[Math.floor(this.rand() * list.length)];
+    }
+    return pick;
+  }
+
   spawn(p: Penguin, index?: number) {
-    const base = this.map.bases[p.team];
-    const list = base.spawns;
-    const s = (index === undefined ? this.flagSpawn(p) : null) ?? list[(index ?? Math.floor(this.rand() * list.length)) % list.length];
+    const base = this.front(p.team);
+    const s = (index === undefined ? this.flagSpawn(p) : null) ?? this.lineSpawn(p, index !== undefined);
     p.x = s.x + (this.rand() - 0.5) * 0.6; p.z = s.z + (this.rand() - 0.5) * 0.6;
     const g = this.field.surfaceBelow(p.x, 25, p.z, 0, 30);
     p.y = (g ?? s.y) + 0.05;
@@ -557,8 +586,7 @@ export class World {
       p.useT += dt;
       if (!p.useDone && p.useT >= CFG.useHoldTime) {
         p.useDone = true;
-        const b = this.map.bases[p.team].stockpile;
-        if (p.carried > 0 && Math.hypot(p.x - b.x, p.z - b.z) < CFG.stockRadius) {
+        if (p.carried > 0 && this.nearPile(p) === p.team) {
           this.piles[p.team] += p.carried;
           this.emit({ type: 'stash', pid: p.id, n: p.carried });
           p.carried = 0;
@@ -572,8 +600,7 @@ export class World {
 
   tryGrab(p: Penguin) {
     for (let t = 0; t < 2; t++) {
-      const b = this.map.bases[t].stockpile;
-      if (Math.hypot(p.x - b.x, p.z - b.z) < CFG.stockRadius && this.piles[t] > 0 && p.carried < CFG.maxCarry) {
+      if (this.atPile(p, t) && this.piles[t] > 0 && p.carried < CFG.maxCarry) {
         const n = Math.min(CFG.maxCarry - p.carried, this.piles[t]);
         this.piles[t] -= n; p.carried += n;
         this.emit({ type: 'grab', pid: p.id, n, team: t, stolen: t !== p.team });
@@ -583,12 +610,15 @@ export class World {
     return false;
   }
 
+  private atPile(p: Penguin, team: number) {
+    for (const b of this.front(team).stockpiles) if (Math.hypot(p.x - b.x, p.z - b.z) < CFG.stockRadius) return true;
+    return false;
+  }
+
+  /** Which team's stockpile this penguin is standing at (their own first), or -1. */
   nearPile(p: Penguin): number {
-    for (let t = 0; t < 2; t++) {
-      const b = this.map.bases[t].stockpile;
-      if (Math.hypot(p.x - b.x, p.z - b.z) < CFG.stockRadius) return t;
-    }
-    return -1;
+    if (this.atPile(p, p.team)) return p.team;
+    return this.atPile(p, 1 - p.team) ? 1 - p.team : -1;
   }
 
   isIce(x: number, z: number) {
@@ -1307,7 +1337,7 @@ export class World {
     for (const t of this.map.trees) if (Math.hypot(x - t.x, z - t.z) < t.r + 0.6) return null;
     for (const b of this.map.bases) {
       if (Math.hypot(x - b.igloo.x, z - b.igloo.z) < 3.1) return null;
-      if (Math.hypot(x - b.stockpile.x, z - b.stockpile.z) < 1.6) return null;
+      for (const sp of b.stockpiles) if (Math.hypot(x - sp.x, z - sp.z) < 1.6) return null;
     }
     return { x, y: g, z };
   }

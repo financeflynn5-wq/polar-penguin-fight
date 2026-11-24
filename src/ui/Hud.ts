@@ -181,7 +181,7 @@ export class Hud {
     down.classList.toggle('hidden', me.alive || w.phase === 'end');
     if (!me.alive) {
       const k = w.penguin(me.lastHitBy);
-      this.q('#downSmall').textContent = `${k ? `${k.name} got you. ` : ''}Back to base in ${Math.max(0, me.downT).toFixed(1)}s`;
+      this.q('#downSmall').textContent = `${k ? `${k.name} got you. ` : ''}Back in ${Math.max(0, me.downT).toFixed(1)}s`;
     }
     this.q('.frost').classList.toggle('on', me.alive && me.health === 1);
 
