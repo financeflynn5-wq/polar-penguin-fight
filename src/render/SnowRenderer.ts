@@ -38,12 +38,15 @@ float snowNoise(vec3 p){ vec3 i = floor(p); vec3 f = fract(p); f = f*f*(3.0-2.0*
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
 {
   // sparkles: tiny glints that twinkle as the camera moves
-  vec3 cellP = floor(vSnowWorld * 26.0);
+  vec3 sp = vSnowWorld * 22.0;
+  vec3 cellP = floor(sp);
   float h = snowHash(cellP);
   vec3 vdir = normalize(cameraPosition - vSnowWorld);
   float tw = snowHash(cellP + floor(vdir * 9.0) * 13.0);
-  float glint = step(0.985, h) * step(0.55, tw);
-  float distFade = 1.0 - smoothstep(10.0, 45.0, length(cameraPosition - vSnowWorld));
+  float dot0 = 1.0 - smoothstep(0.08, 0.2, length(fract(sp) - 0.5));
+  float glint = step(0.975, h) * step(0.5, tw) * dot0;
+  float camD = length(cameraPosition - vSnowWorld);
+  float distFade = smoothstep(1.5, 4.0, camD) * (1.0 - smoothstep(14.0, 45.0, camD));
   totalEmissiveRadiance += vec3(0.9, 0.95, 1.0) * glint * distFade * 1.6;
 }`);
   };

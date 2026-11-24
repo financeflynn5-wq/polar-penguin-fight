@@ -6,6 +6,8 @@ import { Environment } from '../render/Environment';
 import { Particles, PKind } from '../render/Particles';
 import { PenguinModel } from '../render/PenguinModel';
 import { Props } from '../render/Props';
+import { PlaygroundView } from '../render/PlaygroundView';
+import { Decals } from '../render/Decals';
 import { World, Penguin, GameEvent, solveThrow, lookVelocity, MatchOptions } from '../sim/World';
 import { BotBrain } from '../sim/Bot';
 import { CFG, MITTEN_NAMES } from '../sim/config';
@@ -32,6 +34,9 @@ export class Game {
   private snow!: SnowRenderer;
   private particles!: Particles;
   private props!: Props;
+  private playground!: PlaygroundView;
+  private decals!: Decals;
+  private trails = new Map<number, { dist: number; side: number; x: number; z: number }>();
   private models = new Map<number, PenguinModel>();
   private bots = new Map<number, BotBrain>();
   private hud: Hud | null = null;
@@ -97,6 +102,11 @@ export class Game {
     this.scene.add(this.particles.points);
     this.props = new Props(this.map);
     this.scene.add(this.props.group);
+    this.playground = new PlaygroundView(this.map.playground);
+    this.scene.add(this.playground.group);
+    this.decals = new Decals(this.map.field);
+    this.scene.add(this.decals.group);
+    this.trails.clear();
   }
 
   // ───────────────────────── menu ─────────────────────────
@@ -170,6 +180,8 @@ export class Game {
     else if (this.world) this.playFrame(dt);
 
     this.env.update(this.time, this.camera, window.innerHeight);
+    this.playground.update(this.time);
+    this.decals.update(this.time);
     this.snow.update(this.camera.position, this.mode === 'menu' ? 8 : 4, this.time);
     this.particles.update(dt, window.innerHeight * Math.min(window.devicePixelRatio, 1.75), this.camera.fov);
     this.renderer.render(this.scene, this.camera);
@@ -179,7 +191,7 @@ export class Game {
     const p = this.menuFake!;
     const m = this.menuPenguin!;
     p.lookPitch = Math.sin(this.time * 0.7) * 0.15;
-    p.yaw = -Math.PI / 2 + 0.55 + Math.sin(this.time * 0.4) * 0.25;
+    p.yaw = -Math.PI / 2 - 0.35 + Math.sin(this.time * 0.4) * 0.25;
     m.update(p, 1, dt, this.time, false);
     const a = this.time * 0.05;
     const cx = p.x + 3.4, cz = p.z - 0.6;
@@ -235,7 +247,13 @@ export class Game {
     this.handleEvents(w, me);
 
     // visuals
-    for (const p of w.penguins) this.models.get(p.id)?.update(p, alpha, dt, this.time, p === me);
+    for (const p of w.penguins) {
+      const m = this.models.get(p.id);
+      if (!m) continue;
+      m.camDist = this.camera.position.distanceTo(m.root.position);
+      m.update(p, alpha, dt, this.time, p === me);
+    }
+    this.updateTrails(w);
     this.props.update(w, alpha, dt, this.time);
     this.updateAimVisuals(me);
 
@@ -267,6 +285,40 @@ export class Game {
     if (me.noSnowT > 0 && (pi.pack || pi.build || pi.dig)) hint = me.carried >= CFG.maxCarry && pi.pack ? 'Your mittens are full (5): stash or throw!' : 'No loose snow here';
     if (w.phase === 'build' && pi.fire && me.carried > 0) hint = 'No throwing until the fight starts!';
     this.hud!.update(w, me, dt, hint);
+  }
+
+  /** Footprints while walking, a groove while belly sliding, twin tracks behind the surfboard, ruts behind big balls. */
+  private updateTrails(w: World) {
+    for (const p of w.penguins) {
+      let t = this.trails.get(p.id);
+      if (!t) { t = { dist: 0, side: 1, x: p.x, z: p.z }; this.trails.set(p.id, t); }
+      const d = Math.hypot(p.x - t.x, p.z - t.z);
+      t.x = p.x; t.z = p.z;
+      if (!p.alive || !p.grounded || p.onProp || p.onIce || d > 2) { t.dist = 0; continue; }
+      t.dist += d;
+      const sp = Math.hypot(p.vx, p.vz);
+      const moveYaw = sp > 0.1 ? Math.atan2(-p.vx, -p.vz) : p.yaw;
+      if (p.surfing) {
+        if (t.dist > 0.25) { t.dist = 0; this.decals.boardTrack(this.time, p.x, p.y, p.z, moveYaw); }
+      } else if (p.sliding) {
+        if (t.dist > 0.22) { t.dist = 0; this.decals.groove(this.time, p.x, p.y, p.z, moveYaw); }
+      } else if (t.dist > 0.34) {
+        t.dist = 0;
+        t.side = -t.side;
+        const rx = Math.cos(p.yaw), rz = -Math.sin(p.yaw);
+        this.decals.footprint(this.time, p.x + rx * 0.13 * t.side, p.y, p.z + rz * 0.13 * t.side, p.yaw);
+      }
+    }
+    for (const b of w.bigBalls) {
+      const key = -b.id;
+      let t = this.trails.get(key);
+      if (!t) { t = { dist: 0, side: 1, x: b.x, z: b.z }; this.trails.set(key, t); }
+      const d = Math.hypot(b.x - t.x, b.z - t.z);
+      t.x = b.x; t.z = b.z;
+      if (!b.grounded || d > 2) continue;
+      t.dist += d;
+      if (t.dist > 0.35) { t.dist = 0; this.decals.groove(this.time, b.x, b.y - b.r, b.z, Math.atan2(-b.vx, -b.vz), b.r * 1.3, 0.9); }
+    }
   }
 
   private aimInReach(me: Penguin) {
@@ -410,6 +462,25 @@ export class Game {
       case 'packDone': {
         const p = w.penguin(e.pid)!;
         if (e.pid === me.id) A.packDone(p.x, p.y, p.z);
+        const fx = -Math.sin(p.yaw), fz = -Math.cos(p.yaw);
+        this.decals.dent(this.time, p.x + fx * 0.6, p.y, p.z + fz * 0.6, 0.32);
+        break;
+      }
+      case 'board': {
+        if (e.what === 'spawn') { H.banner('SURFBOARD!', `A surfboard popped up ${e.where}. Grab it to surf!`, 3); A.flake(e.x, e.y, e.z); P.sparkle(e.x, e.y, e.z, 50, 1.3, 1.0, 0.5); }
+        else if (e.what === 'grab') {
+          const p = w.penguin(e.pid)!;
+          P.sparkle(e.x, e.y + 0.5, e.z, 40, 1.3, 1.0, 0.5); A.flake(e.x, e.y, e.z);
+          if (e.pid === me.id) H.banner('SURF\'S UP!', 'You are faster on the board. Splat and you drop it!', 2.6);
+          else H.toast(`${p.name} grabbed the surfboard!`, 2);
+        } else if (e.what === 'drop') { H.toast('The surfboard dropped! Go grab it!', 2); }
+        break;
+      }
+      case 'launch': {
+        const p = w.penguin(e.pid)!;
+        A.slide(p.x, p.y, p.z); A.jump(p.x, p.y, p.z);
+        P.burst(p.x, p.y, p.z, 14, 2.5, 1);
+        if (e.pid === me.id) H.toast('WHEEE!', 1);
         break;
       }
       case 'noSnow': if (e.pid === me.id) A.noSnow(); break;

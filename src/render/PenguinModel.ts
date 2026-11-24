@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { Penguin } from '../sim/World';
 import { TEAM_COLORS } from './Environment';
+import { makeSurfboard } from './Props';
 
 // shared materials
 const M = {
@@ -42,7 +43,7 @@ const G = {
 
 function bodyGeometry() {
   const pts: THREE.Vector2[] = [];
-  const prof = [[0.0, 0.02], [0.2, 0.05], [0.3, 0.13], [0.36, 0.28], [0.37, 0.42], [0.34, 0.56], [0.29, 0.67], [0.24, 0.75], [0.0, 0.8]];
+  const prof = [[0.0, 0.0], [0.2, 0.012], [0.3, 0.06], [0.355, 0.17], [0.372, 0.33], [0.35, 0.5], [0.3, 0.63], [0.25, 0.72], [0.0, 0.8]];
   for (const [r, y] of prof) pts.push(new THREE.Vector2(r, y));
   const curve = new THREE.SplineCurve(pts);
   const g = new THREE.LatheGeometry(curve.getPoints(24), 28);
@@ -175,6 +176,9 @@ export class PenguinModel {
   private landSquash = 0;
   private wasGrounded = true;
   carriedBalls: THREE.Mesh[] = [];
+  private board: THREE.Group | null = null;
+  camDist = 99;
+  private boardYaw = 0;
 
   constructor(public team: number, hat: string, name: string | null, private showTag = true) {
     this.root.add(this.body);
@@ -182,8 +186,8 @@ export class PenguinModel {
     bodyMesh.castShadow = true;
     this.body.add(bodyMesh);
     const belly = new THREE.Mesh(G.belly, M.belly);
-    belly.scale.set(0.27, 0.32, 0.2);
-    belly.position.set(0, 0.36, -0.16);
+    belly.scale.set(0.28, 0.33, 0.2);
+    belly.position.set(0, 0.34, -0.17);
     this.body.add(belly);
 
     // head
@@ -346,6 +350,22 @@ export class PenguinModel {
     this.lump.visible = false;
     b.visible = true;
 
+    // riding the surfboard
+    if (p.surfing && p.alive) {
+      if (!this.board) { this.board = makeSurfboard(); this.root.add(this.board); }
+      this.board.visible = true;
+      const sp = Math.hypot(p.vx, p.vz);
+      if (sp > 0.4) {
+        const want = Math.atan2(-p.vx, -p.vz);
+        let d = want - this.boardYaw; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2;
+        this.boardYaw += d * Math.min(1, dt * 8);
+      }
+      this.board.rotation.set(0, this.boardYaw - p.yaw, 0);
+      this.board.position.y = 0.06;
+      // lean into turns
+      this.board.rotation.z = Math.max(-0.3, Math.min(0.3, (p.input.moveX || 0) * -0.25));
+    } else if (this.board) this.board.visible = false;
+
     if (!p.alive) {
       b.visible = false;
       for (const f of this.feet) f.visible = false;
@@ -355,7 +375,7 @@ export class PenguinModel {
       if (this.tag) this.tag.visible = false;
       return;
     }
-    if (this.tag) this.tag.visible = !isLocal;
+    if (this.tag) this.tag.visible = !isLocal && this.camDist > 3.5;
 
     const sq = this.landSquash;
     b.scale.set(1 + sq * 0.3, 1 - sq * 0.35, 1 + sq * 0.3);
@@ -412,6 +432,16 @@ export class PenguinModel {
         break;
       }
       default: {
+        if (p.surfing) {
+          // surfer stance: low, flippers out for balance, no waddle
+          b.position.y += 0.12; b.scale.y *= 0.93;
+          b.rotation.z = Math.sin(time * 3) * 0.05 + (p.input.moveX || 0) * -0.18;
+          b.rotation.x = -0.12;
+          this.flipperL.rotation.z = 1.1 + Math.sin(time * 4) * 0.12; this.flipperR.rotation.z = -1.1 + Math.sin(time * 4 + 1) * 0.12;
+          for (const f of this.feet) f.position.y = 0.13;
+          if (p.throwAnim > 0) this.flipperR.rotation.set(-1.2, 0, -0.3);
+          break;
+        }
         this.walk(speed, dt, 0.12);
         if (p.throwAnim > 0) {
           const t = p.throwAnim / 0.25;

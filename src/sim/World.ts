@@ -3,6 +3,7 @@
 import { SnowField, ISO } from '../world/SnowField';
 import { MapDef, V3, mulberry32 } from '../world/MapDef';
 import { CFG } from './config';
+import { boxGround, boxPush, pointInBoxes, slideY } from '../world/Playground';
 
 export interface PenguinInput {
   moveX: number; // strafe (-1 left .. 1 right)
@@ -47,6 +48,8 @@ export type GameEvent =
   | { type: 'jump'; pid: number }
   | { type: 'slideStart'; pid: number }
   | { type: 'phase'; phase: Phase }
+  | { type: 'board'; pid: number; what: 'grab' | 'drop' | 'spawn'; x: number; y: number; z: number; where?: string }
+  | { type: 'launch'; pid: number }
   | { type: 'gameOver'; winner: number };
 
 export class Penguin {
@@ -82,6 +85,9 @@ export class Penguin {
   lastHitBy = -1;
   input: PenguinInput = emptyInput();
   aimOk = false; // whether the aim point is within dig/build reach
+  surfing = false;
+  onSlide = false;
+  onProp = false;
 
   constructor(public id: number, public name: string, public team: number, public hat: string, public bot: boolean) {}
 }
@@ -105,6 +111,8 @@ export interface BigBall {
 
 export interface Flake { id: number; spot: number; x: number; y: number; z: number; active: boolean; t: number; }
 
+export interface Surfboard { x: number; y: number; z: number; vy: number; holder: number; active: boolean; yaw: number; }
+
 export interface MatchOptions { teamSize: number; playerName: string; playerHat: string; }
 
 const BOT_NAMES = ['Waddles', 'Sir Flaps', 'Pebble', 'Captain Ice', 'Nugget', 'Biscuit', 'Frosty', 'Wobbles', 'Sleet', 'Mittens',
@@ -113,6 +121,7 @@ const BOT_NAMES = ['Waddles', 'Sir Flaps', 'Pebble', 'Captain Ice', 'Nugget', 'B
 export const HATS = ['none', 'beanie', 'tophat', 'propeller', 'viking', 'crown', 'fish', 'party', 'chef', 'cone'];
 
 const tmpN = { x: 0, y: 0, z: 0 };
+const pushTmp = { x: 0, z: 0 };
 const plowOut = { mass: 0, cx: 0, cy: 0, cz: 0 };
 
 export class World {
@@ -121,6 +130,7 @@ export class World {
   snowballs: Snowball[] = [];
   bigBalls: BigBall[] = [];
   flakes: Flake[] = [];
+  board: Surfboard = { x: 0, y: -50, z: 0, vy: 0, holder: -1, active: false, yaw: 0 };
   piles = [CFG.startPile, CFG.startPile];
   scores = [0, 0];
   phase: Phase = 'build';
@@ -183,6 +193,7 @@ export class World {
     this.stepSnowballs(dt);
     this.stepBigBalls(dt);
     this.stepFlakes(dt);
+    this.stepBoard(dt);
   }
 
   private updatePhase(dt: number) {
@@ -230,7 +241,7 @@ export class World {
     const wishX = fwdX * mz + rightX * mx, wishZ = fwdZ * mz + rightZ * mx;
 
     // ── belly slide ──
-    if (inp.slide && p.grounded && !p.sliding && (Math.hypot(p.vx, p.vz) > 1.5 || ml > 0.2)) {
+    if (inp.slide && p.grounded && !p.sliding && !p.surfing && (Math.hypot(p.vx, p.vz) > 1.5 || ml > 0.2)) {
       p.sliding = true; p.slideSlowT = 0;
       const sp = Math.hypot(p.vx, p.vz);
       let dx = sp > 0.5 ? p.vx / sp : wishX, dz = sp > 0.5 ? p.vz / sp : wishZ;
@@ -240,7 +251,7 @@ export class World {
       p.vy = Math.max(p.vy, 1.6);
       this.emit({ type: 'slideStart', pid: p.id });
     }
-    if (p.sliding && (!inp.slide || inp.jump)) p.sliding = false;
+    if (p.sliding && !p.onSlide && (inp.jump || (!inp.slide && p.grounded))) p.sliding = false;
 
     // what are the mittens doing?
     const busy = !p.sliding && p.grounded;
@@ -277,7 +288,7 @@ export class World {
         const nvx = p.vx * c - p.vz * s, nvz = p.vx * s + p.vz * c;
         p.vx = nvx; p.vz = nvz;
       }
-      if (p.grounded) {
+      if (p.grounded && !p.onSlide && !p.onProp) {
         // gravity along the slope
         const n = this.groundNormal(p.x, p.y, p.z);
         p.vx += CFG.gravity * n.y * n.x * dt * 0.95;
@@ -288,17 +299,33 @@ export class World {
       }
       const s3 = Math.hypot(p.vx, p.vz);
       if (s3 > CFG.slideMaxSpeed) { p.vx *= CFG.slideMaxSpeed / s3; p.vz *= CFG.slideMaxSpeed / s3; }
-      if (s3 < 1.2) { p.slideSlowT += dt; if (p.slideSlowT > 0.5) p.sliding = false; } else p.slideSlowT = 0;
+      if (s3 < 1.2 && !p.onSlide) { p.slideSlowT += dt; if (p.slideSlowT > 0.5) p.sliding = false; } else p.slideSlowT = 0;
       p.yaw = Math.atan2(-p.vx, -p.vz);
     } else {
       let speed = CFG.walkSpeed;
       if (action === 'plow') speed = CFG.plowSpeed / (1 + p.plowLoad * 0.0004);
       else if (action === 'pack' || action === 'dig' || action === 'build') speed = CFG.busySpeed;
       else if (action === 'charge') speed = CFG.chargeSpeed;
+      if (p.surfing) speed *= CFG.surfSpeedMult;
       const tx = wishX * speed, tz = wishZ * speed;
-      const accel = p.grounded ? (ice ? 2.2 : 12) : 3;
+      let accel = p.grounded ? (ice ? 2.2 : 12) : 3;
+      if (p.surfing) accel = p.grounded ? (ice ? 4 : CFG.surfAccel) : 2.5;
       const k = Math.min(1, accel * dt);
-      p.vx += (tx - p.vx) * k; p.vz += (tz - p.vz) * k;
+      if (p.surfing && ml < 0.1) {
+        // no input: keep gliding
+        const fr = (ice ? 0.3 : 2.2) * dt, sp = Math.hypot(p.vx, p.vz);
+        if (sp > 0) { const kk = Math.max(0, sp - fr) / sp; p.vx *= kk; p.vz *= kk; }
+      } else {
+        p.vx += (tx - p.vx) * k; p.vz += (tz - p.vz) * k;
+      }
+      if (p.surfing && p.grounded && !p.onProp) {
+        // surf down hills
+        const n = this.groundNormal(p.x, p.y, p.z);
+        p.vx += CFG.gravity * n.y * n.x * dt * 0.7;
+        p.vz += CFG.gravity * n.y * n.z * dt * 0.7;
+        const sp = Math.hypot(p.vx, p.vz);
+        if (sp > CFG.surfMaxSpeed) { p.vx *= CFG.surfMaxSpeed / sp; p.vz *= CFG.surfMaxSpeed / sp; }
+      }
       // body turns toward where we look
       let dyaw = p.lookYaw - p.yaw;
       while (dyaw > Math.PI) dyaw -= Math.PI * 2;
@@ -307,7 +334,7 @@ export class World {
     }
 
     if (inp.jump) {
-      if (p.grounded) { p.vy = CFG.jumpVel; p.grounded = false; p.sliding = false; this.emit({ type: 'jump', pid: p.id }); }
+      if (p.grounded) { p.vy = CFG.jumpVel * (p.surfing ? 1.15 : 1); p.grounded = false; p.sliding = false; p.onSlide = false; this.emit({ type: 'jump', pid: p.id }); }
       inp.jump = false;
     }
 
@@ -441,6 +468,29 @@ export class World {
       const d = Math.hypot(dx, dz), min = 2.4 + r * 0.6;
       if (d < min && d > 1e-4 && p.y < b.igloo.y + 2.2) { p.x = b.igloo.x + dx / d * min; p.z = b.igloo.z + dz / d * min; }
     }
+    // playground: boxes and poles
+    const pg = this.map.playground;
+    const head = p.y + (p.sliding ? 0.6 : 1.05);
+    if (boxPush(pg.boxes, p.x, p.z, p.y + 0.02, head, r, pushTmp)) {
+      p.x += pushTmp.x; p.z += pushTmp.z;
+      const pl = Math.hypot(pushTmp.x, pushTmp.z) || 1;
+      const nx = pushTmp.x / pl, nz = pushTmp.z / pl;
+      const vn = p.vx * nx + p.vz * nz;
+      if (vn < 0) { p.vx -= vn * nx; p.vz -= vn * nz; }
+    }
+    for (const c of pg.cyls) {
+      if (p.y > c.y1 || head < c.y0) continue;
+      const dx = p.x - c.x, dz = p.z - c.z;
+      const d = Math.hypot(dx, dz), min = c.r + r;
+      if (d < min && d > 1e-4) { p.x = c.x + dx / d * min; p.z = c.z + dz / d * min; const vn = (p.vx * dx + p.vz * dz) / d; if (vn < 0) { p.vx -= vn * dx / d; p.vz -= vn * dz / d; } }
+    }
+    // slide side rails: if we're on the slide, stay between them
+    if (p.onSlide) {
+      const sl = pg.slide;
+      const lim = sl.width / 2 - 0.1;
+      if (p.x < sl.x - lim) { p.x = sl.x - lim; p.vx = Math.max(0, p.vx); }
+      if (p.x > sl.x + lim) { p.x = sl.x + lim; p.vx = Math.min(0, p.vx); }
+    }
     // big balls (pushing them happens in stepBigBalls)
     for (const b of this.bigBalls) {
       const dx = p.x - b.x, dz = p.z - b.z;
@@ -464,7 +514,13 @@ export class World {
   private groundPenguin(p: Penguin, dt: number) {
     const f = this.field;
     const stepUp = p.sliding ? 0.35 : CFG.stepUp;
-    const g = f.surfaceBelow(p.x, p.y, p.z, stepUp, p.grounded ? 0.6 : 0.2 + Math.max(0, -p.vy * dt));
+    const down = p.grounded ? 0.6 : 0.2 + Math.max(0, -p.vy * dt);
+    // the playground slide
+    if (this.onPlaygroundSlide(p, dt)) return;
+    let g = f.surfaceBelow(p.x, p.y, p.z, stepUp, down);
+    const pb = boxGround(this.map.playground.boxes, p.x, p.z, p.y, stepUp, down, CFG.radius * 0.5);
+    p.onProp = false;
+    if (pb !== null && (g === null || pb > g)) { g = pb; p.onProp = true; }
     const wasGrounded = p.grounded;
     if (g !== null && p.y <= g + 0.02 && p.vy <= 0.5) {
       p.y = g; p.vy = 0; p.grounded = true;
@@ -481,6 +537,42 @@ export class World {
       if (top !== null && top > p.y) { p.y = top; p.vy = 0; }
     }
     if (p.y < -4) { p.y = 30; this.spawn(p); }
+  }
+
+  /** Riding the playground slide: follow the ramp, speed up downhill, and launch off the lip at the end. */
+  private onPlaygroundSlide(p: Penguin, dt: number) {
+    const sl = this.map.playground.slide;
+    const s = (p.z - sl.z0) * sl.dirZ;
+    const half = sl.width / 2;
+    if (s < 0 || s > sl.length || Math.abs(p.x - sl.x) > half) { if (p.onSlide) { p.onSlide = false; this.emit({ type: 'launch', pid: p.id }); } return false; }
+    const y = slideY(sl, s);
+    if (p.y < y - 0.45 || p.y > y + 0.3 || (p.vy > 1 && !p.onSlide)) { p.onSlide = false; return false; }
+    // on the ramp
+    const e = 0.15;
+    const dyds = (slideY(sl, Math.min(sl.length, s + e)) - slideY(sl, Math.max(0, s - e))) / (2 * e);
+    const tl = Math.hypot(1, dyds);
+    const ts = 1 / tl, ty = dyds / tl;
+    const vs = p.vz * sl.dirZ;
+    let along = vs * ts + p.vy * ty;
+    if (!p.onSlide) along = Math.max(along, 1.5);
+    along += -CFG.gravity * ty * dt; // downhill speeds you up, the lip slows you a bit
+    along -= Math.sign(along) * 0.3 * dt;
+    p.vz = sl.dirZ * along * ts;
+    p.vy = along * ty;
+    p.vx *= 0.9;
+    p.y = y;
+    p.grounded = true;
+    p.onSlide = true;
+    p.onProp = true;
+    p.sliding = true;
+    p.yaw = sl.dirZ > 0 ? Math.PI : 0;
+    // leaving the end of the lip: launch!
+    if (s + along * ts * dt > sl.length - 0.05 && ty > 0) {
+      p.grounded = false; p.onSlide = false;
+      p.vy = Math.max(p.vy, 3) + 1.5;
+      this.emit({ type: 'launch', pid: p.id });
+    }
+    return true;
   }
 
   private separatePenguins() {
@@ -642,6 +734,17 @@ export class World {
           }
         }
         if (!b.alive) break;
+        const pg = this.map.playground;
+        let propHit = pointInBoxes(pg.boxes, b.x, b.y, b.z, CFG.snowballRadius);
+        if (!propHit) for (const c of pg.cyls) if (b.y > c.y0 && b.y < c.y1 && Math.hypot(b.x - c.x, b.z - c.z) < c.r + CFG.snowballRadius) { propHit = true; break; }
+        if (!propHit) {
+          const sl = pg.slide, ss = (b.z - sl.z0) * sl.dirZ;
+          if (ss >= 0 && ss <= sl.length && Math.abs(b.x - sl.x) < sl.width / 2 + 0.05) {
+            const yy = slideY(sl, ss);
+            if (b.y < yy + 0.05 && b.y > yy - 0.25) propHit = true;
+          }
+        }
+        if (propHit) { this.emit({ type: 'snowHit', x: b.x, y: b.y, z: b.z, nx: -b.vx * 0.05, ny: 0.5, nz: -b.vz * 0.05 }); b.alive = false; break; }
         for (const t of this.map.trees) {
           if (b.y < t.y + t.h && Math.hypot(b.x - t.x, b.z - t.z) < 0.25 + (1 - (b.y - t.y) / t.h) * 1.2 * (t.h / 5)) {
             this.emit({ type: 'snowHit', x: b.x, y: b.y, z: b.z, nx: 0, ny: 1, nz: 0 });
@@ -688,6 +791,13 @@ export class World {
     }
     this.emit({ type: 'splat', pid: p.id, by, x: p.x, y: p.y, z: p.z, cause });
     p.carried = 0;
+    if (this.board.holder === p.id) {
+      // the surfboard drops right where you got splatted
+      const bd = this.board;
+      bd.holder = -1; bd.x = p.x; bd.y = p.y + 0.6; bd.z = p.z; bd.vy = 4; bd.yaw = p.yaw;
+      p.surfing = false;
+      this.emit({ type: 'board', pid: p.id, what: 'drop', x: bd.x, y: bd.y, z: bd.z });
+    }
   }
 
   // ───────────────────────── big rolling snowballs ─────────────────────────
@@ -815,6 +925,22 @@ export class World {
           const vn = (b.vx * dx + b.vz * dz) / d; if (vn < 0) { b.vx -= 1.5 * vn * dx / d; b.vz -= 1.5 * vn * dz / d; }
         }
       }
+      // playground
+      {
+        const pg = this.map.playground;
+        if (boxPush(pg.boxes, b.x, b.z, b.y - b.r * 0.7, b.y + b.r * 0.7, b.r, pushTmp)) {
+          b.x += pushTmp.x; b.z += pushTmp.z;
+          const pl = Math.hypot(pushTmp.x, pushTmp.z) || 1;
+          const nx = pushTmp.x / pl, nz = pushTmp.z / pl;
+          const vn = b.vx * nx + b.vz * nz;
+          if (vn < 0) { b.vx -= 1.5 * vn * nx; b.vz -= 1.5 * vn * nz; if (vn < -3) this.emit({ type: 'crush', x: b.x, y: b.y, z: b.z, mass: 600, r: b.r }); }
+        }
+        for (const c of pg.cyls) {
+          if (b.y - b.r > c.y1) continue;
+          const dx = b.x - c.x, dz = b.z - c.z, d = Math.hypot(dx, dz), min = b.r + c.r;
+          if (d < min && d > 1e-4) { b.x = c.x + dx / d * min; b.z = c.z + dz / d * min; const vn = (b.vx * dx + b.vz * dz) / d; if (vn < 0) { b.vx -= 1.5 * vn * dx / d; b.vz -= 1.5 * vn * dz / d; } }
+        }
+      }
       // igloos
       for (const base of this.map.bases) {
         const dx = b.x - base.igloo.x, dz = b.z - base.igloo.z, d = Math.hypot(dx, dz), min = b.r + 2.4;
@@ -876,6 +1002,44 @@ export class World {
     const l = Math.hypot(gx, 1, gz);
     tmpN.x = -gx / l; tmpN.y = 1 / l; tmpN.z = -gz / l;
     return tmpN;
+  }
+
+  // ───────────────────────── the surfboard ─────────────────────────
+  private stepBoard(dt: number) {
+    const bd = this.board;
+    if (!bd.active) {
+      if (this.phase === 'fight' && CFG.fightPhase - this.phaseT > CFG.boardSpawnDelay) {
+        const spot = this.map.boardSpots[Math.floor(this.rand() * this.map.boardSpots.length)];
+        bd.active = true; bd.holder = -1; bd.x = spot.x; bd.z = spot.z;
+        bd.y = (this.field.surfaceBelow(spot.x, 25, spot.z, 0, 30) ?? 5) + 2; bd.vy = 0;
+        this.emit({ type: 'board', pid: -1, what: 'spawn', x: bd.x, y: bd.y, z: bd.z, where: spot.name });
+      }
+      return;
+    }
+    for (const p of this.penguins) p.surfing = p.id === bd.holder && p.alive;
+    if (bd.holder >= 0) {
+      const h = this.penguin(bd.holder);
+      if (!h || !h.alive) { bd.holder = -1; return; }
+      bd.x = h.x; bd.y = h.y; bd.z = h.z;
+      const sp = Math.hypot(h.vx, h.vz);
+      if (sp > 0.5) bd.yaw = Math.atan2(-h.vx, -h.vz);
+      return;
+    }
+    // lying around: fall onto the snow, wait for someone to grab it
+    bd.vy -= CFG.gravity * dt;
+    bd.y += bd.vy * dt;
+    const g = this.field.surfaceBelow(bd.x, bd.y + 0.5, bd.z, 0.5, 4);
+    if (g !== null && bd.y < g + 0.15) { bd.y = g + 0.15; bd.vy = 0; }
+    if (bd.y < -5) { bd.active = false; return; }
+    if (this.phase === 'end') return;
+    for (const p of this.penguins) {
+      if (!p.alive) continue;
+      if (Math.hypot(p.x - bd.x, p.z - bd.z) < 1.2 && Math.abs(p.y - bd.y) < 1.6) {
+        bd.holder = p.id; p.surfing = true; p.sliding = false;
+        this.emit({ type: 'board', pid: p.id, what: 'grab', x: bd.x, y: bd.y, z: bd.z });
+        break;
+      }
+    }
   }
 
   // ───────────────────────── shiny snowflakes ─────────────────────────

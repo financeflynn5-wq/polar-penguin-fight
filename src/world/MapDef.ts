@@ -2,6 +2,7 @@
 // Shared by client and (later) server, so no Three.js here.
 
 import { SnowField } from './SnowField';
+import { buildPlayground, Playground } from './Playground';
 
 export interface V3 { x: number; y: number; z: number; }
 
@@ -25,6 +26,8 @@ export interface MapDef {
   flakeSpots: V3[];
   trees: Tree[];
   pond: { x: number; z: number; r: number; y: number };
+  playground: Playground;
+  boardSpots: { x: number; z: number; name: string }[];
   bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
   midLineX: number;
 }
@@ -145,7 +148,7 @@ export function buildMap(): MapDef {
   ].map(p => ({ ...p, y: groundHeight(p.x, p.z) }));
 
   const flakeSpots: V3[] = [
-    { x: 0, z: HILL.z }, { x: 0, z: 2 }, { x: -9, z: 13 }, { x: 9, z: 13 }, { x: 0, z: 22 },
+    { x: 0, z: HILL.z }, { x: 2.6, z: 2.5 }, { x: -9, z: 13 }, { x: 9, z: 13 }, { x: 0, z: 22 },
     { x: -14, z: -4 }, { x: 14, z: -4 }, { x: -18, z: 18 }, { x: 18, z: 18 }, { x: -12, z: -24 }, { x: 12, z: -24 },
   ].map(p => ({ x: p.x, y: groundHeight(p.x, p.z) + 1.1, z: p.z }));
 
@@ -157,6 +160,7 @@ export function buildMap(): MapDef {
     if (Math.hypot(x - POND.x, z - POND.z) < POND.r + 1.5) return;
     if (Math.hypot(Math.abs(x) - BASE_X, z) < 10) return;
     if (Math.hypot(x - HILL.x, z - HILL.z) < 6) return;
+    if (Math.abs(x) < 12 && z > -8 && z < 8) return; // playground
     trees.push({ x, z, y: groundHeight(x, z) - 0.3, h, r: 0.32 });
   };
   for (let n = 0; n < 70; n++) {
@@ -176,9 +180,17 @@ export function buildMap(): MapDef {
     }
   }
 
+  const playground = buildPlayground(groundHeight);
+  const boardSpots = [
+    { x: 0, z: HILL.z - 2, name: 'on top of the Big Hill' },
+    { x: 0, z: 13, name: 'out on the frozen pond' },
+    { x: 0, z: 24, name: 'by the south trees' },
+    { x: -2.5, z: -6.5, name: 'behind the playground' },
+  ];
+
   return {
     name: 'Frostbite Bay',
-    field, bases, bigBallSpawns, flakeSpots, trees,
+    field, bases, bigBallSpawns, flakeSpots, trees, playground, boardSpots,
     pond: { x: POND.x, z: POND.z, r: POND.r, y: POND_Y },
     bounds: { minX: -46.5, maxX: 46.5, minZ: -30.5, maxZ: 30.5 },
     midLineX: 0,

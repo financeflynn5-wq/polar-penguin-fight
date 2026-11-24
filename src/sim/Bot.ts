@@ -4,7 +4,7 @@ import { V3 } from '../world/MapDef';
 import { World, Penguin, solveThrow } from './World';
 import { CFG } from './config';
 
-type Goal = 'build' | 'pack' | 'stash' | 'grab' | 'fight' | 'flake' | 'roll' | 'retreat' | 'advance';
+type Goal = 'build' | 'pack' | 'stash' | 'grab' | 'fight' | 'flake' | 'roll' | 'retreat' | 'advance' | 'board';
 
 const wrap = (a: number) => { while (a > Math.PI) a -= Math.PI * 2; while (a < -Math.PI) a += Math.PI * 2; return a; };
 
@@ -62,6 +62,8 @@ export class BotBrain {
         this.goal = w.piles[p.team] > 0 && pileDist < 30 ? 'grab' : 'pack';
       } else if (p.health === 1 && p.sinceHit < 4 && this.targetVisible) {
         this.goal = 'retreat';
+      } else if (w.board.active && w.board.holder < 0 && Math.hypot(w.board.x - p.x, w.board.z - p.z) < 22) {
+        this.goal = 'board';
       } else if (flake && flake.d < 14 && p.mitten < 3 && !(this.targetVisible && p.carried > 0 && this.targetDist(w, p) < 14)) {
         this.goal = 'flake';
       } else if (this.role === 'roller' && this.findBall(w, p)) {
@@ -75,7 +77,14 @@ export class BotBrain {
 
     switch (this.goal) {
       case 'build': this.doBuild(w, p, dt, base, toCenter); break;
-      case 'pack': inp.pack = true; this.faceYaw(p, base.facing + Math.sin(this.t * 0.3 + this.index) * 0.8); break;
+      case 'pack': {
+        inp.pack = true;
+        this.faceYaw(p, base.facing + Math.sin(this.t * 0.3 + this.index) * 1.2);
+        if (p.noSnowT > 0) inp.moveZ = 1;
+        // during the fight, don't pack in the open next to an enemy: back off toward home
+        if (w.phase === 'fight' && this.targetVisible && this.targetDist(w, p) < 12) { inp.pack = false; this.moveTo(w, p, base.center, 2, dt); }
+        break;
+      }
       case 'stash': {
         if (this.moveTo(w, p, base.stockpile, 1.4, dt)) { inp.use = true; }
         break;
@@ -90,6 +99,11 @@ export class BotBrain {
       case 'flake': {
         const f = this.nearestFlake(w, p)!;
         this.moveTo(w, p, f.f, 0.5, dt);
+        this.combatWhileMoving(w, p);
+        break;
+      }
+      case 'board': {
+        this.moveTo(w, p, { x: w.board.x, y: w.board.y, z: w.board.z }, 0.3, dt);
         this.combatWhileMoving(w, p);
         break;
       }

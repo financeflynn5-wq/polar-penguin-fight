@@ -5,6 +5,39 @@ import { TEAM_COLORS } from './Environment';
 
 const snowballMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.8 });
 
+/** a soft vertical light pillar that fades out at the top, so pickups can be spotted across the map */
+export function beamMaterial(color: number) {
+  return new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+    uniforms: { uColor: { value: new THREE.Color(color) } },
+    vertexShader: `varying vec2 vUv; varying vec3 vN; varying vec3 vV; void main(){ vUv = uv; vec4 wp = modelMatrix * vec4(position,1.0); vN = normalize(mat3(modelMatrix) * normal); vV = normalize(cameraPosition - wp.xyz); gl_Position = projectionMatrix * viewMatrix * wp; }`,
+    fragmentShader: `uniform vec3 uColor; varying vec2 vUv; varying vec3 vN; varying vec3 vV;
+      void main(){ float edge = pow(abs(dot(vN, vV)), 2.0); float fade = (1.0 - vUv.y) * smoothstep(0.0, 0.05, vUv.y); gl_FragColor = vec4(uColor * edge * fade * 0.2, 1.0); }`,
+  });
+}
+
+export function makeSurfboard() {
+  const g = new THREE.Group();
+  const geo = new THREE.CapsuleGeometry(0.27, 1.15, 6, 16);
+  geo.rotateX(Math.PI / 2);
+  geo.scale(1, 0.16, 1);
+  const board = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xfff1c9, roughness: 0.35 }));
+  g.add(board);
+  const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.02, 1.5), new THREE.MeshStandardMaterial({ color: 0x18b5c9, roughness: 0.4 }));
+  stripe.position.y = 0.045;
+  g.add(stripe);
+  for (const sx of [-0.17, 0.17]) {
+    const side = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.021, 1.2), new THREE.MeshStandardMaterial({ color: 0xff7a3d, roughness: 0.4 }));
+    side.position.set(sx, 0.042, 0);
+    g.add(side);
+  }
+  const fin = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.16, 0.2), new THREE.MeshStandardMaterial({ color: 0x18b5c9 }));
+  fin.position.set(0, -0.08, 0.6);
+  g.add(fin);
+  g.traverse(o => { if ((o as THREE.Mesh).isMesh) o.castShadow = true; });
+  return g;
+}
+
 function lumpySnowGeometry(r: number, detail = 3, amp = 0.06) {
   const g = new THREE.IcosahedronGeometry(r, detail);
   const p = g.attributes.position as THREE.BufferAttribute;
@@ -52,6 +85,7 @@ export class Props {
   private flakeMeshes = new Map<number, THREE.Group>();
   private flakeProto: THREE.Group;
   private barrier: THREE.Mesh;
+  private freeBoard: THREE.Group;
   private barrierMat: THREE.ShaderMaterial;
   readonly aimMarker: THREE.Mesh;
   readonly trajectory: THREE.Line;
@@ -74,8 +108,10 @@ export class Props {
       im.position.set(b.stockpile.x, b.stockpile.y, b.stockpile.z);
       this.group.add(im);
       this.piles.push(im);
-      const label = textSprite('0', b.team === 0 ? '#9fd0ff' : '#ffc29a', 1.4);
+      const label = textSprite('0', b.team === 0 ? '#9fd0ff' : '#ffc29a', 1.0);
       label.sprite.position.set(b.stockpile.x, b.stockpile.y + 2.2, b.stockpile.z);
+      label.sprite.visible = false;
+      (label.sprite.material as THREE.SpriteMaterial).depthTest = true;
       this.group.add(label.sprite);
       this.pileLabels.push({ ...label, last: -1 });
     }
@@ -107,10 +143,21 @@ export class Props {
     const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true }));
     glow.scale.set(1.8, 1.8, 1);
     this.flakeProto.add(glow);
-    const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.3, 14, 10, 1, true), new THREE.MeshBasicMaterial({ color: 0x8fe6ff, transparent: true, opacity: 0.18, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
-    beam.position.y = 7;
+    const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 12, 14, 1, true), beamMaterial(0x8fe6ff));
+    beam.position.y = 6;
     beam.name = 'beam';
     this.flakeProto.add(beam);
+
+    // the surfboard lying around, waiting for a rider
+    this.freeBoard = new THREE.Group();
+    const fb = makeSurfboard();
+    fb.rotation.x = -0.25;
+    this.freeBoard.add(fb);
+    const goldBeam = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 14, 14, 1, true), beamMaterial(0xffc94d));
+    goldBeam.position.y = 7;
+    this.freeBoard.add(goldBeam);
+    this.freeBoard.visible = false;
+    this.group.add(this.freeBoard);
 
     // build-phase ice line down the middle
     this.barrierMat = new THREE.ShaderMaterial({
@@ -216,6 +263,7 @@ export class Props {
         im.instanceMatrix.needsUpdate = true;
       }
       const lab = this.pileLabels[t];
+      lab.sprite.visible = true;
       if (lab.last !== count) { lab.draw(String(count)); lab.last = count; }
       lab.sprite.position.y = this.map.bases[t].stockpile.y + 1.4 + Math.min(1.5, show * 0.03) + Math.sin(time * 2) * 0.05;
     }
@@ -233,6 +281,14 @@ export class Props {
       if (beam) beam.rotation.y = -time * 1.5;
     }
     for (const [id, g] of this.flakeMeshes) if (!fseen.has(id)) { this.group.remove(g); this.flakeMeshes.delete(id); }
+
+    // surfboard on the ground
+    const bd = w.board;
+    this.freeBoard.visible = bd.active && bd.holder < 0;
+    if (this.freeBoard.visible) {
+      this.freeBoard.position.set(bd.x, bd.y + 0.25 + Math.sin(time * 2.5) * 0.12, bd.z);
+      this.freeBoard.rotation.y = time * 1.2;
+    }
 
     // build-phase barrier
     this.barrier.visible = w.phase === 'build';

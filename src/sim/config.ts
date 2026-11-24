@@ -36,6 +36,11 @@ export const CFG = {
   buildHard: 150,
   rateBonusPerLevel: 0.25,
 
+  surfSpeedMult: 1.55,
+  surfAccel: 9,
+  surfMaxSpeed: 13,
+  boardSpawnDelay: 20, // seconds into the fight before the surfboard pops up
+
   stockRadius: 2.6,
   startPile: 6,
   useHoldTime: 0.35,
