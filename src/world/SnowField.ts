@@ -22,6 +22,7 @@ export class SnowField {
   readonly hard: Uint8Array; // how packed the snow is (0 = fluffy, 255 = ice-hard)
   readonly baseHeight: Float32Array; // original ground height per column
   readonly bedrock: Float32Array; // can't dig below this height per column
+  readonly ice: Uint8Array; // 1 where the column is frozen water (pond, sled run)
   onDirty: DirtyListener | null = null;
 
   // scratch buffers for ops
@@ -35,6 +36,7 @@ export class SnowField {
     this.hard = new Uint8Array(this.nx * this.ny * this.nz);
     this.baseHeight = new Float32Array(this.nx * this.nz);
     this.bedrock = new Float32Array(this.nx * this.nz);
+    this.ice = new Uint8Array(this.nx * this.nz);
   }
 
   idx(i: number, j: number, k: number) { return (k * this.nx + i) * this.ny + j; }
@@ -162,6 +164,94 @@ export class SnowField {
     if (this.onDirty) this.onDirty(i0, j0, k0, i1, j1, k1);
   }
 
+  /** Scan up from a point inside the snow to the top of that solid run (the first air above it). */
+  topAbove(x: number, y: number, z: number, maxUp = 5): number {
+    const fx = this.fx(x), fz = this.fz(z);
+    let j = Math.floor(this.fy(y));
+    const jEnd = Math.min(this.ny - 1, Math.ceil(this.fy(y + maxUp)));
+    let below = j < 0 ? 255 : this.colDensity(fx, fz, j);
+    if (below <= ISO) return y;
+    for (j = j + 1; j <= jEnd; j++) {
+      const d = this.colDensity(fx, fz, j);
+      if (d <= ISO) return (j - 1 + (below - ISO) / Math.max(1e-3, below - d)) * this.cell;
+      below = d;
+    }
+    return y + maxUp;
+  }
+
+  // ───────────────────────── stability: snow with nothing under it falls ─────────────────────────
+  private static readonly TILE = 8;
+  private static readonly SPAN = 2; // how many cells an overhang can reach from snow that stands on the ground
+  /** 8x8-column tiles where snow was removed, so something above may have lost its support */
+  readonly unstable = new Set<number>();
+  private gScratch = new Int16Array((SnowField.TILE + 2 * SnowField.SPAN) ** 2);
+
+  private markUnstable(i0: number, k0: number, i1: number, k1: number) {
+    const T = SnowField.TILE, tx = Math.ceil(this.nx / T);
+    const a0 = Math.max(0, Math.floor((i0 - 2) / T)), a1 = Math.min(tx - 1, Math.floor((i1 + 2) / T));
+    const b0 = Math.max(0, Math.floor((k0 - 2) / T)), b1 = Math.min(Math.ceil(this.nz / T) - 1, Math.floor((k1 + 2) / T));
+    for (let b = b0; b <= b1; b++) for (let a = a0; a <= a1; a++) this.unstable.add(b * tx + a);
+  }
+
+  /** index of the first non-solid voxel above the ground in a column (everything below it stands on the ground) */
+  private groundedTop(i: number, k: number): number {
+    if (i < 0 || k < 0 || i >= this.nx || k >= this.nz) return 0;
+    const col = k * this.nx + i, base = col * this.ny;
+    let j = Math.max(0, Math.ceil(this.bedrock[col] / this.cell) - 1);
+    while (j < this.ny && this.density[base + j] > ISO) j++;
+    return j;
+  }
+
+  /**
+   * Check a few unstable tiles: any snow hanging in the air further than SPAN cells from grounded snow drops straight down.
+   * Calls onFall once per tile that had a collapse (centre of the fallen snow, how far it fell, and how much).
+   */
+  settle(maxTiles: number, onFall: (x: number, y: number, z: number, drop: number, mass: number) => void) {
+    if (this.unstable.size === 0) return;
+    const T = SnowField.TILE, S = SnowField.SPAN, W = T + 2 * S, tx = Math.ceil(this.nx / T);
+    const G = this.gScratch;
+    let done = 0;
+    for (const tile of this.unstable) {
+      this.unstable.delete(tile);
+      const i0 = (tile % tx) * T, k0 = Math.floor(tile / tx) * T;
+      for (let b = 0; b < W; b++) for (let a = 0; a < W; a++) G[b * W + a] = this.groundedTop(i0 - S + a, k0 - S + b);
+      let fell = 0, sx = 0, sy = 0, sz = 0, sdrop = 0, jMin = this.ny, jMax = 0;
+      for (let b = S; b < S + T; b++) for (let a = S; a < S + T; a++) {
+        const i = i0 - S + a, k = k0 - S + b;
+        if (i >= this.nx || k >= this.nz) continue;
+        const base = (k * this.nx + i) * this.ny;
+        let g = G[b * W + a];
+        for (let j = g + 1; j < this.ny; j++) {
+          if (this.density[base + j] <= ISO) continue;
+          // a solid run starting at j with air under it
+          let top = j; while (top < this.ny && this.density[base + top] > ISO) top++;
+          let ok = false;
+          for (let db = -S; db <= S && !ok; db++) for (let da = -S; da <= S; da++) {
+            if (da * da + db * db > S * S) continue;
+            if (G[(b + db) * W + a + da] > j) { ok = true; break; }
+          }
+          if (ok) { j = top; continue; }
+          // unsupported: gather everything from the grounded top up to the run's top and drop it
+          const end = Math.min(this.ny - 1, top);
+          let mass = 0, runMass = 0;
+          for (let q = g; q <= end; q++) { const d = this.density[base + q]; mass += d; if (q >= j) runMass += d; this.density[base + q] = 0; this.hard[base + q] = 0; }
+          let q = g, left = mass;
+          while (left > 0 && q < this.ny) { const put = Math.min(255, left); this.density[base + q] = put; left -= put; q++; }
+          if (g < jMin) jMin = g; if (end > jMax) jMax = end;
+          fell += runMass; sx += this.wx(i) * runMass; sy += j * this.cell * runMass; sz += this.wz(k) * runMass; sdrop += (j - g) * this.cell * runMass;
+          while (g < this.ny && this.density[base + g] > ISO) g++;
+          G[b * W + a] = g;
+          j = Math.max(g, j);
+        }
+      }
+      if (fell > 0) {
+        this.markDirty(i0, Math.max(0, jMin - 1), k0, i0 + T - 1, jMax, k0 + T - 1);
+        onFall(sx / fell, sy / fell, sz / fell, sdrop / fell, fell);
+      }
+      if (++done >= maxTiles) break;
+    }
+  }
+
   private canRemove(i: number, j: number, k: number) {
     return j * this.cell >= this.bedrock[k * this.nx + i] - 1e-4;
   }
@@ -260,6 +350,7 @@ export class SnowField {
       }
     }
     this.markDirty(i0, j0, k0, i1, j1, k1);
+    if (removed > 0) this.markUnstable(i0, k0, i1, k1);
     return removed;
   }
 

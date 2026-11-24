@@ -7,9 +7,10 @@ export const CFG = {
   chargeSpeed: 3.6, // while winding up a throw
   jumpVel: 6.6,
   slideBoost: 4.0,
-  slideMaxSpeed: 15,
-  slideFriction: 1.1, // m/s² on snow
+  slideMaxSpeed: 19,
+  slideFriction: 0.85, // m/s² on snow
   iceFriction: 0.25,
+  sledAssist: 3.2, // how strongly the sled run's ice turns a slider to follow the track (per second)
   slideSteer: 1.8, // rad/s
   radius: 0.38,
   stepUp: 0.45,
@@ -22,17 +23,22 @@ export const CFG = {
   maxCarry: 5,
   packTime: [0.62, 0.5, 0.4, 0.3], // per mitten level
   packMass: 420, // snow used per snowball
-  throwSpeedMin: 20,
-  throwSpeedMax: 32,
+  throwSpeedMin: 25,
+  throwSpeedMax: 41,
   throwChargeTime: 0.7,
   throwCooldown: 0.28,
   throwPerLevel: 0.07,
-  snowballGravity: 13,
+  snowballGravity: 9.5, // lower = flatter throws
+  hitRadius: 0.5, // how close a snowball has to pass to count as a hit
+  aimAssist: 0.55, // how much a throw leads a moving penguin under the crosshair (0 = none)
   snowballRadius: 0.13,
 
   reach: 4.2, // dig / build reach
   digRate: 2700, // snow units per second
-  buildRate: 2300,
+  buildRate: 3600,
+  buildRadius: 0.9, // size of the lump of snow each build tick adds
+  buildBaseRun: 0.8, // a pile needs snow this far out to every side ...
+  buildBaseRise: 1.35, // ... this far below its top, or new snow slumps down the sides
   buildHard: 150,
   rateBonusPerLevel: 0.25,
 
@@ -46,7 +52,11 @@ export const CFG = {
   useHoldTime: 0.35,
 
   bigBallStartRadius: 1.05,
-  bigBallMaxRadius: 2.1,
+  bigBallMaxRadius: 2.6,
+  ballStartMass: 1150, // snow scooped to start your own giant snowball (2040 = one cubic metre)
+  ballGrowth: 420, // snow picked up per metre rolled, per metre of radius
+  ballMakeCooldown: 2.5,
+  maxMadeBalls: 8, // how many player-made balls can exist on top of the map's own
   maxBigBalls: 6,
   bigBallRespawn: 22,
 
@@ -54,7 +64,7 @@ export const CFG = {
   flakeRespawn: 12,
   maxMitten: 3,
 
-  buildPhase: 30,
+  buildPhase: 60,
   fightPhase: 300,
   scoreToWin: 25,
 };

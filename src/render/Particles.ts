@@ -36,7 +36,7 @@ export class Particles {
       depthWrite: false,
       uniforms: {
         uScale: { value: 600 },
-        fogColor: { value: new THREE.Color(0xcfe3f5) }, fogNear: { value: 70 }, fogFar: { value: 230 },
+        fogColor: { value: new THREE.Color(0xcfe1f4) }, fogNear: { value: 110 }, fogFar: { value: 460 },
       },
       vertexShader: `
         attribute float psize; attribute float palpha; attribute vec3 pcolor;

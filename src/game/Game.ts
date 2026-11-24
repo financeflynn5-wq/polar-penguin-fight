@@ -14,6 +14,7 @@ import { CFG, MITTEN_NAMES } from '../sim/config';
 import { Input } from './Input';
 import { Audio } from './Audio';
 import { Hud } from '../ui/Hud';
+import { PostFX } from '../render/PostFX';
 
 const STEP = 1 / 60;
 
@@ -49,7 +50,14 @@ export class Game {
   private plowSound = 0;
   private stepT = 0;
   private countdownLast = -1;
-  private camDist = 4.4;
+  private camDist = 4.8;
+  private post: PostFX | null = null;
+  quality: 'high' | 'low' = 'high';
+  private stroke = new Map<number, number>();
+  private stroking = false;
+  private aimTarget: Penguin | null = null;
+  private taughtRoll = false;
+  private focusTmp = new THREE.Vector3();
   private aimSnow: { x: number; y: number; z: number } | null = null;
   private aimAny: { x: number; y: number; z: number } | null = null;
   paused = false;
@@ -59,11 +67,13 @@ export class Game {
 
   constructor(container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
+    try { if (localStorage.getItem('ppf.quality') === 'low') this.quality = 'low'; } catch { /* private mode */ }
+    this.renderer.setPixelRatio(this.pixelRatio());
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.12;
+    this.renderer.toneMappingExposure = 1.02;
+    this.post = new PostFX(this.renderer, this.scene, this.camera);
     container.appendChild(this.renderer.domElement);
     this.input = new Input(this.renderer.domElement);
     this.input.onLockChange = locked => {
@@ -81,9 +91,20 @@ export class Game {
     requestAnimationFrame(t => this.frame(t));
   }
 
+  private pixelRatio() { return Math.min(window.devicePixelRatio, this.quality === 'high' ? 1.75 : 1); }
+
+  setQuality(q: 'high' | 'low') {
+    this.quality = q;
+    try { localStorage.setItem('ppf.quality', q); } catch { /* private mode */ }
+    this.renderer.shadowMap.enabled = true;
+    this.resize();
+  }
+
   private resize() {
     const w = window.innerWidth, h = window.innerHeight;
+    this.renderer.setPixelRatio(this.pixelRatio());
     this.renderer.setSize(w, h);
+    this.post?.setSize(w, h, this.pixelRatio());
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
   }
@@ -93,9 +114,10 @@ export class Game {
     while (this.scene.children.length) this.scene.remove(this.scene.children[0]);
     this.models.forEach(m => m.dispose(this.scene));
     this.models.clear();
+    this.env?.dispose();
     this.map = buildMap();
-    this.env = new Environment(this.scene, this.map);
-    this.snow = new SnowRenderer(this.map.field, this.map.pond.y);
+    this.env = new Environment(this.scene, this.map, this.renderer);
+    this.snow = new SnowRenderer(this.map.field);
     this.snow.buildAll();
     this.scene.add(this.snow.group);
     this.particles = new Particles(this.map.field);
@@ -139,11 +161,12 @@ export class Game {
     this.bots.clear();
     let rndSeed = 1;
     const rnd = () => { rndSeed = (rndSeed * 16807) % 2147483647; return rndSeed / 2147483647; };
+    const slots = [1, 0]; // the player takes the first job slot on team 0
     this.world.penguins.forEach((p, i) => {
       const m = new PenguinModel(p.team, p.hat, p.bot ? p.name : p.name, true);
       this.scene.add(m.root);
       this.models.set(p.id, m);
-      if (p.bot) this.bots.set(p.id, new BotBrain(i, rnd));
+      if (p.bot) this.bots.set(p.id, new BotBrain(i, rnd, slots[p.team]++));
     });
     this.hud = new Hud();
     this.mode = 'play';
@@ -179,12 +202,18 @@ export class Game {
     if (this.mode === 'menu') this.menuFrame(dt);
     else if (this.world) this.playFrame(dt);
 
+    {
+      const me = this.mode === 'play' ? this.world?.player : null;
+      this.env.setFocus(this.camera.position, me ? this.focusTmp.set(me.x, me.y + 0.7, me.z) : null);
+    }
     this.env.update(this.time, this.camera, window.innerHeight);
     this.playground.update(this.time);
     this.decals.update(this.time);
     this.snow.update(this.camera.position, this.mode === 'menu' ? 8 : 4, this.time);
-    this.particles.update(dt, window.innerHeight * Math.min(window.devicePixelRatio, 1.75), this.camera.fov);
-    this.renderer.render(this.scene, this.camera);
+    this.particles.update(dt, window.innerHeight * this.pixelRatio(), this.camera.fov);
+    const me = this.world?.player;
+    if (this.post && this.quality === 'high') this.post.render(dt, me && me.sliding ? Math.hypot(me.vx, me.vz) : 0);
+    else this.renderer.render(this.scene, this.camera);
   }
 
   private menuFrame(dt: number) {
@@ -221,11 +250,12 @@ export class Game {
     pi.dig = playing && inp.down('KeyQ');
     pi.build = playing && (inp.down('KeyR') || inp.down('KeyC'));
     pi.use = playing && inp.down('KeyE');
+    pi.roll = playing && inp.down('KeyG');
 
     // camera first (so aiming uses this frame's view)
     this.updateCamera(dt, me);
     this.computeAim(me);
-    pi.aim = (pi.dig || pi.build) ? this.aimSnow : this.aimAny;
+    pi.aim = (pi.dig || pi.build) ? this.aimSnow : this.throwAim(me);
 
     // fixed-step simulation
     if (!this.paused) {
@@ -254,6 +284,8 @@ export class Game {
       m.update(p, alpha, dt, this.time, p === me);
     }
     this.updateTrails(w);
+    // a wisp of snow behind every flying snowball so you can follow it
+    for (const b of w.snowballs) this.particles.spawn(PKind.Puff, b.px + (b.x - b.px) * alpha, b.py + (b.y - b.py) * alpha, b.pz + (b.z - b.pz) * alpha, 0, 0.1, 0, 0.1, 0.3);
     this.props.update(w, alpha, dt, this.time);
     this.updateAimVisuals(me);
 
@@ -282,7 +314,9 @@ export class Game {
     // HUD
     let hint: string | null = null;
     if ((pi.dig || pi.build) && !this.aimInReach(me)) hint = 'Aim closer to dig or build';
-    if (me.noSnowT > 0 && (pi.pack || pi.build || pi.dig)) hint = me.carried >= CFG.maxCarry && pi.pack ? 'Your mittens are full (5): stash or throw!' : 'No loose snow here';
+    if (pi.build && me.buildBlock === 1) hint = 'Too tall to reach from here: get closer or climb up';
+    if (pi.build && me.slumping) hint = 'Too thin to go higher: the snow is sliding down to widen the base';
+    if (me.noSnowT > 0 && (pi.pack || pi.build || pi.dig || pi.roll)) hint = me.carried >= CFG.maxCarry && pi.pack ? 'Your mittens are full (5): stash or throw!' : 'No loose snow here';
     if (w.phase === 'build' && pi.fire && me.carried > 0) hint = 'No throwing until the fight starts!';
     this.hud!.update(w, me, dt, hint);
   }
@@ -324,7 +358,7 @@ export class Game {
   private aimInReach(me: Penguin) {
     const a = this.aimSnow;
     if (!a) return false;
-    return Math.hypot(a.x - me.x, a.y - (me.y + 0.8), a.z - me.z) <= CFG.reach + 0.3;
+    return Math.hypot(a.x - me.x, a.y - (me.y + 0.8), a.z - me.z) <= CFG.reach + (me.input.build ? 1.2 : 0.3);
   }
 
   private updateCamera(dt: number, me: Penguin) {
@@ -334,7 +368,7 @@ export class Game {
     const yaw = inp.yaw, pitch = inp.pitch;
     const fx = -Math.sin(yaw) * Math.cos(pitch), fy = Math.sin(pitch), fz = -Math.cos(yaw) * Math.cos(pitch);
     const rx = Math.cos(yaw), rz = -Math.sin(yaw);
-    let want = me.sliding ? 5.2 : me.charging ? 3.5 : 4.4;
+    let want = me.sliding ? 5.6 : me.charging ? 3.9 : me.input.build ? 5.6 : 4.8;
     if (!me.alive) want = 6.5;
     this.camDist += (want - this.camDist) * Math.min(1, dt * 6);
     const pivY = py + (me.sliding ? 1.0 : 1.5);
@@ -350,9 +384,38 @@ export class Game {
     if (g !== null && cy < g + 0.35) cy = g + 0.35;
     this.camera.position.set(cx, cy, cz);
     this.camera.rotation.set(pitch, yaw, 0, 'YXZ');
-    const fovWant = me.sliding ? 80 : me.charging ? 64 : 70;
+    const fovWant = me.sliding ? 78 + Math.min(10, Math.hypot(me.vx, me.vz) * 0.5) : me.charging ? 64 : 70;
     this.camera.fov += (fovWant - this.camera.fov) * Math.min(1, dt * 5);
     this.camera.updateProjectionMatrix();
+  }
+
+  /**
+   * While you hold build, the aim ray ignores the snow you've added during this stroke: it keeps hitting the ground
+   * as it was when you started. That's what lets a pile grow straight up under the crosshair instead of creeping
+   * toward you, and lets you draw a wall by sweeping the crosshair along the ground.
+   */
+  private strokeRaycast(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, maxD: number) {
+    const f = this.map.field;
+    for (let t = 0; t <= maxD; t += 0.12) {
+      const x = ox + dx * t, y = oy + dy * t, z = oz + dz * t;
+      if (!f.inBoundsXZ(x, z)) { if (y < 0) return null; continue; }
+      const h = this.stroke.get(f.colIndex(x, z));
+      if (h !== undefined ? y < h : f.sample(x, y, z) > ISO) return { t, x, y: h !== undefined ? Math.min(h, y + 0.12) : y, z };
+    }
+    return null;
+  }
+
+  private rememberStroke(x: number, y: number, z: number) {
+    const f = this.map.field;
+    const i0 = Math.round(f.fx(x)), k0 = Math.round(f.fz(z));
+    for (let dk = -4; dk <= 4; dk++) for (let di = -4; di <= 4; di++) {
+      const i = i0 + di, k = k0 + dk;
+      if (i < 0 || k < 0 || i >= f.nx || k >= f.nz) continue;
+      const col = k * f.nx + i;
+      if (this.stroke.has(col)) continue;
+      const g = f.surfaceBelow(f.wx(i), y + 1.5, f.wz(k), 0, 5);
+      this.stroke.set(col, g ?? -1e9);
+    }
   }
 
   private computeAim(me: Penguin) {
@@ -361,11 +424,16 @@ export class Game {
     const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
     const start = Math.max(0.5, this.camDist * 0.85);
     const ox = cam.x + dir.x * start, oy = cam.y + dir.y * start, oz = cam.z + dir.z * start;
-    const maxD = 90;
-    const snowHit = this.map.field.raycast(ox, oy, oz, dir.x, dir.y, dir.z, maxD, 0.2);
+    const maxD = 120;
+    const building = me.input.build && me.alive;
+    if (building && !this.stroking) { this.stroke.clear(); this.stroking = true; }
+    if (!building) this.stroking = false;
+    const snowHit = building ? this.strokeRaycast(ox, oy, oz, dir.x, dir.y, dir.z, 18) : this.map.field.raycast(ox, oy, oz, dir.x, dir.y, dir.z, maxD, 0.2);
+    if (building && snowHit) this.rememberStroke(snowHit.x, snowHit.y, snowHit.z);
     let bestT = snowHit ? snowHit.t : maxD;
     this.aimSnow = snowHit ? { x: snowHit.x, y: snowHit.y, z: snowHit.z } : null;
     let any = this.aimSnow;
+    this.aimTarget = null;
     const raySphere = (cx: number, cy: number, cz: number, r: number) => {
       const lx = cx - ox, ly = cy - oy, lz = cz - oz;
       const tca = lx * dir.x + ly * dir.y + lz * dir.z;
@@ -376,46 +444,95 @@ export class Game {
     };
     for (const p of w.penguins) {
       if (p === me || !p.alive) continue;
-      const t = raySphere(p.x, p.y + (p.sliding ? 0.3 : 0.65), p.z, 0.55);
-      if (t > 0 && t < bestT) { bestT = t; any = { x: p.x, y: p.y + (p.sliding ? 0.3 : 0.65), z: p.z }; }
+      const cy = p.y + (p.sliding ? 0.3 : 0.65);
+      // enemies are a little "sticky" under the crosshair, more so far away where a penguin is only a few pixels
+      const enemy = p.team !== me.team;
+      const d = Math.hypot(p.x - ox, cy - oy, p.z - oz);
+      const t = raySphere(p.x, cy, p.z, enemy ? 0.62 + Math.min(0.7, d * 0.018) : 0.5);
+      // snow in front of them still blocks the shot
+      if (t > 0 && t < bestT + (enemy ? 0.8 : 0)) { bestT = Math.min(bestT, t); any = { x: p.x, y: cy, z: p.z }; this.aimTarget = enemy ? p : null; }
     }
     for (const b of w.bigBalls) {
       const t = raySphere(b.x, b.y, b.z, b.r);
-      if (t > 0 && t < bestT) { bestT = t; any = { x: ox + dir.x * t, y: oy + dir.y * t, z: oz + dir.z * t }; }
+      if (t > 0 && t < bestT) { bestT = t; any = { x: ox + dir.x * t, y: oy + dir.y * t, z: oz + dir.z * t }; this.aimTarget = null; }
     }
     if (!any) any = { x: ox + dir.x * maxD, y: oy + dir.y * maxD, z: oz + dir.z * maxD };
     this.aimAny = any;
   }
 
+  private throwSpeed(me: Penguin) {
+    return (CFG.throwSpeedMin + (CFG.throwSpeedMax - CFG.throwSpeedMin) * me.charge) * (1 + me.mitten * CFG.throwPerLevel);
+  }
+
+  /** Where a throw should go: the crosshair point, led a little when there's a moving enemy under it. */
+  private throwAim(me: Penguin) {
+    const a = this.aimAny, t = this.aimTarget;
+    if (!a || !t || CFG.aimAssist <= 0) return a;
+    const flight = Math.hypot(t.x - me.x, t.z - me.z) / (this.throwSpeed(me) * 0.96);
+    const k = flight * CFG.aimAssist;
+    return { x: a.x + t.vx * k, y: a.y, z: a.z + t.vz * k };
+  }
+
   private updateAimVisuals(me: Penguin) {
     const pi = me.input;
-    const marker = this.props.aimMarker;
+    const f = this.map.field;
+    const marker = this.props.aimMarker, ghost = this.props.buildGhost;
     const showMarker = me.alive && (pi.dig || pi.build) && this.aimSnow && this.aimInReach(me);
     marker.visible = !!showMarker;
+    ghost.visible = !!showMarker && pi.build;
     if (showMarker && this.aimSnow) {
-      marker.position.set(this.aimSnow.x, this.aimSnow.y, this.aimSnow.z);
-      (marker.material as THREE.MeshBasicMaterial).color.set(pi.dig ? 0xffb36b : 0x8fe6ff);
-      marker.scale.setScalar(1 + Math.sin(this.time * 10) * 0.05);
+      const a = this.aimSnow;
+      const mat = marker.material as THREE.MeshBasicMaterial;
+      if (pi.build) {
+        // the lump sits on top of whatever snow is at the aim point
+        const top = f.sample(a.x, a.y - 0.2, a.z) > ISO ? f.topAbove(a.x, a.y - 0.2, a.z, 7) : a.y;
+        marker.position.set(a.x, top + 0.25, a.z);
+        marker.scale.setScalar(CFG.buildRadius * (1 + Math.sin(this.time * 10) * 0.04));
+        const col = me.buildBlock ? 0xff5a5a : me.slumping ? 0xffd34d : 0x8fe6ff;
+        mat.color.set(col);
+        ghost.position.set(a.x, a.y + 0.05, a.z);
+        (ghost.material as THREE.MeshBasicMaterial).color.set(col);
+      } else {
+        marker.position.set(a.x, a.y, a.z);
+        marker.scale.setScalar(0.62 * (1 + Math.sin(this.time * 10) * 0.05));
+        mat.color.set(0xffb36b);
+      }
     }
-    // throw arc
-    const traj = this.props.trajectory;
-    if (me.alive && me.charging && this.world!.phase === 'fight') {
-      const speed = (CFG.throwSpeedMin + (CFG.throwSpeedMax - CFG.throwSpeedMin) * me.charge) * (1 + me.mitten * CFG.throwPerLevel);
-      const h = this.world!.handPos(me);
-      const v = solveThrow(h, this.aimAny, speed, CFG.snowballGravity) ?? lookVelocity(me.lookYaw, me.lookPitch + 0.07, speed);
+    // throw arc: faint whenever you're holding snowballs, bold while you wind up
+    const w = this.world!;
+    const busy = pi.dig || pi.build || pi.plow || pi.pack;
+    if (me.alive && w.phase === 'fight' && me.carried > 0 && (me.charging || !busy)) {
+      const speed = this.throwSpeed(me);
+      const h = w.handPos(me);
+      const v = solveThrow(h, this.throwAim(me), speed, CFG.snowballGravity) ?? lookVelocity(me.lookYaw, me.lookPitch + 0.07, speed);
       const pts: number[][] = [];
       let x = h.x, y = h.y, z = h.z, vx = v.x + me.vx * 0.3, vy = v.y, vz = v.z + me.vz * 0.3;
-      const f = this.map.field;
-      for (let i = 0; i < 64; i++) {
+      let normal: { x: number; y: number; z: number } | null = null;
+      let willHit = false;
+      const sdt = 0.04;
+      const hitR = CFG.hitRadius + CFG.snowballRadius;
+      outer: for (let i = 0; i < 71; i++) {
         pts.push([x, y, z]);
-        const sdt = 0.035;
         vy -= CFG.snowballGravity * sdt;
-        x += vx * sdt; y += vy * sdt; z += vz * sdt;
-        if (f.sample(x, y, z) > ISO || y < 0) { pts.push([x, y, z]); break; }
+        const nx = x + vx * sdt, ny = y + vy * sdt, nz = z + vz * sdt;
+        // check along the step so fast throws don't skip through things
+        for (let s = 1; s <= 4; s++) {
+          const u = s / 4, qx = x + (nx - x) * u, qy = y + (ny - y) * u, qz = z + (nz - z) * u;
+          for (const p of w.penguins) {
+            if (!p.alive || p.team === me.team) continue;
+            const cy = p.sliding ? p.y + 0.3 : Math.max(p.y + 0.3, Math.min(p.y + 1.05, qy));
+            if (Math.hypot(qx - p.x, qy - cy, qz - p.z) < hitR) { pts.push([qx, qy, qz]); normal = { x: -vx, y: -vy, z: -vz }; willHit = true; break outer; }
+          }
+          if (f.sample(qx, qy, qz) > ISO || qy < 0) {
+            pts.push([qx, qy, qz]);
+            normal = f.normalAt(qx, qy, qz, { x: 0, y: 1, z: 0 });
+            break outer;
+          }
+        }
+        x = nx; y = ny; z = nz;
       }
-      this.props.setTrajectory(pts);
-      traj.visible = true;
-    } else traj.visible = false;
+      this.props.arc.set(pts, normal, me.charging ? 1 : 0.5, willHit || !!this.aimTarget, this.time, this.camera.position);
+    } else this.props.arc.hide();
   }
 
   // ───────────────────────── events → effects ─────────────────────────
@@ -484,6 +601,19 @@ export class Game {
         break;
       }
       case 'noSnow': if (e.pid === me.id) A.noSnow(); break;
+      case 'collapse': {
+        // unsupported snow came down: a curtain of powder and a thump
+        const n = Math.min(90, 10 + Math.ceil(e.mass / 60));
+        for (let k = 0; k < n; k++) P.burst(e.x + (Math.random() - 0.5) * 3.5, e.y - Math.random() * e.drop, e.z + (Math.random() - 0.5) * 3.5, 1, 2.2, 0.5);
+        A.crush(e.x, e.y, e.z, Math.min(1, e.mass / 6000));
+        break;
+      }
+      case 'ballMade': {
+        P.burst(e.x, e.y, e.z, 26, 3, 1.2);
+        A.pat(e.x, e.y, e.z);
+        if (e.pid === me.id && !this.taughtRoll) { this.taughtRoll = true; H.banner('GIANT SNOWBALL!', 'Push it through fresh snow to grow it, then send it downhill', 3); }
+        break;
+      }
       case 'throw': A.whoosh(e.x, e.y, e.z, e.power); break;
       case 'snowHit': P.burst(e.x, e.y, e.z, 16, 3, 1, e.nx, e.ny, e.nz); A.splatSnow(e.x, e.y, e.z); break;
       case 'hit': {
