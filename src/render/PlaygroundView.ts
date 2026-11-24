@@ -97,11 +97,18 @@ export class PlaygroundView {
       g.position.set(sw.x, sw.ground, sw.z);
       for (const end of [-1, 1]) {
         for (const leg of [-1, 1]) {
-          const legMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 2.7, 8), RED);
-          legMesh.position.set(end * 1.6, 1.0, leg * 0.3);
-          legMesh.rotation.x = leg * 0.25;
+          // A-frame: the two legs meet at the top bar and spread apart at the ground
+          const legMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 2.68, 10), RED);
+          legMesh.position.set(end * 1.6, 0.99, leg * 0.34);
+          legMesh.rotation.x = -leg * 0.258;
           g.add(legMesh);
         }
+        const brace = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.62, 8), RED);
+        brace.rotation.x = Math.PI / 2; brace.position.set(end * 1.6, 1.15, 0);
+        g.add(brace);
+        const cap = new THREE.Mesh(new THREE.SphereGeometry(0.1, 10, 8), YEL);
+        cap.position.set(end * 1.7, 2.28, 0);
+        g.add(cap);
       }
       const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 3.4, 8), YEL);
       bar.rotation.z = Math.PI / 2; bar.position.y = 2.28;

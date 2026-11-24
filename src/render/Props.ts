@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { World } from '../sim/World';
 import { MapDef } from '../world/MapDef';
 import { TEAM_COLORS } from './Environment';
+import { ThrowArc } from './ThrowArc';
 
 const snowballMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.8 });
 
@@ -88,12 +89,12 @@ export class Props {
   private freeBoard: THREE.Group;
   private barrierMat: THREE.ShaderMaterial;
   readonly aimMarker: THREE.Mesh;
-  readonly trajectory: THREE.Line;
-  private trajPos = new Float32Array(64 * 3);
+  readonly arc = new ThrowArc();
+  readonly buildGhost: THREE.Mesh;
   private m4 = new THREE.Matrix4();
 
   constructor(private map: MapDef) {
-    this.snowballs = new THREE.InstancedMesh(lumpySnowGeometry(0.13, 1, 0.08), snowballMat, 256);
+    this.snowballs = new THREE.InstancedMesh(lumpySnowGeometry(0.16, 2, 0.07), snowballMat, 256);
     this.snowballs.castShadow = true;
     this.snowballs.count = 0;
     this.snowballs.frustumCulled = false;
@@ -170,41 +171,28 @@ export class Props {
           float edge = smoothstep(0.0, 0.08, vUv.y) * (1.0 - smoothstep(0.6, 1.0, vUv.y));
           float hex = step(0.92, fract(vUv.x * 60.0 + sin(vUv.y * 20.0) * 0.2)) * 0.5;
           vec3 c = vec3(0.55, 0.85, 1.0);
-          gl_FragColor = vec4(c, (0.12 + band * 0.12 + hex * 0.25) * edge);
+          gl_FragColor = vec4(c * 1.4, (0.12 + band * 0.12 + hex * 0.25) * edge);
         }`,
     });
-    this.barrier = new THREE.Mesh(new THREE.PlaneGeometry(64, 8, 1, 1), this.barrierMat);
+    this.barrier = new THREE.Mesh(new THREE.PlaneGeometry(map.bounds.maxZ - map.bounds.minZ + 4, 18, 1, 1), this.barrierMat);
     this.barrier.rotation.y = Math.PI / 2;
-    this.barrier.position.set(map.midLineX, 6, 0);
+    this.barrier.position.set(map.midLineX, 11, 0);
     this.barrier.renderOrder = 6;
     this.group.add(this.barrier);
 
     // dig / build target
-    this.aimMarker = new THREE.Mesh(new THREE.SphereGeometry(0.62, 20, 14), new THREE.MeshBasicMaterial({ color: 0x8fe6ff, transparent: true, opacity: 0.22, depthWrite: false }));
+    this.aimMarker = new THREE.Mesh(new THREE.SphereGeometry(1, 24, 16), new THREE.MeshBasicMaterial({ color: 0x8fe6ff, transparent: true, opacity: 0.2, depthWrite: false }));
     this.aimMarker.visible = false;
     this.aimMarker.renderOrder = 7;
     this.group.add(this.aimMarker);
+    // a ring on the ground under the build lump, so you can see where the wall is being drawn
+    this.buildGhost = new THREE.Mesh(new THREE.RingGeometry(0.78, 0.95, 40), new THREE.MeshBasicMaterial({ color: 0x8fe6ff, transparent: true, opacity: 0.85, depthTest: false, side: THREE.DoubleSide }));
+    this.buildGhost.rotation.x = -Math.PI / 2;
+    this.buildGhost.visible = false;
+    this.buildGhost.renderOrder = 8;
+    this.group.add(this.buildGhost);
 
-    // throw arc preview
-    const tg = new THREE.BufferGeometry();
-    tg.setAttribute('position', new THREE.BufferAttribute(this.trajPos, 3));
-    this.trajectory = new THREE.Line(tg, new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 0.35, gapSize: 0.25, transparent: true, opacity: 0.75, depthTest: false }));
-    this.trajectory.frustumCulled = false;
-    this.trajectory.visible = false;
-    this.trajectory.renderOrder = 8;
-    this.group.add(this.trajectory);
-  }
-
-  setTrajectory(points: number[][]) {
-    const n = Math.min(64, points.length);
-    for (let i = 0; i < 64; i++) {
-      const p = points[Math.min(i, n - 1)];
-      this.trajPos[i * 3] = p[0]; this.trajPos[i * 3 + 1] = p[1]; this.trajPos[i * 3 + 2] = p[2];
-    }
-    const g = this.trajectory.geometry;
-    g.setDrawRange(0, n);
-    (g.attributes.position as THREE.BufferAttribute).needsUpdate = true;
-    this.trajectory.computeLineDistances();
+    this.group.add(this.arc.group);
   }
 
   update(w: World, alpha: number, dt: number, time: number) {

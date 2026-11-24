@@ -1,7 +1,7 @@
 // The game simulation: penguins, snowballs, big rolling snowballs, snowflakes, stockpiles and the match.
 // No Three.js and no DOM, so the game server can run this exact code later.
 import { SnowField, ISO } from '../world/SnowField';
-import { MapDef, V3, mulberry32 } from '../world/MapDef';
+import { MapDef, V3, mulberry32, creekAt } from '../world/MapDef';
 import { CFG } from './config';
 import { boxGround, boxPush, pointInBoxes, slideY } from '../world/Playground';
 
@@ -17,12 +17,13 @@ export interface PenguinInput {
   dig: boolean; // held
   build: boolean; // held
   use: boolean; // held: tap = grab, hold = stash
+  roll: boolean; // held: scoop up a new giant snowball in front of you
   aim: V3 | null; // point under the crosshair
 }
 
 export const emptyInput = (): PenguinInput => ({
   moveX: 0, moveZ: 0, yaw: 0, pitch: 0, jump: false, slide: false, fire: false,
-  plow: false, pack: false, dig: false, build: false, use: false, aim: null,
+  plow: false, pack: false, dig: false, build: false, use: false, roll: false, aim: null,
 });
 
 export type Action = 'idle' | 'plow' | 'pack' | 'dig' | 'build' | 'charge' | 'throw' | 'slide' | 'down';
@@ -50,6 +51,8 @@ export type GameEvent =
   | { type: 'phase'; phase: Phase }
   | { type: 'board'; pid: number; what: 'grab' | 'drop' | 'spawn'; x: number; y: number; z: number; where?: string }
   | { type: 'launch'; pid: number }
+  | { type: 'collapse'; x: number; y: number; z: number; drop: number; mass: number }
+  | { type: 'ballMade'; pid: number; x: number; y: number; z: number }
   | { type: 'gameOver'; winner: number };
 
 export class Penguin {
@@ -88,6 +91,11 @@ export class Penguin {
   surfing = false;
   onSlide = false;
   onProp = false;
+  rollCd = 0;
+  /** why building isn't working right now: 0 = fine, 1 = too tall to reach, 2 = nothing to build on */
+  buildBlock = 0;
+  /** the new snow is sliding down the sides because the pile is too thin to go higher */
+  slumping = false;
 
   constructor(public id: number, public name: string, public team: number, public hat: string, public bot: boolean) {}
 }
@@ -194,6 +202,8 @@ export class World {
     this.stepBigBalls(dt);
     this.stepFlakes(dt);
     this.stepBoard(dt);
+    // snow that lost its support falls
+    this.field.settle(3, (x, y, z, drop, mass) => { if (mass > 300) this.emit({ type: 'collapse', x, y, z, drop, mass }); });
   }
 
   private updatePhase(dt: number) {
@@ -297,6 +307,15 @@ export class World {
         const s2 = Math.hypot(p.vx, p.vz);
         if (s2 > 0) { const k = Math.max(0, s2 - fr) / s2; p.vx *= k; p.vz *= k; }
       }
+      if (ice && p.grounded) {
+        // on the sled run the ice carries you round the bends, like a luge track (you can still steer out of it)
+        const c = creekAt(p.x, p.z);
+        const sp = Math.hypot(p.vx, p.vz);
+        if (c.d < 2.2 && sp > 1 && (p.vx * c.tx + p.vz * c.tz) > 0) {
+          const k = Math.min(1, CFG.sledAssist * dt);
+          p.vx += (c.tx * sp - p.vx) * k; p.vz += (c.tz * sp - p.vz) * k;
+        }
+      }
       const s3 = Math.hypot(p.vx, p.vz);
       if (s3 > CFG.slideMaxSpeed) { p.vx *= CFG.slideMaxSpeed / s3; p.vz *= CFG.slideMaxSpeed / s3; }
       if (s3 < 1.2 && !p.onSlide) { p.slideSlowT += dt; if (p.slideSlowT > 0.5) p.sliding = false; } else p.slideSlowT = 0;
@@ -357,7 +376,9 @@ export class World {
     else p.plowLoad *= 0.9;
     if (action === 'pack') this.doPack(p, dt, fwdX, fwdZ);
     if (action === 'dig') this.doDig(p, dt, fwdX, fwdZ);
-    if (action === 'build') this.doBuild(p, dt, fwdX, fwdZ);
+    if (action === 'build') this.doBuild(p, dt, fwdX, fwdZ); else { p.buildBlock = 0; p.slumping = false; }
+    p.rollCd = Math.max(0, p.rollCd - dt);
+    if (inp.roll && busy && !p.charging && p.rollCd <= 0) this.startBigBall(p, fwdX, fwdZ);
 
     // stockpile: tap = grab, hold = stash
     if (inp.use) {
@@ -400,10 +421,11 @@ export class World {
   }
 
   isIce(x: number, z: number) {
-    const pd = this.map.pond;
-    if (Math.hypot(x - pd.x, z - pd.z) > pd.r - 0.3) return false;
-    const g = this.field.surfaceBelow(x, pd.y + 0.3, z, 0.1, 0.6);
-    return g !== null && Math.abs(g - pd.y) < 0.2;
+    const f = this.field, col = f.colIndex(x, z);
+    if (!f.ice[col]) return false;
+    const base = f.baseHeight[col];
+    const g = f.surfaceBelow(x, base + 0.3, z, 0.1, 0.6);
+    return g !== null && Math.abs(g - base) < 0.22;
   }
 
   groundNormal(x: number, y: number, z: number) {
@@ -658,30 +680,85 @@ export class World {
     void placed;
   }
 
+  /**
+   * Building stacks snow on top of whatever snow is under the aim point, so holding still grows a pile straight up
+   * and sweeping the aim draws a wall. Snow physics: a pile can only stand as tall as its base is wide, so on a pile
+   * that's too thin the new snow slumps down the sides (widening the base) until it can carry more height.
+   */
   private doBuild(p: Penguin, dt: number, fx: number, fz: number) {
-    const a = this.aimInReach(p, 0.6);
+    p.buildBlock = 0; p.slumping = false;
+    const a = this.aimInReach(p, 1.2);
     if (!a) return;
+    const f = this.field;
+    let top: number;
+    if (f.sample(a.x, a.y - 0.2, a.z) > ISO) top = f.topAbove(a.x, a.y - 0.2, a.z, 7);
+    else {
+      const g = f.surfaceBelow(a.x, a.y + 0.3, a.z, 0, 2.5);
+      if (g === null) { p.buildBlock = 2; return; } // nothing under there to build on
+      top = g;
+    }
+    if (top > (f.ny - 3) * f.cell) { p.buildBlock = 1; return; }
+    if (Math.hypot(a.x - p.x, top - (p.y + 0.9), a.z - p.z) > CFG.reach + 1.5) { p.buildBlock = 1; return; } // too tall to reach from here
     p.aimOk = true;
     const want = CFG.buildRate * dt * this.rateMult(p);
     // scoop from the ground around our feet (behind and to the sides), so building leaves a shallow trench around you
     let got = 0, sx = p.x, sy = p.y, sz = p.z;
-    for (let tries = 0; tries < 4 && got < want * 0.5; tries++) {
-      const ang = Math.PI * (0.45 + Math.random() * 1.1); // the back 200°
-      const rad = 0.9 + Math.random() * 1.2;
+    for (let tries = 0; tries < 6 && got < want * 0.6; tries++) {
+      const ang = Math.PI * (0.4 + Math.random() * 1.2); // the back 215°
+      const rad = 0.9 + Math.random() * 1.6;
       const c = Math.cos(ang), s = Math.sin(ang);
       const rx = -fz, rz = fx;
       const dirX = fx * c + rx * s, dirZ = fz * c + rz * s;
-      sx = p.x + dirX * rad; sz = p.z + dirZ * rad;
-      sy = this.field.surfaceBelow(sx, p.y + 0.5, sz, 0.4, 1.2) ?? p.y;
-      got += this.field.removeMass(sx, sy - 0.1, sz, 0.55, want - got, 0.5, 0.55);
+      const qx = p.x + dirX * rad, qz = p.z + dirZ * rad;
+      if (Math.hypot(qx - a.x, qz - a.z) < CFG.buildRadius + 0.7) continue; // never eat the thing we're building
+      const qy = f.surfaceBelow(qx, p.y + 0.5, qz, 0.4, 1.2);
+      if (qy === null) continue;
+      const g = f.removeMass(qx, qy - 0.1, qz, 0.65, want - got, 0.5, 0.8);
+      if (g > 0) { got += g; sx = qx; sy = qy; sz = qz; }
     }
     if (got <= 0) { p.noSnowT = 0.5; return; }
-    // build toward the builder so walls grow out of surfaces
-    const dx = p.x - a.x, dz = p.z - a.z, dl = Math.hypot(dx, dz) || 1;
-    const bx = a.x + dx / dl * 0.18, bz = a.z + dz / dl * 0.18, by = a.y + 0.12;
-    const added = this.field.addMass(bx, by, bz, 0.6, got, CFG.buildHard);
-    if (added < got - 2) this.field.pourColumns(sx, sz, 0.6, got - added, sy, sy + 0.8);
-    this.emit({ type: 'build', pid: p.id, x: sx, y: sy, z: sz, tx: bx, ty: by, tz: bz, mass: added });
+    // is the pile wide enough under its top to carry more height?
+    const low: number[] = [];
+    const run = CFG.buildBaseRun, rise = CFG.buildBaseRise;
+    for (let n = 0; n < 8; n++) {
+      const ang = n * Math.PI / 4;
+      const lx = a.x + Math.cos(ang) * run, lz = a.z + Math.sin(ang) * run;
+      if (f.sample(lx, top - rise, lz) <= ISO) low.push(lx, lz);
+    }
+    let added = 0;
+    const ty = top + 0.25;
+    if (low.length >= 6) {
+      // too thin: the snow slides down the open sides and thickens the base
+      p.slumping = true;
+      const share = got / (low.length / 2);
+      for (let n = 0; n < low.length; n += 2) {
+        const gy = f.surfaceBelow(low[n], top, low[n + 1], 0, 6) ?? top - rise;
+        const put = f.pourColumns(low[n], low[n + 1], 0.6, share, gy, top);
+        if (put > 0) f.pack(low[n], gy + 0.3, low[n + 1], 0.75, CFG.buildHard * 0.5);
+        added += put;
+      }
+    } else {
+      added = f.addMass(a.x, ty, a.z, CFG.buildRadius, got, CFG.buildHard);
+    }
+    if (added < got - 2) f.pourColumns(sx, sz, 0.7, got - added, sy, sy + 0.8);
+    this.emit({ type: 'build', pid: p.id, x: sx, y: sy, z: sz, tx: a.x, ty, tz: a.z, mass: added });
+  }
+
+  /** Scoop the snow in front of you into a new giant snowball. Roll it through fresh snow to grow it. */
+  private startBigBall(p: Penguin, fx: number, fz: number) {
+    p.rollCd = 0.6;
+    if (this.bigBalls.length >= CFG.maxBigBalls + CFG.maxMadeBalls) { p.noSnowT = 0.6; return; }
+    const f = this.field;
+    const cx = p.x + fx * 1.05, cz = p.z + fz * 1.05;
+    const g = f.surfaceBelow(cx, p.y + 0.8, cz, 0.5, 2);
+    if (g === null || this.isIce(cx, cz)) { p.noSnowT = 0.6; return; }
+    const got = f.removeMass(cx, g, cz, 1.0, CFG.ballStartMass, 0.3, 0.6);
+    if (got < CFG.ballStartMass * 0.35) { f.pourColumns(cx, cz, 0.8, got, g - 0.5, g + 0.6); p.noSnowT = 0.6; this.emit({ type: 'noSnow', pid: p.id }); return; }
+    const r = Math.cbrt((got / 2040) * 3 / (4 * Math.PI));
+    const top = f.surfaceBelow(cx, g + 1, cz, 0, 3) ?? g;
+    this.bigBalls.push({ id: this.nextId++, x: cx, y: top + r, z: cz, px: cx, py: top + r, pz: cz, vx: fx * 1.2, vy: 0, vz: fz * 1.2, r, alive: true, grounded: true, lastPusher: p.id, pushT: 4, restT: 0 });
+    p.rollCd = CFG.ballMakeCooldown;
+    this.emit({ type: 'ballMade', pid: p.id, x: cx, y: top + r, z: cz });
   }
 
   // ───────────────────────── throwing ─────────────────────────
@@ -716,7 +793,7 @@ export class World {
         // penguins
         for (const p of this.penguins) {
           if (!p.alive || p.team === b.team || p.id === b.owner) continue;
-          const hitR = 0.42 + CFG.snowballRadius;
+          const hitR = CFG.hitRadius + CFG.snowballRadius;
           let d: number;
           if (p.sliding) d = Math.hypot(b.x - p.x, b.y - (p.y + 0.3), b.z - p.z);
           else {
@@ -746,7 +823,8 @@ export class World {
         }
         if (propHit) { this.emit({ type: 'snowHit', x: b.x, y: b.y, z: b.z, nx: -b.vx * 0.05, ny: 0.5, nz: -b.vz * 0.05 }); b.alive = false; break; }
         for (const t of this.map.trees) {
-          if (b.y < t.y + t.h && Math.hypot(b.x - t.x, b.z - t.z) < 0.25 + (1 - (b.y - t.y) / t.h) * 1.2 * (t.h / 5)) {
+          const ty = b.y - t.y;
+          if (ty < t.h && Math.hypot(b.x - t.x, b.z - t.z) < (ty < t.cb ? t.r + 0.1 : 0.2 + (1 - (ty - t.cb) / (t.h - t.cb)) * t.cw * 0.8)) {
             this.emit({ type: 'snowHit', x: b.x, y: b.y, z: b.z, nx: 0, ny: 1, nz: 0 });
             b.alive = false; break;
           }
@@ -910,7 +988,8 @@ export class World {
         }
         // grow by rolling over fresh snow
         if (b.grounded && b.r < CFG.bigBallMaxRadius) {
-          const got = f.removeMass(b.x, b.y - b.r - 0.05, b.z, Math.min(0.9, b.r * 0.6), sp * dt * 260, 0.6);
+          // picks up a layer of snow as wide as the ball, so bigger balls grow faster and leave a wider rut
+          const got = this.isIce(b.x, b.z) ? 0 : f.removeMass(b.x, b.y - b.r - 0.05, b.z, Math.min(1.5, Math.max(0.5, b.r * 0.75)), sp * dt * b.r * CFG.ballGrowth, 0.6, 0.5);
           if (got > 0) {
             const vol = (4 / 3) * Math.PI * b.r ** 3 + got / 2040;
             b.r = Math.min(CFG.bigBallMaxRadius, Math.cbrt(vol * 3 / (4 * Math.PI)));
@@ -978,7 +1057,7 @@ export class World {
       }
     }
     // too many sitting around? the oldest resting one crumbles into a snow pile
-    if (this.bigBalls.length > CFG.maxBigBalls + 2) {
+    if (this.bigBalls.length > CFG.maxBigBalls + CFG.maxMadeBalls - 2) {
       const resting = this.bigBalls.filter(b => b.restT > 10).sort((a, b) => b.restT - a.restT)[0];
       if (resting) this.burstBall(resting);
     }

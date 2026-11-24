@@ -7,6 +7,7 @@ export interface ChunkMesh {
   positions: Float32Array;
   normals: Float32Array;
   colors: Float32Array;
+  ice: Float32Array;
   indices: Uint32Array;
 }
 
@@ -16,6 +17,7 @@ const vertIndex = new Int32Array(V * V * V);
 let pos = new Float32Array(30000 * 3);
 let nor = new Float32Array(30000 * 3);
 let col = new Float32Array(30000 * 3);
+let ice = new Float32Array(30000);
 let idx = new Uint32Array(60000 * 3);
 
 // directions for ambient-occlusion probes (roughly uniform on a sphere)
@@ -32,7 +34,7 @@ const EDGES: [number, number][] = [
 ];
 // corner c → offsets (bit0 = x, bit1 = y, bit2 = z)
 
-export function meshChunk(field: SnowField, cx: number, cy: number, cz: number, pondY: number): ChunkMesh | null {
+export function meshChunk(field: SnowField, cx: number, cy: number, cz: number): ChunkMesh | null {
   const i0 = cx * CHUNK, j0 = cy * CHUNK, k0 = cz * CHUNK;
   const cell = field.cell;
   const d = new Float32Array(8);
@@ -82,9 +84,11 @@ export function meshChunk(field: SnowField, cx: number, cy: number, cz: number, 
         pos[nv * 3] = wx; pos[nv * 3 + 1] = wy; pos[nv * 3 + 2] = wz;
         // normal from density gradient (outward = toward lower density)
         const e = cell * 0.9;
-        let gx = field.sample(wx + e, wy, wz) - field.sample(wx - e, wy, wz);
-        let gy = field.sample(wx, wy + e, wz) - field.sample(wx, wy - e, wz);
-        let gz = field.sample(wx, wy, wz + e) - field.sample(wx, wy, wz - e);
+        // two stencil sizes blended: the wide one irons out the creases that 8-bit density would leave in the lighting
+        const e2 = cell * 1.9;
+        let gx = field.sample(wx + e, wy, wz) - field.sample(wx - e, wy, wz) + (field.sample(wx + e2, wy, wz) - field.sample(wx - e2, wy, wz)) * 0.6;
+        let gy = field.sample(wx, wy + e, wz) - field.sample(wx, wy - e, wz) + (field.sample(wx, wy + e2, wz) - field.sample(wx, wy - e2, wz)) * 0.6;
+        let gz = field.sample(wx, wy, wz + e) - field.sample(wx, wy, wz - e) + (field.sample(wx, wy, wz + e2) - field.sample(wx, wy, wz - e2)) * 0.6;
         if (Math.abs(gx) + Math.abs(gy) + Math.abs(gz) < 1) {
           gx = (d[1] + d[3] + d[5] + d[7]) - (d[0] + d[2] + d[4] + d[6]);
           gy = (d[2] + d[3] + d[6] + d[7]) - (d[0] + d[1] + d[4] + d[5]);
@@ -110,10 +114,21 @@ export function meshChunk(field: SnowField, cx: number, cy: number, cz: number, 
         let hard = 0;
         for (let c = 0; c < 8; c++) hard += h[c];
         hard /= 8 * 255;
-        const isPond = wy < pondY + 0.25 && hard > 0.95 && Math.abs(-gy / gl) > 0.8;
+        // frozen water (pond, sled run): the shader turns these glossy and blue
+        let iceV = 0;
+        if (hard > 0.9 && nyv > 0.6) {
+          const fi = field.fx(wx), fk = field.fz(wz);
+          const i0c = Math.max(0, Math.min(field.nx - 2, Math.floor(fi))), k0c = Math.max(0, Math.min(field.nz - 2, Math.floor(fk)));
+          const tx = Math.min(1, Math.max(0, fi - i0c)), tz = Math.min(1, Math.max(0, fk - k0c));
+          const c00 = k0c * field.nx + i0c;
+          const I = field.ice;
+          iceV = (I[c00] * (1 - tx) + I[c00 + 1] * tx) * (1 - tz) + (I[c00 + field.nx] * (1 - tx) + I[c00 + field.nx + 1] * tx) * tz;
+          if (Math.abs(wy - field.baseHeight[c00]) > 0.45) iceV = 0;
+        }
+        ice[nv] = iceV;
         let r = 0.93, g = 0.96, b = 1.0;
-        if (isPond) { r = 0.62; g = 0.82; b = 0.95; }
-        else if (hard > 0.02) { const t = Math.min(1, hard * 1.4); r -= 0.14 * t; g -= 0.06 * t; b += 0.0; }
+        if (iceV > 0) { /* plain */ }
+        else if (hard > 0.02) { const t = Math.min(1, hard * 1.4); r -= 0.12 * t; g -= 0.05 * t; b += 0.0; }
         // slight height tint so the rim reads as distant hills
         col[nv * 3] = r * ao; col[nv * 3 + 1] = g * ao; col[nv * 3 + 2] = b * ao;
         vertIndex[(lk * V + li) * V + lj] = nv;
@@ -154,6 +169,7 @@ export function meshChunk(field: SnowField, cx: number, cy: number, cz: number, 
     positions: pos.slice(0, nv * 3),
     normals: nor.slice(0, nv * 3),
     colors: col.slice(0, nv * 3),
+    ice: ice.slice(0, nv),
     indices: idx.slice(0, ni),
   };
 }
@@ -163,4 +179,5 @@ function grow() {
   const p = new Float32Array(n); p.set(pos); pos = p;
   const q = new Float32Array(n); q.set(nor); nor = q;
   const c = new Float32Array(n); c.set(col); col = c;
+  const ic = new Float32Array(n / 3); ic.set(ice); ice = ic;
 }

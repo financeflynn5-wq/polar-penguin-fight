@@ -21,7 +21,7 @@ export class Hud {
       <div class="splatfx"></div>
       <div class="score">
         <div class="team t0" id="s0">0</div>
-        <div class="mid"><div class="clock" id="clock">0:30</div><div class="phase" id="phase">Build phase</div><div class="goal">first to ${CFG.scoreToWin}</div></div>
+        <div class="mid"><div class="clock" id="clock">1:00</div><div class="phase" id="phase">Build phase</div><div class="goal">first to ${CFG.scoreToWin}</div></div>
         <div class="team t1" id="s1">0</div>
       </div>
       <div class="feed" id="feed"></div>
@@ -44,7 +44,8 @@ export class Hud {
         <div><span class="key">LMB</span>throw (hold = farther)</div>
         <div><span class="key">RMB</span>push snow</div>
         <div><span class="key">F</span>pack snowball</div>
-        <div><span class="key">R</span>build &nbsp; <span class="key">Q</span>dig</div>
+        <div><span class="key">R</span>build (sweep to draw, hold to stack)</div>
+        <div><span class="key">Q</span>dig &nbsp; <span class="key">G</span>giant snowball</div>
         <div><span class="key">E</span>grab &nbsp;·&nbsp; hold <span class="key">E</span>stash</div>
         <div><span class="key">Shift</span>belly slide &nbsp; <span class="key">Space</span>hop</div>
         <div><span class="key">Tab</span>scores</div>

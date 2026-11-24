@@ -5,15 +5,19 @@ import { makeSurfboard } from './Props';
 
 // shared materials
 const M = {
-  body: new THREE.MeshStandardMaterial({ color: 0x1c2333, roughness: 0.55 }),
+  body: new THREE.MeshPhysicalMaterial({ color: 0x1b2232, roughness: 0.5, sheen: 1, sheenColor: new THREE.Color(0x7d95c8), sheenRoughness: 0.45 }),
   belly: new THREE.MeshStandardMaterial({ color: 0xfbfcff, roughness: 0.7 }),
-  beak: new THREE.MeshStandardMaterial({ color: 0xffa21f, roughness: 0.5 }),
+  beak: new THREE.MeshStandardMaterial({ color: 0xffa21f, roughness: 0.42 }),
+  foot: new THREE.MeshStandardMaterial({ color: 0xff9320, roughness: 0.5 }),
   eye: new THREE.MeshStandardMaterial({ color: 0x0b0d12, roughness: 0.2 }),
   shine: new THREE.MeshBasicMaterial({ color: 0xffffff }),
   cheek: new THREE.MeshStandardMaterial({ color: 0xff9fb4, roughness: 0.8 }),
   snow: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 }),
 };
 const teamMats = TEAM_COLORS.map(c => new THREE.MeshStandardMaterial({ color: c, roughness: 0.85 }));
+// puffy team jacket: bright enough to read at a glance, even in shade
+const jacketMats = TEAM_COLORS.map(c => new THREE.MeshStandardMaterial({ color: c, roughness: 0.62, emissive: c, emissiveIntensity: 0.22, side: THREE.DoubleSide }));
+const jacketTrimMats = TEAM_COLORS.map(c => new THREE.MeshStandardMaterial({ color: new THREE.Color(c).lerp(new THREE.Color(0xffffff), 0.75), roughness: 0.8 }));
 const MITTEN_MATS = [
   null, // level 0 = team colour
   new THREE.MeshStandardMaterial({ color: 0x7fe3ff, roughness: 0.4, emissive: 0x1a6a8a, emissiveIntensity: 0.5 }),
@@ -30,7 +34,9 @@ const G = {
   shine: sph(0.014, 6, 4),
   cheek: sph(0.04, 8, 6),
   beak: new THREE.ConeGeometry(0.065, 0.16, 10),
-  foot: sph(1, 10, 6),
+  foot: footGeometry(),
+  leg: new THREE.CylinderGeometry(0.034, 0.04, 0.09, 8),
+  tail: new THREE.ConeGeometry(0.075, 0.2, 10),
   flipper: sph(1, 12, 10),
   mitten: sph(0.095, 14, 10),
   thumb: sph(0.048, 10, 8),
@@ -40,6 +46,34 @@ const G = {
   splat: sph(1, 10, 8),
   lump: sph(1, 18, 12),
 };
+
+/** A flat webbed foot with three toes, pointing forward (-z), heel at the origin. */
+function footGeometry() {
+  const sh = new THREE.Shape();
+  // drawn in x / y, where +y is forward
+  sh.moveTo(-0.04, -0.035);
+  sh.quadraticCurveTo(-0.075, 0.05, -0.115, 0.165);
+  sh.quadraticCurveTo(-0.085, 0.19, -0.055, 0.15);
+  sh.quadraticCurveTo(-0.03, 0.2, 0, 0.215);
+  sh.quadraticCurveTo(0.03, 0.2, 0.055, 0.15);
+  sh.quadraticCurveTo(0.085, 0.19, 0.115, 0.165);
+  sh.quadraticCurveTo(0.075, 0.05, 0.04, -0.035);
+  sh.quadraticCurveTo(0, -0.06, -0.04, -0.035);
+  const g = new THREE.ExtrudeGeometry(sh, { depth: 0.022, bevelEnabled: true, bevelThickness: 0.012, bevelSize: 0.012, bevelSegments: 2, curveSegments: 6 });
+  g.rotateX(-Math.PI / 2); // lie flat: shape +y becomes -z (forward), thickness goes up
+  g.computeVertexNormals();
+  return g;
+}
+
+/** The team jacket: a shell just outside the body, open at the front so the white belly shows. */
+function jacketGeometry() {
+  const prof = [[0.352, 0.15], [0.372, 0.2], [0.392, 0.33], [0.372, 0.5], [0.322, 0.62], [0.292, 0.69], [0.27, 0.71]];
+  const open = 1.05; // radians of gap either side of dead-front
+  const g = new THREE.LatheGeometry(prof.map(([r, y]) => new THREE.Vector2(r, y)), 26, Math.PI + open, Math.PI * 2 - open * 2);
+  g.computeVertexNormals();
+  return g;
+}
+const JACKET_GEO = jacketGeometry();
 
 function bodyGeometry() {
   const pts: THREE.Vector2[] = [];
@@ -139,20 +173,30 @@ export function makeHat(name: string): THREE.Object3D {
   return g;
 }
 
-function nameTag(text: string, color: string) {
+function nameTag(text: string, team: number) {
   const c = document.createElement('canvas');
-  c.width = 256; c.height = 64;
+  c.width = 384; c.height = 96;
   const ctx = c.getContext('2d')!;
-  ctx.font = '700 30px Fredoka, Nunito, sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.lineWidth = 7; ctx.strokeStyle = 'rgba(10,20,40,0.85)';
-  ctx.strokeText(text, 128, 34);
-  ctx.fillStyle = color;
-  ctx.fillText(text, 128, 34);
+  ctx.font = '700 40px Fredoka, Nunito, sans-serif';
+  const w = Math.min(360, ctx.measureText(text).width + 78);
+  const x0 = (384 - w) / 2;
+  // solid team-coloured pill with a white rim: readable from across the map
+  ctx.fillStyle = team === 0 ? '#1f6fe0' : '#f0561d';
+  ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 5;
+  ctx.beginPath(); ctx.roundRect(x0, 16, w, 64, 32); ctx.fill(); ctx.stroke();
+  // team badge: snowflake dot for Blizzard, sun for Sunrise
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  if (team === 0) { for (let a = 0; a < 6; a++) { const an = a * Math.PI / 3; ctx.moveTo(x0 + 34, 48); ctx.lineTo(x0 + 34 + Math.cos(an) * 15, 48 + Math.sin(an) * 15); } ctx.lineWidth = 5; ctx.lineCap = 'round'; ctx.stroke(); }
+  else { ctx.arc(x0 + 34, 48, 12, 0, Math.PI * 2); ctx.fill(); }
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(text, x0 + 58, 50, w - 76);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
-  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: true, transparent: true }));
-  s.scale.set(1.6, 0.4, 1);
+  tex.anisotropy = 4;
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: true, transparent: true, fog: false }));
+  s.scale.set(1.7, 0.425, 1);
   return s;
 }
 
@@ -162,7 +206,7 @@ export class PenguinModel {
   private flipperL = new THREE.Group();
   private flipperR = new THREE.Group();
   private mittens: THREE.Mesh[] = [];
-  private feet: THREE.Mesh[] = [];
+  private feet: THREE.Group[] = [];
   private hat: THREE.Object3D;
   private hatName: string;
   private headGroup = new THREE.Group();
@@ -186,9 +230,21 @@ export class PenguinModel {
     bodyMesh.castShadow = true;
     this.body.add(bodyMesh);
     const belly = new THREE.Mesh(G.belly, M.belly);
-    belly.scale.set(0.28, 0.33, 0.2);
-    belly.position.set(0, 0.34, -0.17);
+    belly.scale.set(0.27, 0.34, 0.25);
+    belly.position.set(0, 0.35, -0.165);
     this.body.add(belly);
+
+    const jacket = new THREE.Mesh(JACKET_GEO, jacketMats[team]);
+    this.body.add(jacket);
+    // white fluffy hem + collar so the jacket reads as clothing
+    for (const [y, r, tube] of [[0.16, 0.358, 0.03], [0.705, 0.268, 0.034]]) {
+      const trim = new THREE.Mesh(new THREE.TorusGeometry(r, tube, 8, 28, Math.PI * 2 - 2.1), jacketTrimMats[team]);
+      trim.rotation.x = Math.PI / 2; trim.rotation.z = -Math.PI / 2 + 1.05; trim.position.y = y;
+      this.body.add(trim);
+    }
+    const tail = new THREE.Mesh(G.tail, M.body);
+    tail.position.set(0, 0.09, 0.3); tail.rotation.x = -2.0;
+    this.body.add(tail);
 
     // head
     this.headGroup.position.set(0, 0.86, 0);
@@ -235,10 +291,11 @@ export class PenguinModel {
 
     // flippers + mittens
     for (const [grp, s] of [[this.flipperL, -1], [this.flipperR, 1]] as [THREE.Group, number][]) {
-      grp.position.set(s * 0.32, 0.6, 0);
-      const fl = new THREE.Mesh(G.flipper, M.body);
-      fl.scale.set(0.06, 0.24, 0.12);
-      fl.position.set(0, -0.2, 0);
+      // the flippers wear the jacket's sleeves, so they sit just outside it
+      grp.position.set(s * 0.375, 0.61, 0);
+      const fl = new THREE.Mesh(G.flipper, jacketMats[team]);
+      fl.scale.set(0.075, 0.23, 0.125);
+      fl.position.set(0, -0.19, 0);
       fl.castShadow = true;
       grp.add(fl);
       const mit = new THREE.Mesh(G.mitten, teamMittenMats[team]);
@@ -256,13 +313,19 @@ export class PenguinModel {
       this.mittens.push(mit);
       this.body.add(grp);
     }
-    // feet (not part of body lean)
+    // legs + webbed feet: tucked under the body, toes turned out a little. They hang off the body so they follow
+    // the waddle, and update() keeps them flat on the ground when the body leans.
     for (const s of [-1, 1]) {
-      const f = new THREE.Mesh(G.foot, M.beak);
-      f.scale.set(0.1, 0.045, 0.17);
-      f.position.set(s * 0.13, 0.03, -0.1);
-      f.castShadow = true;
-      this.root.add(f);
+      const f = new THREE.Group();
+      const leg = new THREE.Mesh(G.leg, M.foot);
+      leg.position.set(0, 0.05, 0);
+      f.add(leg);
+      const foot = new THREE.Mesh(G.foot, M.foot);
+      foot.rotation.y = -s * 0.32;
+      foot.position.set(0, 0, -0.02);
+      f.add(foot);
+      f.userData.side = s;
+      this.body.add(f);
       this.feet.push(f);
     }
     this.hatName = hat;
@@ -302,8 +365,8 @@ export class PenguinModel {
     }
 
     if (name && showTag) {
-      this.tag = nameTag(name, team === 0 ? '#9fd0ff' : '#ffc29a');
-      this.tag.position.y = 1.65;
+      this.tag = nameTag(name, team);
+      this.tag.position.y = 1.75;
       this.root.add(this.tag);
     }
     this.root.traverse(o => { if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).castShadow = true; });
@@ -346,7 +409,7 @@ export class PenguinModel {
     b.position.set(0, 0, 0); b.rotation.set(0, 0, 0); b.scale.set(1, 1, 1);
     this.flipperL.rotation.set(0, 0, 0.18); this.flipperR.rotation.set(0, 0, -0.18);
     this.headGroup.rotation.set(0, 0, 0);
-    for (const f of this.feet) { f.visible = true; f.position.y = 0.03; f.rotation.set(0, 0, 0); }
+    for (const f of this.feet) { f.visible = true; f.position.set(f.userData.side * 0.135, 0.0, -0.04); f.rotation.set(0, 0, 0); }
     this.lump.visible = false;
     b.visible = true;
 
@@ -368,7 +431,6 @@ export class PenguinModel {
 
     if (!p.alive) {
       b.visible = false;
-      for (const f of this.feet) f.visible = false;
       this.lump.visible = true;
       const t = Math.min(1, (3.5 - p.downT) * 4);
       this.lump.scale.set(0.55 * t + 0.1, 0.45 * t + 0.05, 0.55 * t + 0.1);
@@ -387,7 +449,8 @@ export class PenguinModel {
         b.position.set(0, 0.36, 0.38);
         this.headGroup.rotation.x = 0.9;
         this.flipperL.rotation.set(1.3, 0, 0.5); this.flipperR.rotation.set(1.3, 0, -0.5);
-        for (const [i, f] of this.feet.entries()) { f.position.set((i ? 1 : -1) * 0.13, 0.25, 0.72); f.rotation.x = 1.2 + Math.sin(time * 14 + i * 3) * 0.2; }
+        // feet trail straight out behind the body, soles up, paddling
+        for (const [i, f] of this.feet.entries()) { f.position.set((i ? 1 : -1) * 0.11, 0.03, 0.03); f.rotation.x = -1.5 + Math.sin(time * 14 + i * 3) * 0.28; }
         b.rotation.z = Math.sin(time * 9) * 0.05;
         break;
       }
@@ -438,7 +501,6 @@ export class PenguinModel {
           b.rotation.z = Math.sin(time * 3) * 0.05 + (p.input.moveX || 0) * -0.18;
           b.rotation.x = -0.12;
           this.flipperL.rotation.z = 1.1 + Math.sin(time * 4) * 0.12; this.flipperR.rotation.z = -1.1 + Math.sin(time * 4 + 1) * 0.12;
-          for (const f of this.feet) f.position.y = 0.13;
           if (p.throwAnim > 0) this.flipperR.rotation.set(-1.2, 0, -0.3);
           break;
         }
@@ -455,6 +517,9 @@ export class PenguinModel {
         }
       }
     }
+    // keep the feet flat on the snow however the body leans (the slide pose sets its own)
+    if (p.action !== 'slide') for (const f of this.feet) { f.rotation.x += -b.rotation.x; f.rotation.z += -b.rotation.z * 0.6; f.position.y -= b.position.y; }
+
     // look up/down with the head a little
     if (p.action !== 'slide') this.headGroup.rotation.x += -p.lookPitch * 0.35;
 
@@ -483,8 +548,9 @@ export class PenguinModel {
     const s = Math.sin(this.walkPhase * 2);
     this.body.rotation.z += s * amount * moving * 1.5;
     this.body.position.y += Math.abs(Math.cos(this.walkPhase * 2)) * 0.05 * moving;
-    this.feet[0].position.y = 0.03 + Math.max(0, s) * 0.07 * moving;
-    this.feet[1].position.y = 0.03 + Math.max(0, -s) * 0.07 * moving;
+    // little shuffling steps: lift and swing each foot in turn
+    this.feet[0].position.y += Math.max(0, s) * 0.07 * moving; this.feet[0].position.z += -s * 0.07 * moving; this.feet[0].rotation.x += Math.max(0, s) * 0.5 * moving;
+    this.feet[1].position.y += Math.max(0, -s) * 0.07 * moving; this.feet[1].position.z += s * 0.07 * moving; this.feet[1].rotation.x += Math.max(0, -s) * 0.5 * moving;
     this.flipperL.rotation.z += 0.25 * moving + s * 0.15 * moving;
     this.flipperR.rotation.z -= 0.25 * moving - s * 0.15 * moving;
   }

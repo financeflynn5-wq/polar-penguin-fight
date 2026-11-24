@@ -28,9 +28,9 @@ export class BotBrain {
   private advanceSpot: V3 | null = null;
   private reactT = 0;
 
-  constructor(private index: number, rnd: () => number) {
-    const r = rnd();
-    this.role = r < 0.45 ? 'builder' : r < 0.85 ? 'packer' : 'roller';
+  /** slot = this bot's number within its own team, so both teams get the same mix of jobs */
+  constructor(private index: number, rnd: () => number, slot = index) {
+    this.role = (['packer', 'builder', 'roller', 'packer', 'builder', 'builder', 'packer', 'roller', 'packer', 'builder'] as const)[slot % 10];
     this.skill = 0.55 + rnd() * 0.4;
     this.strafeDir = rnd() < 0.5 ? -1 : 1;
   }
@@ -38,7 +38,7 @@ export class BotBrain {
   think(w: World, p: Penguin, dt: number) {
     const inp = p.input;
     inp.fire = inp.fire && p.charging; // keep holding only while charging
-    inp.plow = inp.pack = inp.dig = inp.build = inp.use = false;
+    inp.plow = inp.pack = inp.dig = inp.build = inp.use = inp.roll = false;
     inp.slide = false;
     inp.moveX = 0; inp.moveZ = 0;
     if (!p.alive || w.phase === 'end') { inp.fire = false; return; }
@@ -52,19 +52,20 @@ export class BotBrain {
 
     // ── choose a goal ──
     if (w.phase === 'build') {
-      if (this.role === 'builder' && this.t < CFG.buildPhase - 3) this.goal = 'build';
+      // builders build; packers switch to building once the stockpile is healthy
+      if ((this.role === 'builder' || (w.piles[p.team] >= 18 && p.carried === 0)) && this.t < CFG.buildPhase - 3) this.goal = 'build';
       else this.goal = p.carried >= CFG.maxCarry ? 'stash' : 'pack';
     } else {
       this.pickTarget(w, p);
       const flake = this.nearestFlake(w, p);
       if (p.carried === 0) {
         const pileDist = Math.hypot(p.x - base.stockpile.x, p.z - base.stockpile.z);
-        this.goal = w.piles[p.team] > 0 && pileDist < 30 ? 'grab' : 'pack';
+        this.goal = w.piles[p.team] > 0 && pileDist < 34 ? 'grab' : 'pack';
       } else if (p.health === 1 && p.sinceHit < 4 && this.targetVisible) {
         this.goal = 'retreat';
-      } else if (w.board.active && w.board.holder < 0 && Math.hypot(w.board.x - p.x, w.board.z - p.z) < 22) {
+      } else if (w.board.active && w.board.holder < 0 && Math.hypot(w.board.x - p.x, w.board.z - p.z) < 26) {
         this.goal = 'board';
-      } else if (flake && flake.d < 14 && p.mitten < 3 && !(this.targetVisible && p.carried > 0 && this.targetDist(w, p) < 14)) {
+      } else if (flake && flake.d < 16 && p.mitten < 3 && !(this.targetVisible && p.carried > 0 && this.targetDist(w, p) < 14)) {
         this.goal = 'flake';
       } else if (this.role === 'roller' && this.findBall(w, p)) {
         this.goal = 'roll';
@@ -116,8 +117,10 @@ export class BotBrain {
       case 'fight': this.doFight(w, p, dt); break;
       case 'advance': {
         if (!this.advanceSpot || Math.hypot(p.x - this.advanceSpot.x, p.z - this.advanceSpot.z) < 2.5 || Math.random() < 0.002) {
-          const x = toCenter * -(4 + Math.random() * 12);
-          const z = (Math.random() * 2 - 1) * 20;
+          // spread out: some push the middle, some take the north trail or the south woods to flank
+          const lane = (this.index * 5 + Math.floor(this.t / 40)) % 5;
+          const x = toCenter * -(3 + Math.random() * 16);
+          const z = lane === 0 ? -40 + Math.random() * 3 : lane === 1 ? 30 + Math.random() * 10 : (Math.random() * 2 - 1) * 24;
           this.advanceSpot = { x: base.center.x * 0 + x, y: 0, z };
         }
         this.moveTo(w, p, this.advanceSpot, 1, dt);
@@ -135,7 +138,7 @@ export class BotBrain {
   private pickTarget(w: World, p: Penguin) {
     if (this.losT > 0) return;
     this.losT = 0.25 + Math.random() * 0.15;
-    let best = -1, bestD = 40;
+    let best = -1, bestD = 46;
     let vis = false;
     for (const e of w.penguins) {
       if (e.team === p.team || !e.alive) continue;
@@ -218,7 +221,7 @@ export class BotBrain {
     if (!this.buildSpot) {
       const row = this.index % 3;
       const lane = ((this.index * 7) % 5) - 2;
-      this.buildSpot = { x: base.center.x + toCenter * (10 + row * 5), y: 0, z: lane * 4.5 + (row % 2) * 2 };
+      this.buildSpot = { x: base.center.x + toCenter * (13 + row * 6), y: 0, z: lane * 6.5 + (row % 2) * 3 };
     }
     if (!this.moveTo(w, p, this.buildSpot, 0.8, dt)) { this.buildT = 0; return; }
     this.buildT += dt;
@@ -239,7 +242,7 @@ export class BotBrain {
         this.buildT = 0;
         const rx = Math.cos(yaw), rz = -Math.sin(yaw);
         this.buildSpot = { x: this.buildSpot.x + rx * this.wallSide * 1.4, y: 0, z: this.buildSpot.z + rz * this.wallSide * 1.4 };
-        if (Math.abs(this.buildSpot.z) > 14) this.wallSide *= -1;
+        if (Math.abs(this.buildSpot.z) > 20) this.wallSide *= -1;
       }
     }
   }
@@ -305,10 +308,10 @@ export class BotBrain {
     const t = w.penguin(this.targetId);
     if (!t || !this.targetVisible || !t.alive || this.reactT > 0) { if (!p.charging) p.input.fire = false; return; }
     const d = Math.hypot(t.x - p.x, t.z - p.z);
-    if (d > 34) { p.input.fire = false; return; }
+    if (d > 40) { p.input.fire = false; return; }
     if (!p.charging && p.throwCd <= 0) {
       p.input.fire = true;
-      this.chargeGoal = d > 24 ? 0.8 : d > 15 ? 0.35 : Math.random() * 0.2;
+      this.chargeGoal = d > 28 ? 0.8 : d > 17 ? 0.35 : Math.random() * 0.2;
       return;
     }
     if (p.charging) {

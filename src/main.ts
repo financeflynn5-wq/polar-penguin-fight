@@ -35,13 +35,13 @@ const menu = el(`<div class="menu">
   </div></div>
   <button class="btn" id="play">Play</button>
   <div class="howto">
-    <div><b>30 second build phase:</b> push snow into walls, dig tunnels, pack snowballs and stash them in your stockpile.</div>
+    <div><b>One minute build phase:</b> hold R and sweep the crosshair to draw snow walls, hold still to stack them higher. Dig trenches and tunnels, pack snowballs and stash them in your stockpile.</div>
     <div><b>Then fight:</b> 3 hits and you're splatted back to base. First team to 25 splats wins.</div>
-    <div><b>Grab shiny snowflakes</b> in the middle to upgrade your mittens. <b>Shove big snowballs</b> downhill to flatten forts.</div>
+    <div><b>Grab shiny snowflakes</b> in the middle to upgrade your mittens. <b>Roll your own giant snowball</b> with G, grow it in fresh snow and send it downhill to flatten forts.</div>
   </div>
   <div class="howto">
     <span class="key">WASD</span>move <span class="key">Mouse</span>look <span class="key">LMB</span>throw <span class="key">RMB</span>push snow
-    <span class="key">F</span>pack <span class="key">R</span>build <span class="key">Q</span>dig <span class="key">E</span>stockpile <span class="key">Shift</span>slide <span class="key">Space</span>hop
+    <span class="key">F</span>pack <span class="key">R</span>build <span class="key">Q</span>dig <span class="key">G</span>giant snowball <span class="key">E</span>stockpile <span class="key">Shift</span>slide <span class="key">Space</span>hop
   </div>
   <div class="foot">Best on a computer with a mouse. Map: Frostbite Bay.</div>
 </div>`);
@@ -80,6 +80,7 @@ const pause = el(`<div class="overlay dim hidden"><div class="panel">
   <h2>Paused</h2><p>Click Resume to jump back in.</p>
   <div class="set"><span>Mouse sensitivity</span><input type="range" id="sens" min="0.3" max="2.5" step="0.05"></div>
   <div class="set"><span>Sound</span><button class="btn small blue" id="mute">On</button></div>
+  <div class="set"><span>Graphics</span><button class="btn small blue" id="gfx">High</button></div>
   <div class="row"><button class="btn" id="resume">Resume</button><button class="btn blue" id="quit">Quit to menu</button></div>
 </div></div>`);
 document.body.appendChild(pause);
@@ -88,6 +89,9 @@ sens.value = String(game.input.sensitivity);
 sens.addEventListener('input', () => { game.input.sensitivity = +sens.value; store.set('sens', sens.value); });
 const muteBtn = pause.querySelector('#mute') as HTMLButtonElement;
 muteBtn.addEventListener('click', () => { game.audio.setMuted(!game.audio.muted); muteBtn.textContent = game.audio.muted ? 'Off' : 'On'; });
+const gfxBtn = pause.querySelector('#gfx') as HTMLButtonElement;
+gfxBtn.textContent = game.quality === 'high' ? 'High' : 'Fast';
+gfxBtn.addEventListener('click', () => { game.setQuality(game.quality === 'high' ? 'low' : 'high'); gfxBtn.textContent = game.quality === 'high' ? 'High' : 'Fast'; });
 pause.querySelector('#resume')!.addEventListener('click', () => game.resume());
 pause.querySelector('#quit')!.addEventListener('click', () => { pause.classList.add('hidden'); toMenu(); });
 
@@ -126,5 +130,6 @@ game.hooks = {
 };
 
 // dev/test hooks: ?autostart=1 skips the menu
+if (params.get('q')) game.setQuality(params.get('q') === 'low' ? 'low' : 'high');
 if (params.get('autostart')) start();
 (window as any).__game = game;
