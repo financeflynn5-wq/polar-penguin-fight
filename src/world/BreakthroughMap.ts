@@ -10,7 +10,7 @@
 import { SnowField } from './SnowField';
 import { emptyPlayground } from './Playground';
 import { MapDef, V3, Rock, Front, TeamBase, SectorDef, CapturePointDef, fbm, smooth, bump, gauss, fillField, scatterTrees } from './MapDef';
-import { House, Prop, PropKind, makeIceberg, makePillar, makeGingerbreadHouse, makeCabin, makeProp, addLandmarkCollision } from './Landmarks';
+import { House, Prop, PropKind, makeIceberg, makePillar, makeGingerbreadHouse, makeCabin, makeProp, makeRamp, rampSnow, inRampLane, addLandmarkCollision } from './Landmarks';
 
 const FIELD = { nx: 480, ny: 56, nz: 192, cell: 0.5, x0: -120, z0: -48 };
 const RIM_X = 111, RIM_Z = 39.5;
@@ -55,6 +55,14 @@ const PROPS: [PropKind, number, number, number][] = [
   ['sled', 49.5, -14, 1.75], ['sled', 50, 6.5, 1.45], ['sled', 49.5, 25, 1.7], ['sled', 62, -24.5, 1.5], ['sled', 62.5, -4.5, 1.68],
   ['sled', 62, 14.5, 1.42], ['sled', 78.5, 9.5, 1.2], ['sled', 79, -10.5, 1.9], ['sled', 89, 22, 0.3], ['sled', 90.5, -24.5, -0.2], ['sled', 96, -1.5, 1.6],
   ['cane', 76.5, -4.5, 0.5], ['cane', 76.5, 4.5, -0.5], ['cane', 99, -7.5, 2.4], ['cane', 99, 7.5, -2.4], ['cane', 87.5, -19.5, 1.1], ['cane', 88, 16, -1.3],
+];
+
+// jump ramps: [x, z, the way you fly (0 = east, PI = west)]
+const RAMPS: [number, number, number][] = [
+  // at the foot of the attackers' bank: slide down it and jump out onto the Flats
+  [-80.7, -24, 0], [-80.7, 23, 0],
+  // on the two benches of the Summit, for coming back down the hill: each one throws you out over the slope below
+  [63.2, 10.5, Math.PI], [50.7, 0, Math.PI],
 ];
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
@@ -105,7 +113,14 @@ function rawGround(x: number, z: number): number {
 // level pads for the houses, at whatever height the land has there
 let pads: [number, number, number][] | null = null;
 
-export function passGround(x: number, z: number): number {
+let ramps: Prop[] | null = null;
+/** The jump ramps (worked out once: the snow round each one is shaped to fit it). */
+function passRamps() { return ramps ??= RAMPS.map(([x, z, rot]) => makeRamp(landGround, x, z, rot)); }
+
+export function passGround(x: number, z: number): number { return rampSnow(passRamps(), x, z, landGround(x, z)); }
+
+/** The land without the jump ramps. */
+function landGround(x: number, z: number): number {
   let h = rawGround(x, z);
   if (!pads) pads = HOUSES.map(([hx, hz]) => [hx, hz, rawGround(hx, hz)]);
   for (const [px, pz, py] of pads) {
@@ -125,13 +140,39 @@ export function passGround(x: number, z: number): number {
 
 const passIce = (x: number, z: number) => lakeE(x, z) < 0.9;
 
-/** A camp: a spawn line across the valley with two stockpile rings in front of it. dir = +1 when it faces east. */
-function camp(cx: number, dir: number): Front {
+/**
+ * A camp: a spawn line across the valley with two stockpile rings in front of it. dir = +1 when it faces east.
+ * `respawnX`, if given, is a second line further back (x for each z): the team starts at the camp, but whoever goes
+ * down comes back there, with a longer way to the fight. `clear` says whether a penguin can stand at a spot.
+ */
+function camp(cx: number, dir: number, respawnX?: (z: number) => number, clear?: (x: number, z: number) => boolean): Front {
   const g = (x: number, z: number): V3 => ({ x, y: passGround(x, z), z });
   const spawns: V3[] = [];
   for (let n = 0; n < 12; n++) spawns.push(g(cx - dir * (n % 2 ? 5.5 : 3), -33 + n * 6));
-  return { center: g(cx, 0), spawns, stockpiles: [g(cx, -13), g(cx, 13)], facing: dir > 0 ? -Math.PI / 2 : Math.PI / 2 };
+  const front: Front = { center: g(cx, 0), spawns, stockpiles: [g(cx, -13), g(cx, 13)], facing: dir > 0 ? -Math.PI / 2 : Math.PI / 2 };
+  if (respawnX) {
+    front.respawns = [];
+    for (let n = 0; n < 12; n++) {
+      const z = -33 + n * 6, x = respawnX(z) - dir * (n % 2 ? 2.5 : 0);
+      // step aside (further back first) if something solid stands there
+      const tries: [number, number][] = [[0, 0], [-dir * 2, 0], [0, 1.8], [0, -1.8], [-dir * 2, 1.8], [-dir * 2, -1.8], [-dir * 4, 0], [dir * 2, 0], [0, 3], [0, -3]];
+      const ok = tries.find(([dx, dz]) => !clear || clear(x + dx, z + dz));
+      if (ok) front.respawns.push(g(x + ok[0], z + ok[1]));
+    }
+  }
+  return front;
 }
+
+/**
+ * How far back the defenders come back when they go down, section by section: behind the camp they are holding, so
+ * losing a penguin costs the defence a long walk (or slide). At the Flats that is the near edge of Crumble Town,
+ * at the town it is the first bench of the Summit, and on the Summit it is the back wall of the village.
+ */
+const DEFENDER_RESPAWN_X: ((z: number) => number)[] = [
+  () => -12.5,
+  z => 49.6 + 5.5 * gauss(z - 21, 6.5) - 4 * gauss(z + 25, 7) + 2.2 * gauss(z + 2, 5), // follows the bench round the hill
+  () => 109.2,
+];
 
 export function buildBreakthroughMap(): MapDef {
   const ground = passGround;
@@ -139,38 +180,10 @@ export function buildBreakthroughMap(): MapDef {
   fillField(field, ground, passIce);
   const at = (x: number, z: number, up = 0): V3 => ({ x, y: ground(x, z) + up, z });
 
-  // the two ends: each has an igloo and a flag like any base
-  const ends = [camp(CAMPS[0], 1), camp(CAMPS[3], -1)];
-  const bases: TeamBase[] = ends.map((f, team) => {
-    const s = team === 0 ? -1 : 1;
-    return { ...f, team, stockpile: f.stockpiles[0], igloo: at(s * 108.5, 0), flag: at(s * 105.5, -6) };
-  });
-
-  const points: CapturePointDef[] = [
-    { name: 'A', ...at(FLATS_A.x, FLATS_A.z), r: CAP_R, owner: 1 },
-    { name: 'B', ...at(FLATS_B.x, FLATS_B.z), r: CAP_R, owner: 1 },
-    { name: 'A', ...at(TOWN_A.x, TOWN_A.z), r: CAP_R, owner: 1 },
-    { name: 'B', ...at(TOWN_B.x, TOWN_B.z), r: CAP_R, owner: 1 },
-    { name: 'A', ...at(TOP.x, TOP.z), r: 8.5, owner: 1 },
-  ];
-  const sectors: SectorDef[] = [
-    { name: 'The Flats', lineX: LINES[0], points: [0, 1], fronts: [bases[0], camp(CAMPS[1], -1)] },
-    { name: 'Crumble Town', lineX: LINES[1], points: [2, 3], fronts: [camp(CAMPS[1], 1), camp(CAMPS[2], -1)] },
-    { name: 'The Summit', lineX: LINES[2], points: [4], fronts: [camp(CAMPS[2], 1), bases[1]] },
-  ];
-
   const houses: House[] = HOUSES.map(([x, z, rot, kind]) => (kind === 'cabin' ? makeCabin : makeGingerbreadHouse)(ground, x, z, rot));
   const props: Prop[] = PROPS.map(([kind, x, z, rot]) => makeProp(ground, kind, x, z, rot));
-
-  // giant snowballs: on the mounds of the Flats, in the town, and a row along the top of the hill to roll down it
-  const bigBallSpawns: V3[] = [[-68, 3], [-41, -1], [-25, -31], [20, 31], [72.5, -19], [72, 1.5], [73.5, 23], [61.5, 31]].map(([x, z]) => at(x, z));
-
-  const flakeSpots: V3[] = [
-    [-62, -11], [-55, 3], [-45, -31], [-58, 33], [-40, 20.5], [-72, 21], [-80, -24],
-    [-8, 9], [1, -21], [-12.5, -31], [14, 31], [20.5, -21], [-21, 27], [10, 4],
-    [48, -4], [50.5, 30], [61, -14], [62.5, 27], [77, 0], [90, -27.5], [88.5, 27], [57, 5],
-  ].map(([x, z]) => at(x, z, 1.1));
-
+  const ramps = passRamps();
+  props.push(...ramps);
   const rocks: Rock[] = [];
   for (const [x, z, r] of [[-64, -18, 1.2], [-47, -5.5, 1.0], [-58, 20.5, 1.1], [-78, 9, 1.25], [-34, -14, 0.95], [-70, -34, 1.1], [-45, 34, 1.2],
     [-12, -36, 1.0], [23, -31, 1.2], [-26, 10, 1.05], [24.5, 23, 0.95], [5, 36.5, 1.1], [17, -3.5, 0.9],
@@ -184,6 +197,46 @@ export function buildBreakthroughMap(): MapDef {
     [-10, 3.5, 0.95, 4.2], [12, 11, 1.0, 4.6], [-5, 12, 0.85, 3.4], [13.5, 1, 0.9, 3.8], [-13.5, 9.5, 0.8, 3.0],
     [-27, -4, 0.9, 3.6], [-66, 17, 0.9, 3.8], [-50, 2, 1.0, 4.4], [-73, -5, 0.85, 3.4], [29, -9, 0.9, 3.6],
   ]) shards.push(makePillar(ground, x, z, r, h));
+
+  const igloos = [at(-108.5, 0), at(108.5, 0)];
+  /** Can a penguin come back here? Not on the lake, in a house, on a ramp or up against anything solid. */
+  const clear = (x: number, z: number) => {
+    if (lakeE(x, z) < 1.25) return false;
+    for (const h of houses) if (Math.hypot(x - h.x, z - h.z) < 6) return false;
+    for (const p of props) if (Math.hypot(x - p.x, z - p.z) < (p.kind === 'ruinA' || p.kind === 'ruinB' ? 5.6 : p.kind === 'ramp' ? 4.2 : p.kind === 'cane' ? 1.3 : 2.6)) return false;
+    for (const i of igloos) if (Math.hypot(x - i.x, z - i.z) < 3.6) return false;
+    for (const r of rocks) if (Math.hypot(x - r.x, z - r.z) < r.r + 1) return false;
+    for (const sh of shards) if (Math.hypot(x - sh.x, z - sh.z) < sh.r + 1) return false;
+    return true;
+  };
+
+  // the two ends: each has an igloo and a flag like any base
+  const ends = [camp(CAMPS[0], 1), camp(CAMPS[3], -1, DEFENDER_RESPAWN_X[2], clear)];
+  const bases: TeamBase[] = ends.map((f, team) => {
+    return { ...f, team, stockpile: f.stockpiles[0], igloo: igloos[team], flag: at((team === 0 ? -1 : 1) * 105.5, -6) };
+  });
+
+  const points: CapturePointDef[] = [
+    { name: 'A', ...at(FLATS_A.x, FLATS_A.z), r: CAP_R, owner: 1 },
+    { name: 'B', ...at(FLATS_B.x, FLATS_B.z), r: CAP_R, owner: 1 },
+    { name: 'A', ...at(TOWN_A.x, TOWN_A.z), r: CAP_R, owner: 1 },
+    { name: 'B', ...at(TOWN_B.x, TOWN_B.z), r: CAP_R, owner: 1 },
+    { name: 'A', ...at(TOP.x, TOP.z), r: 8.5, owner: 1 },
+  ];
+  const sectors: SectorDef[] = [
+    { name: 'The Flats', lineX: LINES[0], points: [0, 1], fronts: [bases[0], camp(CAMPS[1], -1, DEFENDER_RESPAWN_X[0], clear)] },
+    { name: 'Crumble Town', lineX: LINES[1], points: [2, 3], fronts: [camp(CAMPS[1], 1), camp(CAMPS[2], -1, DEFENDER_RESPAWN_X[1], clear)] },
+    { name: 'The Summit', lineX: LINES[2], points: [4], fronts: [camp(CAMPS[2], 1), bases[1]] },
+  ];
+
+  // giant snowballs: on the mounds of the Flats, in the town, and a row along the top of the hill to roll down it
+  const bigBallSpawns: V3[] = [[-68, 3], [-41, -1], [-25, -31], [20, 31], [72.5, -19], [72, 1.5], [73.5, 23], [61.5, 31]].map(([x, z]) => at(x, z));
+
+  const flakeSpots: V3[] = [
+    [-62, -11], [-55, 3], [-45, -31], [-58, 33], [-40, 20.5], [-72, 21], [-80, -24],
+    [-8, 9], [1, -21], [-12.5, -31], [14, 31], [20.5, -21], [-21, 27], [10, 4],
+    [48, -4], [50.5, 30], [61, -14], [62.5, 27], [77, 0], [90, -27.5], [88.5, 27], [57, 5],
+  ].map(([x, z]) => at(x, z, 1.1));
 
   // trees: hardly any on the Flats, stands of pines round the town, a few on the hill and a thick belt round the rim
   const keepOut: [number, number, number][] = [
@@ -209,7 +262,11 @@ export function buildBreakthroughMap(): MapDef {
     if (hx < 75) return Math.abs(z) > 31 ? 0.05 : n > 0.3 ? 0.04 : 0.005; // the slope: open, so it's a hard climb
     return n > 0.22 ? 0.05 : 0.008; // the village on top
   };
-  const trees = scatterTrees(ground, density, 4711, 17500, 119, 47.5, false);
+  // (trees in the way of a jump ramp or standing where the defenders come back are taken out afterwards, so the rest
+  // of the forest is exactly as it was)
+  const comeBack = [...sectors.map(sec => sec.fronts[1]), bases[1]].flatMap(f => f.respawns ?? []);
+  const trees = scatterTrees(ground, density, 4711, 17500, 119, 47.5, false)
+    .filter(t => !inRampLane(ramps, t.x, t.z, t.r) && !comeBack.some(c => Math.hypot(c.x - t.x, c.z - t.z) < t.r + 1.3));
 
   const playground = emptyPlayground();
   for (const r of rocks) playground.cyls.push({ x: r.x, z: r.z, r: r.r * 0.86, y0: r.y - 1.5, y1: r.y + r.r * 0.95 });
@@ -220,7 +277,12 @@ export function buildBreakthroughMap(): MapDef {
     name: 'Peppermint Pass',
     ground, creekAt: null, points, shards, houses, props, sectors,
     field, bases, bigBallSpawns, flakeSpots, trees, rocks, playground,
-    boardSpots: [],
+    // one surfboard, in whichever section is being fought over
+    boardSpots: [
+      { x: -58, z: -3, name: 'in the middle of the Flats', sector: 0 },
+      { x: -1.5, z: 11, name: 'out on the frozen lake', sector: 1 },
+      { x: 63.5, z: -14.5, name: 'half way up the Summit', sector: 2 },
+    ],
     pond: null,
     bounds: { minX: -116.5, maxX: 116.5, minZ: -45.5, maxZ: 45.5 },
     midLineX: LINES[0],

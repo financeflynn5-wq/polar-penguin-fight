@@ -1,4 +1,4 @@
-"""Builds the Breakthrough props in Blender and writes them to public/models as .glb.
+"""Builds the map props in Blender and writes them to public/models as .glb.
 
 Run (Blender's Python, e.g. a venv with the `bpy` module):
     python tools/blender/props.py                 # build and export everything
@@ -249,9 +249,10 @@ def build_ice_blocks():
     return A, dict(target=(0, 1.1, 0), dist=8.5, yaw=60, pitch=14)
 
 
-import houses
+import houses, ramp
 
 BUILDERS = {'cane': build_cane, 'caneDown': build_cane_down, 'sled': build_sled, 'iceBlocks': build_ice_blocks,
+            'ramp': ramp.build_ramp,
             'gingerbread': houses.build_gingerbread, 'ruinA': houses.build_ruin_a, 'ruinB': houses.build_ruin_b, 'cabin': houses.build_cabin}
 
 

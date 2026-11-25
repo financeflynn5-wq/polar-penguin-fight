@@ -12,6 +12,10 @@ export const CFG = {
   iceFriction: 0.25,
   sledAssist: 3.2, // how strongly the sled run's ice turns a slider to follow the track (per second)
   slideSteer: 1.8, // rad/s
+  slideBrake: 7, // m/s² while you push back against a slide
+  rampKick: 1.15, // how much of your speed up a jump ramp turns into height at the lip (1 = what the ramp's shape gives)
+  rampBoost: 2.5, // m/s a belly slide (or the surfboard) gains off the lip of a jump ramp
+  rampMinSpeed: 2.5, // slower than this and you just drop off the end
   radius: 0.38,
   stepUp: 0.45,
 
@@ -111,7 +115,7 @@ export const CFG = {
   btRetake: 0.4, // how fast the defenders win an objective back, next to how fast the attackers take it
   btRegroup: 20, // seconds the attackers wait after a section falls
   btLastStand: 60, // seconds the attackers have once their tickets are gone
-  btRespawn: [3.5, 5], // seconds down: attackers, defenders
+  btRespawn: [3.5, 6.5], // seconds down: attackers, defenders (who also come back further from the fight: Front.respawns)
 };
 
 export const REWARD_NAMES = ['Snowball Frenzy', 'Insta-Turret', 'Avalanche'];

@@ -8,9 +8,11 @@ Push and pile real 3D snow, pat it into forts, dig tunnels, pack snowballs (carr
 
 - **Team Deathmatch** on Frostbite Bay: first team to 25 splats. Splat streaks of 3, 5 and 7 earn a Snowball Frenzy, an Insta-Turret and an Avalanche. Each team comes back along a spawn line that runs the whole length of its side of the map (not at the igloo), and has three stockpiles on that line: one by the igloo and one at a camp at each end. The far north (the Drifts) and the far south (the Inlet, a strip of sea ice) are ways round the middle.
 - **Conquest** on Glacier Gap: three flags (A, B, C). Stand in a flag's ring to take it, held flags earn points, first team to 250 wins. You respawn at a flag your team holds, so build forts and snowman turrets around them. No splat streaks here.
-- **Breakthrough** on Peppermint Pass: Team Blizzard attacks, Team Sunrise defends, and the map is three sections taken one after another. The Flats is open ground with a few trees, stacks of sawn ice and a couple of snow mounds (objectives A and B). Crumble Town is a broken-down gingerbread village round a frozen lake with icebergs and giant candy canes (A and B again). The Summit is a steep, snowy hill with a walled village of log cabins and gingerbread houses on top, and cargo sleds for cover on the way up (one objective). The attackers take a section by holding all of its objectives at once; then the defenders fall back, their old turrets crumble, and the attackers get tickets back. Every attacker who goes down costs a ticket. At zero the attackers stop coming back and have one last minute; if they are all down, or the clock runs out, the defenders win. Pick Attack or Defend on the menu. No splat streaks here.
+- **Breakthrough** on Peppermint Pass: Team Blizzard attacks, Team Sunrise defends, and the map is three sections taken one after another. The Flats is open ground with a few trees, stacks of sawn ice and a couple of snow mounds (objectives A and B). Crumble Town is a broken-down gingerbread village round a frozen lake with icebergs and giant candy canes (A and B again). The Summit is a steep, snowy hill with a walled village of log cabins and gingerbread houses on top, and cargo sleds for cover on the way up (one objective). The attackers take a section by holding all of its objectives at once; then the defenders fall back, their old turrets crumble, and the attackers get tickets back. Defenders who are splatted come back on a line well behind their objectives (and wait a little longer than attackers), so going down as a defender leaves the objective short-handed. Every attacker who goes down costs a ticket. At zero the attackers stop coming back and have one last minute; if they are all down, or the clock runs out, the defenders win. Pick Attack or Defend on the menu. No splat streaks here.
 
 Snowman turrets work in every mode: hold T to scoop a lot of snow into one. It throws at any enemy it can see, runs out of snowballs unless you hand it more (hold E beside it), and four hits knock it down.
+
+Every map has jump ramps on its hills (icy decks with gold arrows and candy-cane rails): belly slide into one at speed and you fly. Every map also has a surfboard that pops up shortly after the fight starts: grab it to ride faster than a slide until you are splatted. In Breakthrough the board appears in the section being fought over.
 
 ## Play locally
 
@@ -36,7 +38,7 @@ Then open the link Vite prints (usually http://localhost:5173).
 | 1 / 2 / 3 | Use a splat-streak reward (Team Deathmatch) |
 | E | Grab snowballs from a stockpile (works on the enemy's too) |
 | Hold E | Stash your snowballs in your stockpile, or load a turret beside you |
-| Shift | Belly slide |
+| Shift | Belly slide. A / D steer left and right as you see it on screen, W bends the slide toward where you look, S brakes. Hit a jump ramp at speed to fly |
 | Space | Hop |
 | Tab | Scoreboard |
 
@@ -95,13 +97,13 @@ For the Flynn Arcade hub, add `{ "id": "penguin", "name": "Polar Penguin Fight",
 - `src/sim/`: the game rules, penguins, snowballs, big balls, snowflakes and bots. No Three.js here, so the same code runs on the multiplayer server.
 - `src/net/`, `server/`: online play (see above).
 - `src/render/`, `src/ui/`, `src/game/`: visuals, particles, HUD, menus, procedural sound.
-- `src/world/Maps.ts`: the maps by id (`MapDef.ts` is Frostbite Bay, `ConquestMap.ts` is Glacier Gap, `BreakthroughMap.ts` is Peppermint Pass). `Landmarks.ts` is what you bump into: ice, houses, ruins, candy canes, sleds, ice blocks.
+- `src/world/Maps.ts`: the maps by id (`MapDef.ts` is Frostbite Bay, `ConquestMap.ts` is Glacier Gap, `BreakthroughMap.ts` is Peppermint Pass). `Landmarks.ts` is what you bump into: ice, houses, ruins, candy canes, sleds, ice blocks, and the jump ramps (their curve, the launch and the snow shaped around them).
 - `public/models/*.glb`, `public/textures/*.webp`: the houses and props, modelled in Blender. See "Props" below.
 - `src/sim/config.ts`: every gameplay number in one place for tuning.
 
 ## Props (Blender)
 
-The gingerbread house, its two ruins, the log cabin, the candy canes, the cargo sled and the ice blocks are built by Python scripts that drive Blender, in `tools/blender/`:
+The gingerbread house, its two ruins, the log cabin, the candy canes, the cargo sled, the ice blocks and the jump ramp (`ramp.py`) are built by Python scripts that drive Blender, in `tools/blender/`:
 
 - `textures.py` makes the tiling texture sets in `public/textures/` (colour, normal and occlusion/roughness for gingerbread, icing, candy, wood, logs, snow, ice, canvas, stone). Needs numpy and Pillow.
 - `props.py` and `houses.py` build the models and write them to `public/models/` as `.glb`; `kit.py` is the shared toolbox. Run them with Blender's Python (`pip install bpy` in a virtualenv is enough): `python tools/blender/props.py` builds everything, `python tools/blender/props.py sled cabin` only those, and `--render` also writes review renders to `tools/blender/renders/`.

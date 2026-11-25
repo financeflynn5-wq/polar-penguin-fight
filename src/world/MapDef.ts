@@ -4,7 +4,7 @@
 
 import { SnowField } from './SnowField';
 import { buildPlayground, Playground } from './Playground';
-import { IceShard, House, Prop, makeIceberg, makePillar, makeGingerbreadHouse, addLandmarkCollision } from './Landmarks';
+import { IceShard, House, Prop, makeIceberg, makePillar, makeGingerbreadHouse, makeRamp, rampSnow, inRampLane, addLandmarkCollision } from './Landmarks';
 
 export interface V3 { x: number; y: number; z: number; }
 
@@ -13,6 +13,8 @@ export interface Front {
   center: V3;
   /** the spawn line: you come back at one of these, spread out along your side of the map */
   spawns: V3[];
+  /** if going down sends you further back than where you started: come back at one of these instead */
+  respawns?: V3[];
   /** every place you can grab from and stash into the team's snowball pile (the pile itself is shared) */
   stockpiles: V3[];
   facing: number; // yaw facing the enemy
@@ -65,7 +67,8 @@ export interface MapDef {
   creek: { x: number; z: number; t: number }[];
   pond: { x: number; z: number; r: number; y: number } | null;
   playground: Playground;
-  boardSpots: { x: number; z: number; name: string }[];
+  /** where the surfboard can pop up. Breakthrough: `sector` says which section a spot belongs to */
+  boardSpots: { x: number; z: number; name: string; sector?: number }[];
   bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
   midLineX: number;
 }
@@ -122,6 +125,11 @@ const HOUSE = { x: 0, z: -35.5, y: 4.5 }; // the gingerbread house, in a hollow 
 const BERG = { x: 0, z: 35.5, y: 4.9 }; // the big iceberg, down in the south
 const RIDGE_Z = -33;
 const PASS_X = 27; // gaps in the ridge
+// jump ramps on the east half (mirrored for the west): [x, z, the way you fly (0 = east, PI = west)]
+const BAY_RAMPS: [number, number, number][] = [
+  [28.2, TRAIL_Z, Math.PI], // where the north trail comes down off the bank
+  [15.3, -12.5, 0], // at the foot of the Big Hill, flying toward the base
+];
 
 // ── the sled run: a frozen creek that runs from each base down a spur to the pond ──
 // Defined for x > 0 and mirrored. Sampled into short segments once.
@@ -220,8 +228,17 @@ function creekY(t: number) {
   return top + (POND_Y + 0.02 - top) * e;
 }
 
+let bayRampList: Prop[] | null = null;
+/** The jump ramps, the same on both sides (worked out once: the snow round each one is shaped to fit it). */
+function bayRamps() {
+  return bayRampList ??= [...BAY_RAMPS.map(([x, z, rot]) => makeRamp(landHeight, x, z, rot)), ...BAY_RAMPS.map(([x, z, rot]) => makeRamp(landHeight, -x, z, Math.PI - rot))];
+}
+
 /** Ground height (before anyone touches the snow). Mirror-symmetric across x = 0 so it's fair. */
-export function groundHeight(x: number, z: number): number {
+export function groundHeight(x: number, z: number): number { return rampSnow(bayRamps(), x, z, landHeight(x, z)); }
+
+/** The land without the jump ramps. */
+function landHeight(x: number, z: number): number {
   const ax = Math.abs(x);
   let h = rawHeight(ax, x, z);
   // the sled run rides down a spur from each base, with banked sides
@@ -390,6 +407,8 @@ export function buildBayMap(): MapDef {
     [15, 55, 1.1, 4.6], [31, 58, 0.95, 3.8], [22, 50.5, 0.85, 3.2], [38, 53, 0.9, 3.6], [4.5, 47, 0.8, 3.0],
   ]) for (const s of [-1, 1]) shards.push(makePillar(groundHeight, s * x, z, r, h));
 
+  const props: Prop[] = bayRamps();
+
   // trees: open country. A belt around the rim, a scattering across the north and south, and a few small copses
   // for cover, so you can see (and take) the ways round the sides instead of being funnelled into the middle
   const keepOut: [number, number, number][] = [
@@ -419,11 +438,11 @@ export function buildBayMap(): MapDef {
     if (x > 11 && n > 0.3) return 0.075; // copses
     return 0.008;
   };
-  const trees = scatterTrees(groundHeight, density, 1337, 7600, 69.5, 73);
+  const trees = scatterTrees(groundHeight, density, 1337, 7600, 69.5, 73).filter(t => !inRampLane(props, t.x, t.z, t.r));
 
   const playground = buildPlayground(groundHeight);
   for (const r of rocks) playground.cyls.push({ x: r.x, z: r.z, r: r.r * 0.86, y0: r.y - 1.5, y1: r.y + r.r * 0.95 });
-  addLandmarkCollision(playground, shards, houses);
+  addLandmarkCollision(playground, shards, houses, props);
   const boardSpots = [
     { x: 0, z: HILL.z - 2, name: 'on top of the Big Hill' },
     { x: 0, z: POND.z, name: 'out on the frozen pond' },
@@ -437,7 +456,7 @@ export function buildBayMap(): MapDef {
   return {
     id: 'bay',
     name: 'Frostbite Bay',
-    ground: groundHeight, creekAt, points: [], shards, houses, props: [], sectors: [],
+    ground: groundHeight, creekAt, points: [], shards, houses, props, sectors: [],
     field, bases, bigBallSpawns, flakeSpots, trees, rocks, playground, boardSpots,
     pond: { x: POND.x, z: POND.z, r: POND.r, y: POND_Y },
     bounds: { minX: -70.5, maxX: 70.5, minZ: -72.5, maxZ: 72.5 },

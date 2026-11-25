@@ -60,6 +60,7 @@ export class Hud {
         ${flags ? '' : '<div><span class="key">1</span><span class="key">2</span><span class="key">3</span>streak rewards</div>'}
         <div><span class="key">E</span>grab &nbsp;·&nbsp; hold <span class="key">E</span>stash</div>
         <div><span class="key">Shift</span>belly slide &nbsp; <span class="key">Space</span>hop</div>
+        <div>sliding: <span class="key">A</span><span class="key">D</span>steer &nbsp; <span class="key">S</span>brake</div>
         <div><span class="key">Tab</span>scores</div>
       </div>
       <div class="board hidden" id="board"></div>

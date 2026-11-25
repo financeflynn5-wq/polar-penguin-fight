@@ -7,7 +7,7 @@
 import { SnowField } from './SnowField';
 import { emptyPlayground } from './Playground';
 import { MapDef, V3, Rock, CapturePointDef, fbm, smooth, bump, gauss, fillField, makeBases, scatterTrees } from './MapDef';
-import { makeIceberg, makePillar, addLandmarkCollision } from './Landmarks';
+import { Prop, makeIceberg, makePillar, makeRamp, rampSnow, inRampLane, addLandmarkCollision } from './Landmarks';
 
 const FIELD = { nx: 288, ny: 52, nz: 208, cell: 0.5, x0: -72, z0: -52 };
 const BASE_X = 55;
@@ -19,6 +19,11 @@ const LAKE = { x: 0, z: 39, rx: 22, rz: 6, y: 4.0 };
 const SHARDS = { x: 0, z: -19 };
 const FORT_R = 5.4; // the ruined snow wall around each flag
 const CAP_R = 7;
+// jump ramps on the east half (mirrored for the west): [x, z, the way you fly (PI = west)]
+const GAP_RAMPS: [number, number, number][] = [
+  [32.7, -2, Math.PI], // at the foot of the ramp off each base
+  [31.7, 23, Math.PI], // off the hill in the south, toward flag B
+];
 
 const wrap = (a: number) => { while (a > Math.PI) a -= Math.PI * 2; while (a < -Math.PI) a += Math.PI * 2; return a; };
 
@@ -37,7 +42,16 @@ function lakeE(x: number, z: number) {
   return ex * ex + ez * ez;
 }
 
-export function conquestGround(x: number, z: number): number {
+let gapRampList: Prop[] | null = null;
+/** The jump ramps, the same on both sides (worked out once: the snow round each one is shaped to fit it). */
+function gapRamps() {
+  return gapRampList ??= [...GAP_RAMPS.map(([x, z, rot]) => makeRamp(landGround, x, z, rot)), ...GAP_RAMPS.map(([x, z, rot]) => makeRamp(landGround, -x, z, Math.PI - rot))];
+}
+
+export function conquestGround(x: number, z: number): number { return rampSnow(gapRamps(), x, z, landGround(x, z)); }
+
+/** The land without the jump ramps. */
+function landGround(x: number, z: number): number {
   const ax = Math.abs(x);
   let h = 4.8 + fbm(ax * 0.03 + 9.1, z * 0.03 + 4.2) * 1.5;
   h += fbm(ax * 0.09 + 1.7, z * 0.09 + 8.8) * 0.6;
@@ -98,6 +112,8 @@ export function buildConquestMap(): MapDef {
     [37, 16, 0.85, 3.4], [21, -34, 1.0, 4.4], [10.5, 31.5, 0.9, 3.6], [24, 30, 1.0, 4.6], [17, -6, 0.85, 3.2],
   ]) for (const s of [-1, 1]) shards.push(makePillar(ground, s * x, z, r, h));
 
+  const props: Prop[] = gapRamps();
+
   const keepOut: [number, number, number][] = [
     [BASE_X, 0, 16], [HILL.x, HILL.z, 7], [HOME.x, HOME.z, 12.5], [MID.x, MID.z, 12.5],
     ...bigBallSpawns.map(b => [Math.abs(b.x), b.z, 2.8] as [number, number, number]),
@@ -115,16 +131,16 @@ export function buildConquestMap(): MapDef {
     if (n > 0.28) return 0.07; // small stands of pines
     return 0.006;
   };
-  const trees = scatterTrees(ground, density, 2024, 5200);
+  const trees = scatterTrees(ground, density, 2024, 5200).filter(t => !inRampLane(props, t.x, t.z, t.r));
 
   const playground = emptyPlayground();
   for (const r of rocks) playground.cyls.push({ x: r.x, z: r.z, r: r.r * 0.86, y0: r.y - 1.5, y1: r.y + r.r * 0.95 });
-  addLandmarkCollision(playground, shards, []);
+  addLandmarkCollision(playground, shards, [], props);
 
   return {
     id: 'gap',
     name: 'Glacier Gap',
-    ground, creekAt: null, points, shards, houses: [], props: [], sectors: [],
+    ground, creekAt: null, points, shards, houses: [], props, sectors: [],
     field, bases, bigBallSpawns, flakeSpots, trees, rocks, playground,
     boardSpots: [
       { x: 0, z: 39, name: 'out on Slip Lake' },

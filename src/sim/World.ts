@@ -6,6 +6,7 @@ import { MapDef, V3, Front, mulberry32 } from '../world/MapDef';
 import type { Mode } from '../world/Maps';
 import { CFG } from './config';
 import { boxGround, boxPush, pointInBoxes, slideY } from '../world/Playground';
+import { Prop, RAMP, RAMP_LIP, rampGround, rampLocal, rampPush, rampUnder, pointInRamps } from '../world/Landmarks';
 
 export type { Mode };
 
@@ -205,6 +206,7 @@ export const HATS = ['none', 'beanie', 'tophat', 'propeller', 'viking', 'crown',
 
 const tmpN = { x: 0, y: 0, z: 0 };
 const pushTmp = { x: 0, z: 0 };
+const rampTmp = { s: 0, w: 0 };
 const plowOut = { mass: 0, cx: 0, cy: 0, cz: 0 };
 
 export class World {
@@ -243,8 +245,12 @@ export class World {
   /** online client: only step your own penguin's movement; the server does the snow, throws, pickups and respawns */
   private predicting = false;
 
+  /** the map's jump ramps */
+  readonly ramps: Prop[];
+
   constructor(readonly map: MapDef, readonly opts: MatchOptions) {
     this.field = map.field;
+    this.ramps = map.props.filter(p => p.kind === 'ramp');
     this.mode = opts.mode ?? 'tdm';
     const conquest = this.mode === 'conquest', bt = this.mode === 'breakthrough';
     this.scoreToWin = conquest ? CFG.conquestScore : CFG.scoreToWin;
@@ -362,7 +368,8 @@ export class World {
    * at a random spot on it, away from any enemy who has pushed up that far.
    */
   private lineSpawn(p: Penguin, first: boolean): V3 {
-    const list = this.front(p.team).spawns;
+    const front = this.front(p.team);
+    const list = first ? front.spawns : front.respawns ?? front.spawns;
     if (first) {
       const mates = this.penguins.filter(q => q.team === p.team);
       return list[Math.floor((mates.indexOf(p) + 0.5) * list.length / Math.max(1, mates.length)) % list.length];
@@ -530,13 +537,23 @@ export class World {
     const ice = this.isIce(p.x, p.z);
     p.onIce = ice;
     if (p.sliding) {
-      // steer by turning the velocity a little
+      // steer toward where you're pushing. That's worked out from the camera, like walking, so left is always left
+      // on screen whichever way the slide is going, and holding forward bends the slide toward where you look.
+      // Pushing straight back against the slide brakes instead of turning you round.
       const sp = Math.hypot(p.vx, p.vz);
-      const steer = inp.moveX * CFG.slideSteer * dt;
-      if (sp > 0.1 && steer !== 0) {
-        const c = Math.cos(-steer), s = Math.sin(-steer);
-        const nvx = p.vx * c - p.vz * s, nvz = p.vx * s + p.vz * c;
-        p.vx = nvx; p.vz = nvz;
+      if (sp > 0.1 && ml > 0.1) {
+        const wl = Math.hypot(wishX, wishZ);
+        const along = (p.vx * wishX + p.vz * wishZ) / (sp * wl);
+        if (along < -0.8) {
+          const k = Math.max(0, sp - CFG.slideBrake * dt) / sp;
+          p.vx *= k; p.vz *= k;
+        } else {
+          const want = Math.atan2(p.vx * wishZ - p.vz * wishX, p.vx * wishX + p.vz * wishZ); // from the slide round to the push
+          const turn = Math.sign(want) * Math.min(Math.abs(want), CFG.slideSteer * Math.min(1, wl) * dt);
+          const c = Math.cos(turn), s = Math.sin(turn);
+          const nvx = p.vx * c - p.vz * s, nvz = p.vx * s + p.vz * c;
+          p.vx = nvx; p.vz = nvz;
+        }
       }
       if (p.grounded && !p.onSlide && !p.onProp) {
         // gravity along the slope
@@ -597,8 +614,27 @@ export class World {
       inp.jump = false;
     }
 
+    // on a jump ramp? (looked up before moving, so we know when this step carries us off the end of it)
+    const ramp = p.grounded && p.onProp && this.ramps.length ? rampUnder(this.ramps, p.x, p.y, p.z) : null;
+
     p.vy -= CFG.gravity * dt;
     p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
+
+    if (ramp && rampLocal(ramp, p.x, p.z, rampTmp).s > RAMP.len) {
+      // off the lip: your speed up the ramp carries on as height (and the ice gives a belly slide a last shove)
+      const dx = Math.cos(ramp.rot), dz = Math.sin(ramp.rot);
+      let up = p.vx * dx + p.vz * dz;
+      if (up > CFG.rampMinSpeed) {
+        if (p.sliding || p.surfing) {
+          const shove = Math.max(0, Math.min(CFG.rampBoost, CFG.slideMaxSpeed - Math.hypot(p.vx, p.vz)));
+          p.vx += dx * shove; p.vz += dz * shove; up += shove;
+        }
+        p.vy = up * RAMP_LIP * CFG.rampKick;
+        p.y = ramp.y + RAMP.rise + p.vy * dt;
+        p.grounded = false;
+        this.emit({ type: 'launch', pid: p.id });
+      }
+    }
 
     this.collideBody(p);
     this.groundPenguin(p, dt);
@@ -672,7 +708,7 @@ export class World {
     const pg = this.map.playground;
     if (pointInBoxes(pg.boxes, x, y, z, 0.1)) return true;
     for (const c of pg.cyls) if (y > c.y0 && y < c.y1 && Math.hypot(x - c.x, z - c.z) < c.r + 0.1) return true;
-    return false;
+    return pointInRamps(this.ramps, x, y, z, 0.1);
   }
 
   isIce(x: number, z: number) {
@@ -761,6 +797,14 @@ export class World {
       const d = Math.hypot(dx, dz), min = c.r + r;
       if (d < min && d > 1e-4) { p.x = c.x + dx / d * min; p.z = c.z + dz / d * min; const vn = (p.vx * dx + p.vz * dz) / d; if (vn < 0) { p.vx -= vn * dx / d; p.vz -= vn * dz / d; } }
     }
+    // jump ramps: nobody gets in under the deck
+    if (this.ramps.length && rampPush(this.ramps, p.x, p.z, p.y + 0.02, head, r, p.sliding ? 0.35 : CFG.stepUp, pushTmp)) {
+      p.x += pushTmp.x; p.z += pushTmp.z;
+      const pl = Math.hypot(pushTmp.x, pushTmp.z) || 1;
+      const nx = pushTmp.x / pl, nz = pushTmp.z / pl;
+      const vn = p.vx * nx + p.vz * nz;
+      if (vn < 0) { p.vx -= vn * nx; p.vz -= vn * nz; }
+    }
     // slide side rails: if we're on the slide, stay between them
     if (p.onSlide) {
       const sl = pg.slide;
@@ -805,6 +849,8 @@ export class World {
     const pb = boxGround(this.map.playground.boxes, p.x, p.z, p.y, stepUp, down, CFG.radius * 0.5);
     p.onProp = false;
     if (pb !== null && (g === null || pb > g)) { g = pb; p.onProp = true; }
+    const pr = this.ramps.length ? rampGround(this.ramps, p.x, p.z, p.y, stepUp, down) : null;
+    if (pr !== null && (g === null || pr > g)) { g = pr; p.onProp = true; }
     const wasGrounded = p.grounded;
     if (g !== null && p.y <= g + 0.02 && p.vy <= 0.5) {
       p.y = g; p.vy = 0; p.grounded = true;
@@ -1084,7 +1130,7 @@ export class World {
         }
         if (!b.alive) break;
         const pg = this.map.playground;
-        let propHit = pointInBoxes(pg.boxes, b.x, b.y, b.z, CFG.snowballRadius);
+        let propHit = pointInBoxes(pg.boxes, b.x, b.y, b.z, CFG.snowballRadius) || pointInRamps(this.ramps, b.x, b.y, b.z, CFG.snowballRadius * 0.5);
         if (!propHit) for (const c of pg.cyls) if (b.y > c.y0 && b.y < c.y1 && Math.hypot(b.x - c.x, b.z - c.z) < c.r + CFG.snowballRadius) { propHit = true; break; }
         if (!propHit) {
           const sl = pg.slide, ss = (b.z - sl.z0) * sl.dirZ;
@@ -1393,7 +1439,7 @@ export class World {
     const bd = this.map.bounds;
     if (x < bd.minX + 1 || x > bd.maxX - 1 || z < bd.minZ + 1 || z > bd.maxZ - 1) return null;
     const pg = this.map.playground;
-    if (pointInBoxes(pg.boxes, x, g + 0.6, z, 0.45)) return null;
+    if (pointInBoxes(pg.boxes, x, g + 0.6, z, 0.45) || pointInRamps(this.ramps, x, g - 0.2, z, 0.6)) return null;
     for (const c of pg.cyls) if (g < c.y1 && Math.hypot(x - c.x, z - c.z) < c.r + 0.5) return null;
     for (const t of this.map.trees) if (Math.hypot(x - t.x, z - t.z) < t.r + 0.6) return null;
     for (const b of this.map.bases) {
@@ -1688,6 +1734,7 @@ export class World {
       }
       const bonus = Math.round(CFG.btSectorTickets * this.opts.teamSize);
       this.sector++;
+      if (this.board.holder < 0) this.board.active = false; // a surfboard nobody picked up is left behind: a new one pops up ahead
       this.holdT = CFG.btRegroup;
       this.lastStandT = -1;
       this.scores[ATTACK] += bonus;
@@ -1712,8 +1759,10 @@ export class World {
   private stepBoard(dt: number) {
     const bd = this.board;
     if (!bd.active) {
-      if (this.phase === 'fight' && this.map.boardSpots.length && this.fightLen - this.phaseT > CFG.boardSpawnDelay) {
-        const spot = this.map.boardSpots[Math.floor(this.rand() * this.map.boardSpots.length)];
+      // Breakthrough: it pops up in the section being fought over
+      const spots = this.mode === 'breakthrough' ? this.map.boardSpots.filter(b => b.sector === this.sector) : this.map.boardSpots;
+      if (this.phase === 'fight' && spots.length && this.holdT <= 0 && this.fightLen - this.phaseT > CFG.boardSpawnDelay) {
+        const spot = spots[Math.floor(this.rand() * spots.length)];
         bd.active = true; bd.holder = -1; bd.x = spot.x; bd.z = spot.z;
         bd.y = (this.field.surfaceBelow(spot.x, 25, spot.z, 0, 30) ?? 5) + 2; bd.vy = 0;
         this.emit({ type: 'board', pid: -1, what: 'spawn', x: bd.x, y: bd.y, z: bd.z, where: spot.name });

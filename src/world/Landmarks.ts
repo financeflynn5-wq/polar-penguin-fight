@@ -20,7 +20,7 @@ export interface House {
   style: 'gingerbread' | 'cabin';
 }
 
-export type PropKind = 'cane' | 'caneDown' | 'sled' | 'iceBlocks' | 'ruinA' | 'ruinB';
+export type PropKind = 'cane' | 'caneDown' | 'sled' | 'iceBlocks' | 'ruinA' | 'ruinB' | 'ramp';
 /** A solid prop standing on the snow at (x, y, z), turned by rot (same sense as Box.rot). */
 export interface Prop { kind: PropKind; x: number; y: number; z: number; rot: number; }
 
@@ -33,6 +33,34 @@ interface Shape {
 
 const DEEP = -1.2; // how far solid things reach below the snow they stand on, so a dug-out foot is still solid
 
+/**
+ * The jump ramp: a timber kicker with an ice deck. You ride up it and fly off the lip; the faster you arrive, the
+ * further you go. In its own frame x runs from the low end (-len / 2) to the lip (+len / 2), and its y is the deck
+ * at the low end. The deck curves up like the inside of a bowl: rise * (s / len)^2, s metres in from the low end.
+ */
+export const RAMP = { len: 5.6, width: 3.2, rise: 1.3 };
+/** How steeply the deck is climbing at the lip (rise over run): what turns your speed into height. */
+export const RAMP_LIP = 2 * RAMP.rise / RAMP.len;
+/** Height of the deck above the ramp's y, s metres in from the low end. */
+const RAMP_DEEP = -3.4; // how far down the trestle under the lip reaches
+export const rampDeck = (s: number) => { const t = Math.max(0, Math.min(1, s / RAMP.len)); return RAMP.rise * t * t; };
+
+/**
+ * What's solid under the deck, for giant snowballs and anything else that only knows boxes: a row of blocks that stop
+ * well short of the deck, so someone riding up it never touches them. (Penguins are kept out from under the deck
+ * by rampPush, and snowballs by pointInRamps.)
+ */
+function rampBlocks(): Shape['boxes'] {
+  const boxes: Shape['boxes'] = [];
+  const step = 0.5;
+  for (let s = 2.6; s < RAMP.len - 0.01; s += step) {
+    const s1 = Math.min(RAMP.len, s + step);
+    // down to well below the snow: on a slope the lip end stands on tall legs
+    boxes.push([(s + s1) / 2 - RAMP.len / 2, 0, (s1 - s) / 2, RAMP.width / 2 - 0.06, RAMP_DEEP, rampDeck(s - 0.9) - 0.05]);
+  }
+  return boxes;
+}
+
 /** What each prop is made of, as far as bumping into it goes. Low pieces can be hopped onto or over. */
 export const PROP_SHAPES: Record<PropKind, Shape> = {
   // a giant candy cane, standing: the hook is overhead
@@ -43,6 +71,8 @@ export const PROP_SHAPES: Record<PropKind, Shape> = {
   sled: { boxes: [[0, 0, 1.75, 0.78, DEEP, 1.05], [-0.25, 0, 1.2, 0.66, 1.05, 1.5]], cyls: [] },
   // sawn blocks of lake ice: two side by side with a third on top
   iceBlocks: { boxes: [[0, 0, 1.3, 0.66, DEEP, 1.22], [-0.52, 0.03, 0.68, 0.62, 1.22, 2.36]], cyls: [] },
+  // the jump ramp: see RAMP (the deck you ride on is rampGround, these are only what's underneath)
+  ramp: { boxes: rampBlocks(), cyls: [] },
   // a gingerbread house with the roof gone and the walls bitten down to different heights
   ruinA: {
     boxes: [
@@ -102,6 +132,113 @@ export function makeCabin(ground: Ground, x: number, z: number, rot = 0): House 
 
 export function makeProp(ground: Ground, kind: PropKind, x: number, z: number, rot = 0): Prop {
   return { kind, x, y: ground(x, z), z, rot };
+}
+
+/**
+ * A jump ramp with its middle at (x, z), climbing toward `rot` (0 = east, +x; same sense as Box.rot). `ground` is the
+ * land before the ramp was there. Put it on flat or falling ground: at the foot of a slope, or on the edge of a drop.
+ */
+export function makeRamp(ground: Ground, x: number, z: number, rot = 0): Prop {
+  const e = turned(x, z, rot, -RAMP.len / 2, 0);
+  return { kind: 'ramp', x, y: ground(e.x, e.z), z, rot };
+}
+
+/**
+ * The snow round a ramp: levelled where you ride onto it (so the low end sits just under the snow right across its
+ * width, whatever the slope was doing), and dug out from under the deck so the ramp isn't half buried.
+ * `h` is the height the land had at (x, z); returns the height it has with the ramps there.
+ */
+export function rampSnow(ramps: Prop[], x: number, z: number, h: number): number {
+  for (const r of ramps) {
+    if (Math.abs(x - r.x) > RAMP.len + 3 || Math.abs(z - r.z) > RAMP.len + 3) continue;
+    rampLocal(r, x, z, rl);
+    const half = RAMP.width / 2, aw = Math.abs(rl.w);
+    // the pad at the low end
+    const e = smoothstep(half + 2.4, half + 0.3, aw) * smoothstep(-4.2, -0.8, rl.s) * (1 - smoothstep(0.8, 2.6, rl.s));
+    h += (r.y + 0.04 - h) * e;
+    // nothing higher than just under the deck (rising gently again outside its edges)
+    const out = Math.max(0, aw - half, rl.s - RAMP.len);
+    if (rl.s > 0 && out < 1.6) h = Math.min(h, r.y + Math.max(0.04, rampDeck(rl.s) - 0.07) + out * 0.9);
+  }
+  return h;
+}
+const smoothstep = (e0: number, e1: number, x: number) => { const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
+
+/** Is a tree (or anything else) at (x, z) in the way of a ramp: on the run-up, on the ramp, or where you come down? */
+export function inRampLane(ramps: Prop[], x: number, z: number, r = 0) {
+  for (const rp of ramps) {
+    if (Math.abs(x - rp.x) > 30 || Math.abs(z - rp.z) > 30) continue;
+    rampLocal(rp, x, z, rl);
+    if (rl.s > -11 && rl.s < RAMP.len + 22 && Math.abs(rl.w) < RAMP.width / 2 + 1.5 + r) return true;
+  }
+  return false;
+}
+
+/** Where a world point is on a ramp: s metres in from the low end, w metres off its centre line. */
+export function rampLocal(r: Prop, x: number, z: number, out: { s: number; w: number }) {
+  const c = Math.cos(-r.rot), s = Math.sin(-r.rot);
+  out.s = (x - r.x) * c - (z - r.z) * s + RAMP.len / 2;
+  out.w = (x - r.x) * s + (z - r.z) * c;
+  return out;
+}
+
+const rl = { s: 0, w: 0 };
+
+/** The deck of the highest ramp under (x, z) that's not above y + stepUp or more than `down` below y. */
+export function rampGround(ramps: Prop[], x: number, z: number, y: number, stepUp: number, down: number): number | null {
+  let best: number | null = null;
+  for (const r of ramps) {
+    if (Math.abs(x - r.x) > RAMP.len || Math.abs(z - r.z) > RAMP.len) continue;
+    rampLocal(r, x, z, rl);
+    if (rl.s < 0 || rl.s > RAMP.len || Math.abs(rl.w) > RAMP.width / 2) continue;
+    const d = r.y + rampDeck(rl.s);
+    if (d > y + stepUp || d < y - down) continue;
+    if (best === null || d > best) best = d;
+  }
+  return best;
+}
+
+/** The ramp whose deck (x, y, z) is standing on, or null. */
+export function rampUnder(ramps: Prop[], x: number, y: number, z: number): Prop | null {
+  for (const r of ramps) {
+    if (Math.abs(x - r.x) > RAMP.len || Math.abs(z - r.z) > RAMP.len) continue;
+    rampLocal(r, x, z, rl);
+    if (rl.s < 0 || rl.s > RAMP.len || Math.abs(rl.w) > RAMP.width / 2) continue;
+    if (Math.abs(r.y + rampDeck(rl.s) - y) < 0.12) return r;
+  }
+  return null;
+}
+
+/** Is this point inside a ramp (under its deck)? For snowballs, and for bots looking where they're going. */
+export function pointInRamps(ramps: Prop[], x: number, y: number, z: number, pad: number) {
+  for (const r of ramps) {
+    if (Math.abs(x - r.x) > RAMP.len || Math.abs(z - r.z) > RAMP.len) continue;
+    rampLocal(r, x, z, rl);
+    if (rl.s < -pad || rl.s > RAMP.len + pad || Math.abs(rl.w) > RAMP.width / 2 + pad) continue;
+    if (y < r.y + rampDeck(rl.s) + pad && y > r.y + RAMP_DEEP) return true;
+  }
+  return false;
+}
+
+/**
+ * Keep a penguin (feet y0, head y1, radius r) out from under a ramp's deck: whoever is in its footprint with the deck
+ * more than a step (`stepUp`) above their feet is pushed out through the nearest side, or out past the lip.
+ */
+export function rampPush(ramps: Prop[], x: number, z: number, y0: number, y1: number, r: number, stepUp: number, out: { x: number; z: number }): boolean {
+  for (const rp of ramps) {
+    if (Math.abs(x - rp.x) > RAMP.len || Math.abs(z - rp.z) > RAMP.len) continue;
+    rampLocal(rp, x, z, rl);
+    const half = RAMP.width / 2;
+    if (rl.s < 0 || rl.s > RAMP.len + r || Math.abs(rl.w) > half + r) continue;
+    if (y0 + stepUp >= rp.y + rampDeck(rl.s) || y1 < rp.y + RAMP_DEEP) continue;
+    const side = half + r - Math.abs(rl.w), front = RAMP.len + r - rl.s;
+    let ps = 0, pw = 0;
+    if (front < side) ps = front; else pw = Math.sign(rl.w || 1) * side;
+    const c = Math.cos(rp.rot), s = Math.sin(rp.rot);
+    out.x = ps * c - pw * s; out.z = ps * s + pw * c;
+    return true;
+  }
+  return false;
 }
 
 /** A point in something's own frame (turned by rot about its centre) out in the world. */

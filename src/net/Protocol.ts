@@ -14,7 +14,7 @@
 import type { World, Penguin, PenguinInput, Action, Phase, GameEvent, RosterEntry, CapturePoint } from '../sim/World';
 import type { Mode } from '../world/Maps';
 
-export const PROTOCOL = 4;
+export const PROTOCOL = 5;
 export const TICK_HZ = 60;
 export const SNAP_EVERY = 2; // ticks per snapshot: 30 snapshots a second
 export const MSG_MATCH = 1;
