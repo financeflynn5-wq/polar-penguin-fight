@@ -8,8 +8,9 @@ Push and pile real 3D snow, pat it into forts, dig tunnels, pack snowballs (carr
 
 - **Team Deathmatch** on Frostbite Bay: first team to 25 splats. Splat streaks of 3, 5 and 7 earn a Snowball Frenzy, an Insta-Turret and an Avalanche. Each team comes back along a spawn line that runs the whole length of its side of the map (not at the igloo), and has three stockpiles on that line: one by the igloo and one at a camp at each end. The far north (the Drifts) and the far south (the Inlet, a strip of sea ice) are ways round the middle.
 - **Conquest** on Glacier Gap: three flags (A, B, C). Stand in a flag's ring to take it, held flags earn points, first team to 250 wins. You respawn at a flag your team holds, so build forts and snowman turrets around them. No splat streaks here.
+- **Breakthrough** on Peppermint Pass: Team Blizzard attacks, Team Sunrise defends, and the map is three sections taken one after another. The Flats is open ground with a few trees, stacks of sawn ice and a couple of snow mounds (objectives A and B). Crumble Town is a broken-down gingerbread village round a frozen lake with icebergs and giant candy canes (A and B again). The Summit is a steep, snowy hill with a walled village of log cabins and gingerbread houses on top, and cargo sleds for cover on the way up (one objective). The attackers take a section by holding all of its objectives at once; then the defenders fall back, their old turrets crumble, and the attackers get tickets back. Every attacker who goes down costs a ticket. At zero the attackers stop coming back and have one last minute; if they are all down, or the clock runs out, the defenders win. Pick Attack or Defend on the menu. No splat streaks here.
 
-Snowman turrets work in both modes: hold T to scoop a lot of snow into one. It throws at any enemy it can see, runs out of snowballs unless you hand it more (hold E beside it), and four hits knock it down.
+Snowman turrets work in every mode: hold T to scoop a lot of snow into one. It throws at any enemy it can see, runs out of snowballs unless you hand it more (hold E beside it), and four hits knock it down.
 
 ## Play locally
 
@@ -85,7 +86,7 @@ For the Flynn Arcade hub, add `{ "id": "penguin", "name": "Polar Penguin Fight",
 - The server runs the real match with the same code as the offline game (`src/sim`), 60 steps a second, and sends a binary snapshot 30 times a second: every penguin, snowball, big ball, snowflake and the surfboard, the snow voxels that changed, and the events (hits, splats, throws). See `src/net/Protocol.ts`.
 - Your own penguin moves the moment you press a key: the browser runs the same movement code ahead of the server and quietly corrects itself when the server disagrees (`src/net/NetClient.ts`). Everyone else is shown 0.1 s in the past, blended between snapshots.
 - The server does all the digging, building, packing, throwing, hits and pickups.
-- Tests: `npm run test:net` plays a match with three fake players in-process and checks that each one's copy of the snow matches the server's exactly. `npm run test:online` starts the real server and connects two headless players over a laggy connection (`LAG=120 JITTER=60 npm run test:online` for a bad one) and reports how far prediction drifts. Put `MODE=conquest` in front of either to test Conquest on Glacier Gap.
+- Tests: `npm run test:net` plays a match with three fake players in-process and checks that each one's copy of the snow matches the server's exactly. `npm run test:online` starts the real server and connects two headless players over a laggy connection (`LAG=120 JITTER=60 npm run test:online` for a bad one) and reports how far prediction drifts. Put `MODE=conquest` or `MODE=breakthrough` in front of either to test those modes on their own maps.
 
 ## How it's put together
 
@@ -94,5 +95,15 @@ For the Flynn Arcade hub, add `{ "id": "penguin", "name": "Polar Penguin Fight",
 - `src/sim/`: the game rules, penguins, snowballs, big balls, snowflakes and bots. No Three.js here, so the same code runs on the multiplayer server.
 - `src/net/`, `server/`: online play (see above).
 - `src/render/`, `src/ui/`, `src/game/`: visuals, particles, HUD, menus, procedural sound.
-- `src/world/Maps.ts`: the maps by id (`MapDef.ts` is Frostbite Bay, `ConquestMap.ts` is Glacier Gap, `Landmarks.ts` is the ice and the gingerbread house).
+- `src/world/Maps.ts`: the maps by id (`MapDef.ts` is Frostbite Bay, `ConquestMap.ts` is Glacier Gap, `BreakthroughMap.ts` is Peppermint Pass). `Landmarks.ts` is what you bump into: ice, houses, ruins, candy canes, sleds, ice blocks.
+- `public/models/*.glb`, `public/textures/*.webp`: the houses and props, modelled in Blender. See "Props" below.
 - `src/sim/config.ts`: every gameplay number in one place for tuning.
+
+## Props (Blender)
+
+The gingerbread house, its two ruins, the log cabin, the candy canes, the cargo sled and the ice blocks are built by Python scripts that drive Blender, in `tools/blender/`:
+
+- `textures.py` makes the tiling texture sets in `public/textures/` (colour, normal and occlusion/roughness for gingerbread, icing, candy, wood, logs, snow, ice, canvas, stone). Needs numpy and Pillow.
+- `props.py` and `houses.py` build the models and write them to `public/models/` as `.glb`; `kit.py` is the shared toolbox. Run them with Blender's Python (`pip install bpy` in a virtualenv is enough): `python tools/blender/props.py` builds everything, `python tools/blender/props.py sled cabin` only those, and `--render` also writes review renders to `tools/blender/renders/`.
+
+The models carry shape, UVs, a material name per mesh and vertex colours (a tint times ambient occlusion that is ray-cast in Blender). The game builds the actual materials from the shared textures in `src/render/PropMaterials.ts` and draws every copy of a prop in one instanced call (`src/render/Landmarks.ts`). The sizes you collide with live in `src/world/Landmarks.ts` (`PROP_SHAPES` and the house makers); the models are built to those numbers, so change them together.

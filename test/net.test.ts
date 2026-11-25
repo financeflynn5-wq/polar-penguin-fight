@@ -1,6 +1,6 @@
 // Server/protocol test: run a Room in-process with fake sockets, decode everything the "browsers" get,
 // and check that each browser's copy of the snow ends up identical to the server's.
-// Run: npm run test:net (MODE=conquest npm run test:net for Conquest on Glacier Gap)
+// Run: npm run test:net (MODE=conquest for Conquest on Glacier Gap, MODE=breakthrough for Breakthrough on Peppermint Pass)
 import { inflateRawSync } from 'node:zlib';
 import assert from 'node:assert/strict';
 import { Room, Client } from '../server/Room';
@@ -97,6 +97,7 @@ for (const s of last.points) {
   const pt = room.world.points[s.id];
   assert.ok(s.owner === pt.owner && Math.abs(s.cap - pt.cap) < 1e-3 && s.n0 === pt.n0 && s.n1 === pt.n1, `flag ${pt.name} matches`);
 }
+assert.ok(last.sector === room.world.sector && Math.abs(last.holdT - room.world.holdT) < 1e-3 && Math.abs(last.lastStandT - room.world.lastStandT) < 1e-3, 'Breakthrough section, regroup and last-stand timers match');
 for (const s of last.penguins) {
   const p = room.world.penguin(s.id)!;
   assert.ok(s.streak === p.streak && s.rewards.join() === p.rewards.join() && s.turretSnow === Math.round(p.turretSnow) && !!s.turretAt === !!p.turretAt, `${p.name}'s streak and turret building match`);
@@ -114,7 +115,8 @@ drain(A);
 assert.ok(A.rosters >= 2, 'roster updates go out on join and leave');
 
 // end the match: everyone still here gets a fresh field and is seated again
-room.world.scores[0] = room.world.scoreToWin;
+// (Breakthrough has no score to reach: run its clock out instead, which is a win for the defenders)
+if (MODE === 'breakthrough') room.world.phaseT = 0.01; else room.world.scores[0] = room.world.scoreToWin;
 const before = A.matches;
 STEP(60 * 16, () => {});
 drain(A); drain(C);

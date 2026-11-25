@@ -1,5 +1,5 @@
 // The game simulation: penguins, snowballs, big rolling snowballs, snowflakes, stockpiles, snowman turrets,
-// Conquest flags, splat-streak rewards and the match.
+// Conquest flags, Breakthrough sections, splat-streak rewards and the match.
 // No Three.js and no DOM, so the game server can run this exact code later.
 import { SnowField, ISO } from '../world/SnowField';
 import { MapDef, V3, Front, mulberry32 } from '../world/MapDef';
@@ -70,6 +70,9 @@ export type GameEvent =
   | { type: 'rewardFail'; pid: number }
   | { type: 'capture'; point: number; team: number; from: number } // `team` took the flag
   | { type: 'neutral'; point: number; team: number } // `team` lost the flag
+  | { type: 'sector'; sector: number; tickets: number } // Breakthrough: the attackers took this section (tickets = what they got for it)
+  | { type: 'sectorOpen'; sector: number } // Breakthrough: the regroup is over, this section is on
+  | { type: 'lastStand' } // Breakthrough: the attackers are out of tickets
   | { type: 'gameOver'; winner: number };
 
 export class Penguin {
@@ -188,7 +191,12 @@ export interface MatchOptions {
   roster?: RosterEntry[];
   /** online client: which roster entry is you */
   meId?: number;
+  /** playing alone: the team you're on (Breakthrough: 0 attacks, 1 defends) */
+  playerTeam?: number;
 }
+
+/** Breakthrough: Team Blizzard attacks, Team Sunrise defends. */
+export const ATTACK = 0, DEFEND = 1;
 
 const BOT_NAMES = ['Waddles', 'Sir Flaps', 'Pebble', 'Captain Ice', 'Nugget', 'Biscuit', 'Frosty', 'Wobbles', 'Sleet', 'Mittens',
   'Slushie', 'Tux', 'Puddles', 'Blizzard Bob', 'Chilly Willy Jr', 'Flipper', 'Snowcone', 'Sprinkles', 'Popsicle', 'Gizmo',
@@ -218,6 +226,12 @@ export class World {
   readonly buildLen: number;
   readonly fightLen: number;
   private capAcc = [0, 0];
+  /** Breakthrough: the section being fought over */
+  sector = 0;
+  /** Breakthrough: seconds of regroup left after a section falls (the attackers wait behind the next line) */
+  holdT = 0;
+  /** Breakthrough: seconds the attackers have left once their tickets are gone (-1 = they still have tickets) */
+  lastStandT = -1;
   time = 0;
   events: GameEvent[] = [];
   winner = -1;
@@ -232,12 +246,14 @@ export class World {
   constructor(readonly map: MapDef, readonly opts: MatchOptions) {
     this.field = map.field;
     this.mode = opts.mode ?? 'tdm';
-    const conquest = this.mode === 'conquest';
+    const conquest = this.mode === 'conquest', bt = this.mode === 'breakthrough';
     this.scoreToWin = conquest ? CFG.conquestScore : CFG.scoreToWin;
-    this.buildLen = conquest ? CFG.conquestBuildPhase : CFG.buildPhase;
-    this.fightLen = conquest ? CFG.conquestFightPhase : CFG.fightPhase;
+    this.buildLen = bt ? CFG.btBuildPhase : conquest ? CFG.conquestBuildPhase : CFG.buildPhase;
+    this.fightLen = bt ? CFG.btFightPhase : conquest ? CFG.conquestFightPhase : CFG.fightPhase;
     this.phaseT = this.buildLen;
-    if (conquest) this.points = map.points.map((d, id) => ({ id, name: d.name, x: d.x, y: d.y, z: d.z, r: d.r, owner: d.owner, cap: d.owner < 0 ? 0 : d.owner === 0 ? -1 : 1, n0: 0, n1: 0 }));
+    // Breakthrough keeps score its own way: the attackers' tickets, and the sections the defenders still hold
+    if (bt) this.scores = [Math.round(CFG.btTickets * opts.teamSize), map.sectors.length];
+    if (conquest || bt) this.points = map.points.map((d, id) => ({ id, name: d.name, x: d.x, y: d.y, z: d.z, r: d.r, owner: d.owner, cap: d.owner < 0 ? 0 : d.owner === 0 ? -1 : 1, n0: 0, n1: 0 }));
     if (opts.roster) {
       // an online client's mirror of the server's match: you first, then everyone else
       const me = opts.roster.find(r => r.id === opts.meId) ?? opts.roster[0];
@@ -246,17 +262,18 @@ export class World {
       this.nextId = Math.max(0, ...opts.roster.map(r => r.id)) + 1;
       return;
     }
-    // teams: player on team 0, bots fill the rest
+    // teams: the player on their team (Team Blizzard unless they asked for the other one), bots fill the rest
     const names = [...BOT_NAMES].sort(() => this.rand() - 0.5);
     this.botNames = names;
+    const mine = opts.playerTeam === 1 ? 1 : 0;
     const player = opts.allBots
-      ? new Penguin(this.nextId++, names[names.length - 1], 0, HATS[1 + Math.floor(this.rand() * (HATS.length - 1))], true)
-      : new Penguin(this.nextId++, opts.playerName || 'You', 0, opts.playerHat, false);
+      ? new Penguin(this.nextId++, names[names.length - 1], mine, HATS[1 + Math.floor(this.rand() * (HATS.length - 1))], true)
+      : new Penguin(this.nextId++, opts.playerName || 'You', mine, opts.playerHat, false);
     this.penguins.push(player);
     this.playerId = player.id;
     let n = 0;
     for (let team = 0; team < 2; team++) {
-      const count = team === 0 ? opts.teamSize - 1 : opts.teamSize;
+      const count = team === mine ? opts.teamSize - 1 : opts.teamSize;
       for (let c = 0; c < count; c++) {
         const hat = HATS[1 + Math.floor(this.rand() * (HATS.length - 1))];
         this.penguins.push(new Penguin(this.nextId++, names[n++ % names.length], team, hat, true));
@@ -315,8 +332,22 @@ export class World {
     try { this.stepPenguin(p, dt); } finally { this.predicting = false; }
   }
 
-  /** Where a team lives right now: its spawn line and its stockpiles. */
-  front(team: number): Front { return this.map.bases[team]; }
+  /** Where a team lives right now: its spawn line and its stockpiles. In Breakthrough that moves up the map with the fight. */
+  front(team: number): Front {
+    return this.mode === 'breakthrough' ? this.map.sectors[this.sector].fronts[team] : this.map.bases[team];
+  }
+
+  /** Breakthrough: the objectives that can be taken right now (ids into `points`). */
+  activePoints(): number[] { return this.mode === 'breakthrough' ? this.map.sectors[this.sector].points : this.points.map(p => p.id); }
+
+  /**
+   * The line nobody may cross yet, or null. In the build phase it keeps the teams apart; in Breakthrough it also holds
+   * the attackers back for a moment after a section falls, while the defenders dig in at the next one.
+   */
+  holdLine(): number | null {
+    if (this.mode === 'breakthrough') return this.phase === 'build' || (this.phase === 'fight' && this.holdT > 0) ? this.map.sectors[this.sector].lineX : null;
+    return this.phase === 'build' ? this.map.midLineX : null;
+  }
 
   /** The nearest place this team can grab and stash snowballs. */
   nearestPile(team: number, x: number, z: number): V3 {
@@ -393,6 +424,7 @@ export class World {
     this.stepTurrets(dt);
     this.stepBarrages(dt);
     this.stepPoints(dt);
+    this.stepBreakthrough(dt);
     // snow that lost its support falls
     this.field.settle(3, (x, y, z, drop, mass) => { if (mass > 300) this.emit({ type: 'collapse', x, y, z, drop, mass }); });
   }
@@ -404,13 +436,25 @@ export class World {
       this.phase = 'fight'; this.phaseT = this.fightLen;
       this.emit({ type: 'phase', phase: 'fight' });
     } else if (this.phase === 'fight') {
-      if (this.phaseT <= 0 || this.scores[0] >= this.scoreToWin || this.scores[1] >= this.scoreToWin) {
-        this.phase = 'end'; this.phaseT = 0;
-        this.winner = this.scores[0] === this.scores[1] ? -1 : this.scores[0] > this.scores[1] ? 0 : 1;
-        this.emit({ type: 'phase', phase: 'end' });
-        this.emit({ type: 'gameOver', winner: this.winner });
+      if (this.mode === 'breakthrough') {
+        // out of time: the defenders held (running out of tickets and taking the last section are in stepBreakthrough)
+        if (this.phaseT <= 0) this.endMatch(DEFEND);
+      } else if (this.phaseT <= 0 || this.scores[0] >= this.scoreToWin || this.scores[1] >= this.scoreToWin) {
+        this.endMatch(this.scores[0] === this.scores[1] ? -1 : this.scores[0] > this.scores[1] ? 0 : 1);
       }
     }
+  }
+
+  private endMatch(winner: number) {
+    this.phase = 'end'; this.phaseT = 0;
+    this.winner = winner;
+    this.emit({ type: 'phase', phase: 'end' });
+    this.emit({ type: 'gameOver', winner });
+  }
+
+  /** Breakthrough: once the attackers' tickets are gone, the ones who go down stay down (until they take a section). */
+  private canRespawn(p: Penguin) {
+    return !(this.mode === 'breakthrough' && p.team === ATTACK && this.phase === 'fight' && this.scores[ATTACK] <= 0);
   }
 
   // ───────────────────────── penguins ─────────────────────────
@@ -429,7 +473,7 @@ export class World {
       p.action = 'down';
       p.downT -= dt;
       p.vx *= 0.9; p.vz *= 0.9;
-      if (p.downT <= 0 && !this.predicting) { this.spawn(p); this.emit({ type: 'respawn', pid: p.id }); }
+      if (p.downT <= 0 && !this.predicting && this.canRespawn(p)) { this.spawn(p); this.emit({ type: 'respawn', pid: p.id }); }
       return;
     }
     if (this.phase === 'end') { p.vx = p.vz = 0; p.action = 'idle'; return; }
@@ -559,11 +603,13 @@ export class World {
     this.collideBody(p);
     this.groundPenguin(p, dt);
 
-    // build phase: stay on your side of the ice line
-    if (this.phase === 'build') {
+    // build phase: stay on your side of the ice line. Breakthrough: the attackers also wait behind the next line
+    // while the defenders regroup (anyone already past it gets walked back)
+    const line = this.holdLine();
+    if (line !== null) {
       const lim = 1.0;
-      if (p.team === 0 && p.x > -lim) { p.x = -lim; if (p.vx > 0) p.vx = 0; }
-      if (p.team === 1 && p.x < lim) { p.x = lim; if (p.vx < 0) p.vx = 0; }
+      if (p.team === 0 && p.x > line - lim) { p.x = Math.max(line - lim, p.x - 14 * dt); if (p.vx > 0) p.vx = 0; }
+      if (p.team === 1 && this.phase === 'build' && p.x < line + lim) { p.x = line + lim; if (p.vx < 0) p.vx = 0; }
     }
 
     // ── snow work ──
@@ -619,6 +665,14 @@ export class World {
   nearPile(p: Penguin): number {
     if (this.atPile(p, p.team)) return p.team;
     return this.atPile(p, 1 - p.team) ? 1 - p.team : -1;
+  }
+
+  /** Is there something solid here that isn't snow: a wall, a sled, a pillar? (Bots look ahead with this.) */
+  propAt(x: number, y: number, z: number) {
+    const pg = this.map.playground;
+    if (pointInBoxes(pg.boxes, x, y, z, 0.1)) return true;
+    for (const c of pg.cyls) if (y > c.y0 && y < c.y1 && Math.hypot(x - c.x, z - c.z) < c.r + 0.1) return true;
+    return false;
   }
 
   isIce(x: number, z: number) {
@@ -1079,8 +1133,10 @@ export class World {
     p.downX = p.x; p.downZ = p.z;
     p.frenzyT = 0;
     this.dropTurretSnow(p);
-    p.downT = CFG.respawnTime;
+    p.downT = this.mode === 'breakthrough' ? CFG.btRespawn[p.team] : CFG.respawnTime;
     p.downs++;
+    // Breakthrough: every attacker who goes down costs the attackers a ticket
+    if (this.mode === 'breakthrough' && this.phase === 'fight' && p.team === ATTACK && this.scores[ATTACK] > 0) this.scores[ATTACK]--;
     p.sliding = false; p.charging = false; p.charge = 0;
     p.mitten = Math.max(0, p.mitten - 1);
     const killer = this.penguin(by);
@@ -1108,7 +1164,12 @@ export class World {
   // ───────────────────────── big rolling snowballs ─────────────────────────
   private spawnBigBall(hint?: number) {
     const spots = this.map.bigBallSpawns;
-    const order = spots.map((_, i) => i);
+    if (!spots.length) return false;
+    let order = spots.map((_, i) => i);
+    if (this.mode === 'breakthrough' && hint === undefined) {
+      const near = order.filter(i => this.inPlay(spots[i].x));
+      if (near.length) order = near;
+    }
     if (hint !== undefined) order.unshift(order.splice(hint % spots.length, 1)[0]);
     else order.sort(() => this.rand() - 0.5);
     for (const i of order) {
@@ -1550,6 +1611,9 @@ export class World {
   /** Stand on a flag with more penguins than the other team to pull it your way; every flag you hold scores over time. */
   private stepPoints(dt: number) {
     if (!this.points.length) return;
+    const bt = this.mode === 'breakthrough';
+    const active = bt ? this.map.sectors[this.sector].points : null;
+    const capTime = bt ? CFG.btCaptureTime : CFG.captureTime;
     for (const pt of this.points) { pt.n0 = 0; pt.n1 = 0; }
     for (const p of this.penguins) {
       if (!p.alive) continue;
@@ -1557,15 +1621,18 @@ export class World {
         if (Math.hypot(p.x - pt.x, p.z - pt.z) < pt.r && Math.abs(p.y - pt.y) < 8) { if (p.team === 0) pt.n0++; else pt.n1++; }
       }
     }
-    if (this.phase !== 'fight') return;
+    if (this.phase !== 'fight' || (bt && this.holdT > 0)) return;
     for (const pt of this.points) {
+      if (active && !active.includes(pt.id)) continue; // Breakthrough: only this section's objectives are in play
       const diff = pt.n1 - pt.n0;
       if (diff !== 0) {
-        pt.cap += Math.sign(diff) * Math.pow(Math.min(CFG.captureCrowd, Math.abs(diff)), 0.75) / CFG.captureTime * dt;
+        // Breakthrough: the defenders win ground back more slowly than the attackers take it
+        const rate = bt && diff > 0 ? CFG.btRetake : 1;
+        pt.cap += Math.sign(diff) * rate * Math.pow(Math.min(CFG.captureCrowd, Math.abs(diff)), 0.75) / capTime * dt;
       } else if (pt.n0 === 0) {
         // nobody home: it settles back to whoever holds it
         const rest = pt.owner < 0 ? 0 : pt.owner === 0 ? -1 : 1;
-        const step = dt / (CFG.captureTime * 2.5);
+        const step = dt / (capTime * 2.5);
         pt.cap += Math.max(-step, Math.min(step, rest - pt.cap));
       }
       pt.cap = Math.max(-1, Math.min(1, pt.cap));
@@ -1579,6 +1646,7 @@ export class World {
         pt.owner = -1;
       }
     }
+    if (bt) return; // no flag points in Breakthrough: it's sections and tickets
     for (let t = 0; t < 2; t++) {
       let held = 0;
       for (const pt of this.points) if (pt.owner === t) held++;
@@ -1587,11 +1655,63 @@ export class World {
     }
   }
 
+  // ───────────────────────── Breakthrough ─────────────────────────
+  /** Is this x somewhere the fight is right now? (From the attackers' camp to the end of the section in play.) */
+  inPlay(x: number) {
+    const secs = this.map.sectors;
+    if (this.mode !== 'breakthrough' || !secs.length) return true;
+    const end = this.sector + 1 < secs.length ? secs[this.sector + 1].lineX + 6 : this.map.bounds.maxX;
+    return x > secs[this.sector].lineX - 4 && x < end;
+  }
+
+  /**
+   * The attackers take every objective in a section to move the fight on to the next one, and win by taking the last.
+   * Each attacker who goes down costs a ticket. With no tickets left nobody on the attack comes back: the defenders win
+   * when the last attacker is down, or when the last stand runs out of time.
+   */
+  private stepBreakthrough(dt: number) {
+    if (this.mode !== 'breakthrough' || this.phase !== 'fight') return;
+    const secs = this.map.sectors;
+    if (this.holdT > 0) {
+      this.holdT -= dt;
+      if (this.holdT <= 0) { this.holdT = 0; this.emit({ type: 'sectorOpen', sector: this.sector }); }
+      return;
+    }
+    if (secs[this.sector].points.every(i => this.points[i].owner === ATTACK)) {
+      const fallen = this.sector;
+      if (fallen === secs.length - 1) {
+        this.scores[DEFEND] = 0;
+        this.emit({ type: 'sector', sector: fallen, tickets: 0 });
+        this.endMatch(ATTACK);
+        return;
+      }
+      const bonus = Math.round(CFG.btSectorTickets * this.opts.teamSize);
+      this.sector++;
+      this.holdT = CFG.btRegroup;
+      this.lastStandT = -1;
+      this.scores[ATTACK] += bonus;
+      this.scores[DEFEND] = secs.length - this.sector;
+      // the defenders' snowmen in the lost section crumble (they'd be throwing into the attackers' new camp)
+      const line = secs[this.sector].lineX;
+      for (const t of this.turrets) if (t.alive && t.team === DEFEND && t.x < line) this.destroyTurret(t, -1);
+      // both camps start the next section with something in the pile
+      for (let t = 0; t < 2; t++) this.piles[t] = Math.max(this.piles[t], CFG.startPile);
+      this.emit({ type: 'sector', sector: fallen, tickets: bonus });
+      return;
+    }
+    if (this.scores[ATTACK] <= 0) {
+      if (this.lastStandT < 0) { this.lastStandT = CFG.btLastStand; this.emit({ type: 'lastStand' }); }
+      this.lastStandT -= dt;
+      const up = this.penguins.some(p => p.team === ATTACK && p.alive);
+      if (!up || this.lastStandT <= 0) { this.lastStandT = 0; this.endMatch(DEFEND); }
+    }
+  }
+
   // ───────────────────────── the surfboard ─────────────────────────
   private stepBoard(dt: number) {
     const bd = this.board;
     if (!bd.active) {
-      if (this.phase === 'fight' && this.fightLen - this.phaseT > CFG.boardSpawnDelay) {
+      if (this.phase === 'fight' && this.map.boardSpots.length && this.fightLen - this.phaseT > CFG.boardSpawnDelay) {
         const spot = this.map.boardSpots[Math.floor(this.rand() * this.map.boardSpots.length)];
         bd.active = true; bd.holder = -1; bd.x = spot.x; bd.z = spot.z;
         bd.y = (this.field.surfaceBelow(spot.x, 25, spot.z, 0, 30) ?? 5) + 2; bd.vy = 0;
@@ -1629,7 +1749,10 @@ export class World {
   private spawnFlake() {
     const spots = this.map.flakeSpots;
     const used = new Set(this.flakes.filter(f => f.active).map(f => f.spot));
-    const free = spots.map((_, i) => i).filter(i => !used.has(i));
+    let free = spots.map((_, i) => i).filter(i => !used.has(i));
+    // Breakthrough: snowflakes turn up where the fight is, not three sections away
+    const near = free.filter(i => this.inPlay(spots[i].x));
+    if (near.length) free = near;
     if (!free.length) return;
     const spot = free[Math.floor(this.rand() * free.length)];
     const s = spots[spot];

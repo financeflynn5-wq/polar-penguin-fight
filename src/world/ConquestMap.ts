@@ -124,7 +124,7 @@ export function buildConquestMap(): MapDef {
   return {
     id: 'gap',
     name: 'Glacier Gap',
-    ground, creekAt: null, points, shards, houses: [],
+    ground, creekAt: null, points, shards, houses: [], props: [], sectors: [],
     field, bases, bigBallSpawns, flakeSpots, trees, rocks, playground,
     boardSpots: [
       { x: 0, z: 39, name: 'out on Slip Lake' },

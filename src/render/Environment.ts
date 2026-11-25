@@ -430,7 +430,7 @@ export class Environment {
       this.group.add(flag);
 
       // a team-coloured ring around every stockpile, and a pennant over the camps at the ends of the line
-      for (const sp of b.stockpiles) {
+      for (const sp of this.map.sectors.length ? [] : b.stockpiles) { // (Breakthrough's camps move: Props draws those)
         const ring = new THREE.Mesh(new THREE.RingGeometry(1.7, 2.0, 48), new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.6, depthWrite: false }));
         ring.rotation.x = -Math.PI / 2;
         ring.position.set(sp.x, sp.y + 0.08, sp.z);

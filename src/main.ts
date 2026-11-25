@@ -21,7 +21,10 @@ const params = new URLSearchParams(location.search);
 
 let hat = store.get('hat', 'beanie');
 let teamSize = +store.get('teamSize', '5');
-let mode: Mode = store.get('mode', 'tdm') === 'conquest' ? 'conquest' : 'tdm';
+const asMode = (m: string | null): Mode => (m === 'conquest' || m === 'breakthrough' ? m : 'tdm');
+let mode: Mode = asMode(store.get('mode', 'tdm'));
+// Breakthrough: 0 = attack with Team Blizzard, 1 = defend with Team Sunrise
+let side = store.get('side', '0') === '1' ? 1 : 0;
 let name = store.get('name', 'Flynn');
 game.setMenuHat(hat);
 game.input.sensitivity = +store.get('sens', '1');
@@ -35,6 +38,10 @@ const menu = el(`<div class="menu">
   <div class="field"><label>Game mode</label><div class="modes">
     <button class="mode gm" data-mode="tdm"><b>Team Deathmatch</b><span>First to ${CFG.scoreToWin} splats · Frostbite Bay</span></button>
     <button class="mode gm" data-mode="conquest"><b>Conquest</b><span>Hold the flags · Glacier Gap</span></button>
+    <button class="mode gm" data-mode="breakthrough"><b>Breakthrough</b><span>Attack or defend · Peppermint Pass</span></button>
+  </div><div class="modes" id="sides">
+    <button class="mode sm" data-side="0"><b>Attack</b><span>Team Blizzard: take all three sections</span></button>
+    <button class="mode sm" data-side="1"><b>Defend</b><span>Team Sunrise: dig in and hold them off</span></button>
   </div><div class="modes">
     <button class="mode sm" data-size="5"><b>5 v 5</b><span>Bots fill the empty slots</span></button>
     <button class="mode sm" data-size="10"><b>10 v 10</b><span>Total snow chaos</span></button>
@@ -80,14 +87,20 @@ menu.querySelectorAll<HTMLButtonElement>('.mode[data-size]').forEach(b => b.addE
 menu.querySelectorAll<HTMLButtonElement>('.mode[data-mode]').forEach(b => b.addEventListener('click', () => {
   mode = b.dataset.mode as Mode; store.set('mode', mode); game.audio.unlock(); game.audio.click(); syncMenu();
 }));
+menu.querySelectorAll<HTMLButtonElement>('.mode[data-side]').forEach(b => b.addEventListener('click', () => {
+  side = +b.dataset.side!; store.set('side', String(side)); game.audio.unlock(); game.audio.click(); syncMenu();
+}));
 const HOW_MODE: Record<Mode, string> = {
   tdm: `<b>Team Deathmatch:</b> 3 hits and you're splatted. You come back somewhere along your team's side of the map, and there's a stockpile at each end of it as well as at the igloo. First team to ${CFG.scoreToWin} splats wins. <b>Splat streaks</b> earn rewards: ${CFG.streakAt[0]} in one life for a Snowball Frenzy, ${CFG.streakAt[1]} for an instant turret, ${CFG.streakAt[2]} for an Avalanche. Use them with 1, 2 and 3.`,
   conquest: `<b>Conquest:</b> three flags, A, B and C. Stand in a flag's ring to take it, and every flag your team holds keeps scoring points. First to ${CFG.conquestScore} wins. You come back at the nearest flag you hold, so wall yours in and guard it with turrets.`,
+  breakthrough: `<b>Breakthrough:</b> Team Blizzard attacks, Team Sunrise defends. The map has three sections: the Flats, Crumble Town and the Summit. The attackers stand in a section's rings (A and B) to take them, and when they hold every ring the defenders fall back to the next section. Every attacker who gets splatted costs a ticket, starting with ${CFG.btTickets} per penguin, and taking a section wins some back. Take the Summit to win. If the tickets run out first, the defenders win.`,
 };
 function syncMenu() {
   menu.querySelectorAll<HTMLElement>('.hat').forEach(b => b.classList.toggle('sel', b.dataset.hat === hat));
   menu.querySelectorAll<HTMLElement>('.mode[data-size]').forEach(b => b.classList.toggle('sel', +b.dataset.size! === teamSize));
   menu.querySelectorAll<HTMLElement>('.mode[data-mode]').forEach(b => b.classList.toggle('sel', b.dataset.mode === mode));
+  menu.querySelectorAll<HTMLElement>('.mode[data-side]').forEach(b => b.classList.toggle('sel', +b.dataset.side! === side));
+  menu.querySelector('#sides')!.classList.toggle('hidden', mode !== 'breakthrough');
   menu.querySelector('#howMode')!.innerHTML = HOW_MODE[mode];
 }
 syncMenu();
@@ -97,7 +110,7 @@ function start() {
   pause.classList.add('hidden');
   end.classList.add('hidden');
   online = false;
-  game.startMatch({ teamSize, playerName: name || 'Penguin', playerHat: hat, mode });
+  game.startMatch({ teamSize, playerName: name || 'Penguin', playerHat: hat, mode, playerTeam: mode === 'breakthrough' ? side : 0 });
 }
 playBtn.addEventListener('click', start);
 practiceBtn.addEventListener('click', start);
@@ -128,7 +141,7 @@ function playOnline() {
   onlineEl.textContent = 'Joining a match…';
   playOnlineBtn.disabled = true;
   let started = false;
-  const net = new NetClient(serverUrl(), { name: name || 'Penguin', hat, size: teamSize, mode }, {
+  const net = new NetClient(serverUrl(), { name: name || 'Penguin', hat, size: teamSize, mode, ...(mode === 'breakthrough' ? { team: side } : {}) }, {
     onMatch: (info, density, hard) => {
       started = true; joining = false; playOnlineBtn.disabled = false;
       menu.classList.add('hidden');
@@ -203,8 +216,14 @@ game.hooks = {
       const me = w.player;
       const won = w.winner === me.team;
       (end.querySelector('#endTitle') as HTMLElement).textContent = w.winner < 0 ? 'Draw!' : won ? 'Victory!' : 'Defeat!';
-      (end.querySelector('#endScore') as HTMLElement).innerHTML = `<span style="color:#8fc6ff">${w.scores[0]}</span> – <span style="color:#ffb48a">${w.scores[1]}</span>`;
-      (end.querySelector('#endSub') as HTMLElement).textContent = w.winner < 0 ? `Nobody wins ${w.map.name} today.` : `${TEAM_NAMES[w.winner]} wins ${w.map.name}!`;
+      const bt = w.mode === 'breakthrough';
+      // Breakthrough's score is how far the attack got
+      (end.querySelector('#endScore') as HTMLElement).innerHTML = bt
+        ? `<span style="color:#8fc6ff">${w.winner === 0 ? w.map.sectors.length : w.sector}</span> <small>of ${w.map.sectors.length} sections taken</small>`
+        : `<span style="color:#8fc6ff">${w.scores[0]}</span> – <span style="color:#ffb48a">${w.scores[1]}</span>`;
+      (end.querySelector('#endSub') as HTMLElement).textContent = bt
+        ? (w.winner === 0 ? `${TEAM_NAMES[0]} broke through ${w.map.name} with ${w.scores[0]} tickets to spare!` : `${TEAM_NAMES[1]} held ${w.map.sectors[w.sector].name}: ${w.map.name} stands!`)
+        : w.winner < 0 ? `Nobody wins ${w.map.name} today.` : `${TEAM_NAMES[w.winner]} wins ${w.map.name}!`;
       const mvp = [...w.penguins].sort((a, b) => b.splats - a.splats || a.downs - b.downs)[0];
       (end.querySelector('#endMvp') as HTMLElement).textContent = `Most splats: ${mvp.name} with ${mvp.splats} · You: ${me.splats} splats, ${me.downs} downs`;
       const live = !!game.net;
@@ -219,6 +238,7 @@ game.hooks = {
 
 // dev/test hooks: ?autostart=1 skips the menu
 if (params.get('q')) game.setQuality(params.get('q') === 'low' ? 'low' : 'high');
-if (params.get('mode')) mode = params.get('mode') === 'conquest' ? 'conquest' : 'tdm';
+if (params.get('mode')) mode = asMode(params.get('mode'));
+if (params.get('side')) side = params.get('side') === 'defend' || params.get('side') === '1' ? 1 : 0;
 if (params.get('autostart')) start();
 (window as any).__game = game;

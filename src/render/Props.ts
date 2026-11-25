@@ -82,7 +82,7 @@ export class Props {
   private bigMat = new THREE.MeshStandardMaterial({ color: 0xf7faff, roughness: 0.85 });
   private bigMeshes = new Map<number, THREE.Mesh>();
   /** one heap of snowballs and a count per stockpile spot (a team's spots all show the same shared pile) */
-  private piles: { team: number; x: number; y: number; z: number; im: THREE.InstancedMesh; sprite: THREE.Sprite; draw: (t: string) => void; last: number }[] = [];
+  private piles: { team: number; sector: number; ring: THREE.Mesh | null; x: number; y: number; z: number; im: THREE.InstancedMesh; sprite: THREE.Sprite; draw: (t: string) => void; last: number }[] = [];
   private flakeMeshes = new Map<number, THREE.Group>();
   private flakeProto: THREE.Group;
   private barrier: THREE.Mesh;
@@ -102,7 +102,21 @@ export class Props {
 
     // stockpiles: pyramids of snowballs + a count label
     const pileGeo = lumpySnowGeometry(0.17, 1, 0.08);
-    for (const b of map.bases) for (const sp of b.stockpiles) {
+    // Breakthrough: every camp has its own spots, and only the section in play shows them (with a team-coloured ring,
+    // since the camp in the middle changes hands)
+    const spots = map.sectors.length
+      ? map.sectors.flatMap((s, sector) => s.fronts.flatMap((f, team) => f.stockpiles.map(sp => ({ team, sp, sector }))))
+      : map.bases.flatMap(b => b.stockpiles.map(sp => ({ team: b.team, sp, sector: -1 })));
+    for (const { team, sp, sector } of spots) {
+      const b = { team };
+      let ring: THREE.Mesh | null = null;
+      if (sector >= 0) {
+        ring = new THREE.Mesh(new THREE.RingGeometry(1.7, 2.0, 48), new THREE.MeshBasicMaterial({ color: TEAM_COLORS[team], transparent: true, opacity: 0.6, depthWrite: false }));
+        ring.rotation.x = -Math.PI / 2;
+        ring.position.set(sp.x, sp.y + 0.08, sp.z);
+        ring.renderOrder = 2;
+        this.group.add(ring);
+      }
       const im = new THREE.InstancedMesh(pileGeo, snowballMat, 60);
       im.castShadow = true; im.receiveShadow = true;
       im.count = 0;
@@ -113,7 +127,7 @@ export class Props {
       label.sprite.visible = false;
       (label.sprite.material as THREE.SpriteMaterial).depthTest = true;
       this.group.add(label.sprite);
-      this.piles.push({ team: b.team, x: sp.x, y: sp.y, z: sp.z, im, ...label, last: -1 });
+      this.piles.push({ team: b.team, sector, ring, x: sp.x, y: sp.y, z: sp.z, im, ...label, last: -1 });
     }
 
     // snowflake pickup: a glowing six-armed crystal
@@ -230,6 +244,10 @@ export class Props {
 
     // stockpiles
     for (const pile of this.piles) {
+      const here = pile.sector < 0 || pile.sector === w.sector;
+      pile.im.visible = here;
+      if (pile.ring) pile.ring.visible = here;
+      if (!here) { pile.sprite.visible = false; continue; }
       const count = w.piles[pile.team];
       const show = Math.min(60, count);
       const im = pile.im;
@@ -277,7 +295,9 @@ export class Props {
     }
 
     // build-phase barrier
-    this.barrier.visible = w.phase === 'build';
+    const line = w.holdLine();
+    this.barrier.visible = line !== null;
+    if (line !== null) this.barrier.position.x = line;
     this.barrierMat.uniforms.uTime.value = time;
   }
 }

@@ -96,7 +96,7 @@ export class Room {
 
   /** Someone joins: they take a bot's place. Returns false if every slot is taken. */
   join(c: Client) {
-    const p = this.world.addHuman(c.name, c.hat);
+    const p = this.world.addHuman(c.name, c.hat, c.team);
     if (!p) return false;
     this.clients.add(c);
     this.seat(c, p.id, p.team);

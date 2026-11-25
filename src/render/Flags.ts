@@ -13,7 +13,7 @@ interface FlagModel {
   color: THREE.Color;
 }
 
-/** Conquest flags: a tall pole whose flag climbs as a team takes it, a glowing ring you stand in, and a letter you can see from anywhere. */
+/** Conquest flags and Breakthrough objectives: a tall pole whose flag climbs as a team takes it, a glowing ring you stand in, and a letter you can see from anywhere. */
 export class FlagsView {
   readonly group = new THREE.Group();
   private models: FlagModel[] = [];
@@ -95,6 +95,9 @@ export class FlagsView {
       (m.zone.material as THREE.ShaderMaterial).uniforms.uColor.value.copy(glow).multiplyScalar(2.2);
       (m.beam.material as THREE.ShaderMaterial).uniforms.uColor.value.copy(m.color).multiplyScalar(1.6);
       (m.ring.material as THREE.MeshBasicMaterial).color.copy(glow);
+      // Breakthrough: only the section in play shows its rings and letters
+      const live = !w || w.mode !== 'breakthrough' || w.activePoints().includes(i);
+      m.zone.visible = m.beam.visible = m.ring.visible = m.label.visible = live;
       const key = `${owner}|${Math.round(cap * 40)}|${contested}`;
       if (key !== m.lastKey) { m.lastKey = key; m.draw(owner, cap, contested); }
     });

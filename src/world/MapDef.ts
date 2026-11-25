@@ -4,7 +4,7 @@
 
 import { SnowField } from './SnowField';
 import { buildPlayground, Playground } from './Playground';
-import { IceShard, House, makeIceberg, makePillar, makeGingerbreadHouse, addLandmarkCollision } from './Landmarks';
+import { IceShard, House, Prop, makeIceberg, makePillar, makeGingerbreadHouse, addLandmarkCollision } from './Landmarks';
 
 export interface V3 { x: number; y: number; z: number; }
 
@@ -29,8 +29,14 @@ export interface TeamBase extends Front {
 export interface Tree { x: number; z: number; y: number; h: number; r: number; cb: number; cw: number; }
 export interface Rock { x: number; z: number; y: number; r: number; seed: number; }
 
-/** A Conquest flag: stand inside the ring to take it for your team. */
+/** A flag (Conquest) or an objective (Breakthrough): stand inside the ring to take it for your team. */
 export interface CapturePointDef { name: string; x: number; y: number; z: number; r: number; owner: number; }
+
+/**
+ * One section of a Breakthrough map. The attackers (team 0) have to take every point in it before the next one opens.
+ * While it is being fought over, each team lives at its `fronts` entry, and the attackers start from behind `lineX`.
+ */
+export interface SectorDef { name: string; lineX: number; points: number[]; fronts: [Front, Front]; }
 
 export interface MapDef {
   /** which map this is: buildMap(id) always builds the same map from the id alone */
@@ -46,6 +52,10 @@ export interface MapDef {
   /** ice pillars and icebergs: hard cover */
   shards: IceShard[];
   houses: House[];
+  /** smaller solid things: ruins, candy canes, sleds, ice blocks */
+  props: Prop[];
+  /** Breakthrough sections, in the order the attackers take them (empty on other maps) */
+  sectors: SectorDef[];
   bases: TeamBase[];
   bigBallSpawns: V3[];
   flakeSpots: V3[];
@@ -287,9 +297,10 @@ export function makeBases(ground: (x: number, z: number) => number, baseX: numbe
 }
 
 /**
- * Scatter pines over the x > 0 half and mirror them. `density(x, z)` is the chance (0..1) that a tree may stand there.
+ * Scatter pines over the x > 0 half and mirror them (or over the whole map, with mirror off).
+ * `density(x, z)` is the chance (0..1) that a tree may stand there.
  */
-export function scatterTrees(ground: (x: number, z: number) => number, density: (x: number, z: number) => number, seed: number, tries: number, spanX = 69.5, spanZ = 51): Tree[] {
+export function scatterTrees(ground: (x: number, z: number) => number, density: (x: number, z: number) => number, seed: number, tries: number, spanX = 69.5, spanZ = 51, mirror = true): Tree[] {
   const rand = mulberry32(seed);
   const trees: Tree[] = [];
   const cellSize = 2.3;
@@ -303,7 +314,7 @@ export function scatterTrees(ground: (x: number, z: number) => number, density: 
     return false;
   };
   for (let n = 0; n < tries; n++) {
-    const x = 1.3 + rand() * spanX, z = (rand() * 2 - 1) * spanZ;
+    const x = mirror ? 1.3 + rand() * spanX : (rand() * 2 - 1) * spanX, z = (rand() * 2 - 1) * spanZ;
     const d = density(x, z);
     if (rand() > d) continue;
     const min = d > 0.8 ? 2.05 : 2.3;
@@ -313,7 +324,8 @@ export function scatterTrees(ground: (x: number, z: number) => number, density: 
     // tall bare trunks in the thick woods, so you can see (and throw) under the boughs
     const cb = d > 0.55 ? 1.9 + h * 0.2 : 1.0 + h * 0.16;
     const t: Tree = { x, z, y: ground(x, z) - 0.3, h: h + (d > 0.55 ? 1.5 : 0), r: 0.26 + h * 0.022, cb, cw: 0.9 + h * 0.2 };
-    trees.push(t, { ...t, x: -x });
+    trees.push(t);
+    if (mirror) trees.push({ ...t, x: -x });
     const key = gkey(x, z);
     const l = grid.get(key); if (l) l.push(t); else grid.set(key, [t]);
   }
@@ -425,7 +437,7 @@ export function buildBayMap(): MapDef {
   return {
     id: 'bay',
     name: 'Frostbite Bay',
-    ground: groundHeight, creekAt, points: [], shards, houses,
+    ground: groundHeight, creekAt, points: [], shards, houses, props: [], sectors: [],
     field, bases, bigBallSpawns, flakeSpots, trees, rocks, playground, boardSpots,
     pond: { x: POND.x, z: POND.z, r: POND.r, y: POND_Y },
     bounds: { minX: -70.5, maxX: 70.5, minZ: -72.5, maxZ: 72.5 },
