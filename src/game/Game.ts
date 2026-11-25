@@ -5,7 +5,7 @@ import { ISO } from '../world/SnowField';
 import { SnowRenderer } from '../render/SnowRenderer';
 import { Environment } from '../render/Environment';
 import { Particles, PKind } from '../render/Particles';
-import { PenguinModel } from '../render/PenguinModel';
+import { PenguinModel, setPenguinQuality } from '../render/PenguinModel';
 import { Props } from '../render/Props';
 import { PlaygroundView } from '../render/PlaygroundView';
 import { Decals } from '../render/Decals';
@@ -86,6 +86,7 @@ export class Game {
   constructor(container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     try { if (localStorage.getItem('ppf.quality') === 'low') this.quality = 'low'; } catch { /* private mode */ }
+    setPenguinQuality(this.quality === 'low');
     this.renderer.setPixelRatio(this.pixelRatio());
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -118,6 +119,7 @@ export class Game {
   setQuality(q: 'high' | 'low') {
     this.quality = q;
     try { localStorage.setItem('ppf.quality', q); } catch { /* private mode */ }
+    setPenguinQuality(q === 'low');
     this.renderer.shadowMap.enabled = true;
     this.resize();
   }

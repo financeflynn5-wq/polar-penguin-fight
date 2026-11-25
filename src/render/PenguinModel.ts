@@ -1,176 +1,106 @@
 import * as THREE from 'three';
+import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { Penguin } from '../sim/World';
 import { TEAM_COLORS } from './Environment';
 import { makeSurfboard } from './Props';
+import { Assets } from './Assets';
 
-// shared materials
-const M = {
-  body: new THREE.MeshPhysicalMaterial({ color: 0x1b2232, roughness: 0.5, sheen: 1, sheenColor: new THREE.Color(0x7d95c8), sheenRoughness: 0.45 }),
-  belly: new THREE.MeshStandardMaterial({ color: 0xfbfcff, roughness: 0.7 }),
-  beak: new THREE.MeshStandardMaterial({ color: 0xffa21f, roughness: 0.42 }),
-  foot: new THREE.MeshStandardMaterial({ color: 0xff9320, roughness: 0.5 }),
-  eye: new THREE.MeshStandardMaterial({ color: 0x0b0d12, roughness: 0.2 }),
-  shine: new THREE.MeshBasicMaterial({ color: 0xffffff }),
-  cheek: new THREE.MeshStandardMaterial({ color: 0xff9fb4, roughness: 0.8 }),
-  snow: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 }),
-};
-const teamMats = TEAM_COLORS.map(c => new THREE.MeshStandardMaterial({ color: c, roughness: 0.85 }));
-// puffy team jacket: bright enough to read at a glance, even in shade
-const jacketMats = TEAM_COLORS.map(c => new THREE.MeshStandardMaterial({ color: c, roughness: 0.62, emissive: c, emissiveIntensity: 0.22, side: THREE.DoubleSide }));
-const jacketTrimMats = TEAM_COLORS.map(c => new THREE.MeshStandardMaterial({ color: new THREE.Color(c).lerp(new THREE.Color(0xffffff), 0.75), roughness: 0.8 }));
-const MITTEN_MATS = [
-  null, // level 0 = team colour
-  new THREE.MeshStandardMaterial({ color: 0x7fe3ff, roughness: 0.4, emissive: 0x1a6a8a, emissiveIntensity: 0.5 }),
-  new THREE.MeshStandardMaterial({ color: 0xe8f4ff, roughness: 0.25, metalness: 0.4, emissive: 0x8ab8ff, emissiveIntensity: 0.6 }),
-  new THREE.MeshStandardMaterial({ color: 0xffd34d, roughness: 0.25, metalness: 0.6, emissive: 0xff9d00, emissiveIntensity: 0.8 }),
+// The penguin and its hats are Blender assets (tools/blender → src/assets/models). This file dresses a copy in team
+// colours and animates its skeleton. Every joint is axis-aligned at rest: x = the penguin's right, y = up, -z = ahead.
+
+/** How far the flippers are held out from straight down in the model's rest pose (radians). */
+const ARM_REST = 0.62;
+/** Each eye is turned outward by this much; its lid sweeps round that axis. */
+const EYE_YAW = 0.30;
+const LID_OPEN = 2.72;
+
+// Team looks: jacket in the team colour, scarf and mittens in a lighter accent so the silhouette has some contrast.
+const SCARF_COLORS = [0xa9e4ff, 0xffd43d];
+const MITTEN_COLORS = [0x4f9df8, 0xff8a3a];
+const UPGRADED_MITTENS: { color: number; emissive: number; glow: number; metal: number; rough: number }[] = [
+  { color: 0x7fe3ff, emissive: 0x1a6a8a, glow: 0.5, metal: 0, rough: 0.5 },
+  { color: 0xe8f4ff, emissive: 0x8ab8ff, glow: 0.6, metal: 0.45, rough: 0.3 },
+  { color: 0xffd34d, emissive: 0xff9d00, glow: 0.8, metal: 0.65, rough: 0.28 },
 ];
-const teamMittenMats = TEAM_COLORS.map(c => new THREE.MeshStandardMaterial({ color: new THREE.Color(c).lerp(new THREE.Color(0xffffff), 0.15), roughness: 0.95 }));
 
-const sph = (r: number, w = 16, h = 12) => new THREE.SphereGeometry(r, w, h);
-const G = {
-  head: sph(0.27, 24, 18),
-  belly: sph(1, 20, 16),
-  eye: sph(0.042, 10, 8),
-  shine: sph(0.014, 6, 4),
-  cheek: sph(0.04, 8, 6),
-  beak: new THREE.ConeGeometry(0.065, 0.16, 10),
-  foot: footGeometry(),
-  leg: new THREE.CylinderGeometry(0.034, 0.04, 0.09, 8),
-  tail: new THREE.ConeGeometry(0.075, 0.2, 10),
-  flipper: sph(1, 12, 10),
-  mitten: sph(0.095, 14, 10),
-  thumb: sph(0.048, 10, 8),
-  cuff: new THREE.TorusGeometry(0.075, 0.03, 8, 14),
-  scarf: new THREE.TorusGeometry(0.235, 0.055, 10, 24),
-  scarfTail: new THREE.BoxGeometry(0.11, 0.3, 0.04).translate(0, -0.12, 0),
-  splat: sph(1, 10, 8),
-  lump: sph(1, 18, 12),
-};
+interface Looks {
+  base: THREE.Material; eye: THREE.Material;
+  jacket: THREE.Material[]; scarf: THREE.Material[]; mitten: THREE.Material[][];
+  all: THREE.MeshPhysicalMaterial[];
+}
+let looks: Looks | null = null;
+let lowQuality = false;
 
-/** A flat webbed foot with three toes, pointing forward (-z), heel at the origin. */
-function footGeometry() {
-  const sh = new THREE.Shape();
-  // drawn in x / y, where +y is forward
-  sh.moveTo(-0.04, -0.035);
-  sh.quadraticCurveTo(-0.075, 0.05, -0.115, 0.165);
-  sh.quadraticCurveTo(-0.085, 0.19, -0.055, 0.15);
-  sh.quadraticCurveTo(-0.03, 0.2, 0, 0.215);
-  sh.quadraticCurveTo(0.03, 0.2, 0.055, 0.15);
-  sh.quadraticCurveTo(0.085, 0.19, 0.115, 0.165);
-  sh.quadraticCurveTo(0.075, 0.05, 0.04, -0.035);
-  sh.quadraticCurveTo(0, -0.06, -0.04, -0.035);
-  const g = new THREE.ExtrudeGeometry(sh, { depth: 0.022, bevelEnabled: true, bevelThickness: 0.012, bevelSize: 0.012, bevelSegments: 2, curveSegments: 6 });
-  g.rotateX(-Math.PI / 2); // lie flat: shape +y becomes -z (forward), thickness goes up
-  g.computeVertexNormals();
-  return g;
+function tinted(src: THREE.MeshPhysicalMaterial, color: number, glow: number) {
+  const m = src.clone();
+  m.color.set(color);
+  m.sheenColor.multiply(m.color); // the fuzz on wool picks up the dye, so sunlit scarves stay colourful instead of going pale
+  // a little self-light in the team colour keeps jackets readable in shade
+  m.emissive.set(color); m.emissiveMap = m.map; m.emissiveIntensity = glow;
+  return m;
 }
 
-/** The team jacket: a shell just outside the body, open at the front so the white belly shows. */
-function jacketGeometry() {
-  const prof = [[0.352, 0.15], [0.372, 0.2], [0.392, 0.33], [0.372, 0.5], [0.322, 0.62], [0.292, 0.69], [0.27, 0.71]];
-  const open = 1.05; // radians of gap either side of dead-front
-  const g = new THREE.LatheGeometry(prof.map(([r, y]) => new THREE.Vector2(r, y)), 26, Math.PI + open, Math.PI * 2 - open * 2);
-  g.computeVertexNormals();
-  return g;
+function buildLooks(): Looks {
+  const found: Record<string, THREE.MeshPhysicalMaterial> = {};
+  Assets.penguin!.traverse(o => { const m = (o as THREE.Mesh).material as THREE.MeshPhysicalMaterial | undefined; if (m && !Array.isArray(m)) found[m.name] = m; });
+  const base = found.Penguin, eye = found.Eye;
+  eye.envMapIntensity = 1.6;
+  // the whites and the painted catch-lights glow a little, so eyes still sparkle when a face is in shade
+  eye.emissive.set(0xffffff); eye.emissiveMap = eye.map; eye.emissiveIntensity = 0.3;
+  const jacket = TEAM_COLORS.map(c => tinted(found.TeamJacket, c, 0.16));
+  const scarf = SCARF_COLORS.map(c => tinted(found.TeamScarf, c, 0.1));
+  const mitten = MITTEN_COLORS.map(c => {
+    const row = [tinted(found.Mitten, c, 0.1)];
+    for (const u of UPGRADED_MITTENS) {
+      const m = found.Mitten.clone();
+      m.color.set(u.color); m.emissive.set(u.emissive); m.emissiveIntensity = u.glow; m.emissiveMap = m.map;
+      m.metalness = u.metal; m.metalnessMap = null; m.roughness = u.rough;
+      row.push(m);
+    }
+    return row;
+  });
+  const all = [base, eye, ...jacket, ...scarf, ...mitten.flat()];
+  for (const m of all) { m.userData.normalMap = m.normalMap; m.userData.sheen = m.sheen; m.userData.clearcoat = m.clearcoat; }
+  const l = { base, eye, jacket, scarf, mitten, all };
+  applyQuality(l);
+  return l;
 }
-const JACKET_GEO = jacketGeometry();
 
-function bodyGeometry() {
-  const pts: THREE.Vector2[] = [];
-  const prof = [[0.0, 0.0], [0.2, 0.012], [0.3, 0.06], [0.355, 0.17], [0.372, 0.33], [0.35, 0.5], [0.3, 0.63], [0.25, 0.72], [0.0, 0.8]];
-  for (const [r, y] of prof) pts.push(new THREE.Vector2(r, y));
-  const curve = new THREE.SplineCurve(pts);
-  const g = new THREE.LatheGeometry(curve.getPoints(24), 28);
-  g.computeVertexNormals();
-  return g;
-}
-const BODY_GEO = bodyGeometry();
-
-export function makeHat(name: string): THREE.Object3D {
-  const g = new THREE.Group();
-  const mat = (c: number, extra: Partial<THREE.MeshStandardMaterialParameters> = {}) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.7, ...extra });
-  const add = (geo: THREE.BufferGeometry, m: THREE.Material, x = 0, y = 0, z = 0) => {
-    const mesh = new THREE.Mesh(geo, m); mesh.position.set(x, y, z); mesh.castShadow = true; g.add(mesh); return mesh;
-  };
-  switch (name) {
-    case 'beanie': {
-      const m = mat(0xe8384f);
-      add(new THREE.SphereGeometry(0.25, 20, 12, 0, Math.PI * 2, 0, Math.PI / 2), m, 0, -0.05, 0);
-      add(new THREE.TorusGeometry(0.235, 0.045, 8, 22), mat(0xffffff), 0, -0.04, 0).rotation.x = Math.PI / 2;
-      add(sph(0.075), mat(0xffffff), 0, 0.22, 0);
-      break;
-    }
-    case 'tophat': {
-      const m = mat(0x15151c, { roughness: 0.4 });
-      add(new THREE.CylinderGeometry(0.3, 0.3, 0.025, 24), m, 0, -0.02, 0);
-      add(new THREE.CylinderGeometry(0.17, 0.18, 0.32, 24), m, 0, 0.15, 0);
-      add(new THREE.CylinderGeometry(0.182, 0.182, 0.06, 24), mat(0xc0283a), 0, 0.03, 0);
-      break;
-    }
-    case 'propeller': {
-      const quarters = [0xff4757, 0x2ed573, 0x1e90ff, 0xffd32a];
-      quarters.forEach((c, i) => add(new THREE.SphereGeometry(0.25, 10, 10, i * Math.PI / 2, Math.PI / 2, 0, Math.PI / 2), mat(c), 0, -0.05, 0));
-      add(new THREE.CylinderGeometry(0.015, 0.015, 0.12, 6), mat(0x888888), 0, 0.24, 0);
-      const prop = new THREE.Group();
-      const blade = new THREE.BoxGeometry(0.42, 0.01, 0.06);
-      prop.add(new THREE.Mesh(blade, mat(0xffd32a)));
-      prop.position.y = 0.3;
-      prop.name = 'spin';
-      g.add(prop);
-      break;
-    }
-    case 'viking': {
-      const m = mat(0x9aa3ad, { metalness: 0.6, roughness: 0.35 });
-      add(new THREE.SphereGeometry(0.26, 20, 12, 0, Math.PI * 2, 0, Math.PI / 2), m, 0, -0.06, 0);
-      add(new THREE.TorusGeometry(0.255, 0.03, 6, 22), mat(0x8a6a3a), 0, -0.05, 0).rotation.x = Math.PI / 2;
-      for (const s of [-1, 1]) {
-        const horn = add(new THREE.ConeGeometry(0.06, 0.26, 10), mat(0xf3ead2), s * 0.27, 0.1, 0);
-        horn.rotation.z = -s * 0.9;
-      }
-      break;
-    }
-    case 'crown': {
-      const m = mat(0xffcf3a, { metalness: 0.8, roughness: 0.25, emissive: 0x553300, emissiveIntensity: 0.3 });
-      add(new THREE.CylinderGeometry(0.2, 0.2, 0.12, 20, 1, true), m, 0, 0.02, 0).material.side = THREE.DoubleSide;
-      for (let i = 0; i < 6; i++) {
-        const a = (i / 6) * Math.PI * 2;
-        add(new THREE.ConeGeometry(0.04, 0.1, 6), m, Math.cos(a) * 0.19, 0.12, Math.sin(a) * 0.19);
-        add(sph(0.022, 8, 6), mat(i % 2 ? 0xff3355 : 0x33aaff, { emissive: i % 2 ? 0x550011 : 0x002255 }), Math.cos(a) * 0.2, 0.02, Math.sin(a) * 0.2);
-      }
-      break;
-    }
-    case 'fish': {
-      const body = add(sph(1, 16, 10), mat(0x7fb3d5, { metalness: 0.3, roughness: 0.35 }), 0, 0.06, 0);
-      body.scale.set(0.11, 0.09, 0.26);
-      const tail = add(new THREE.ConeGeometry(0.1, 0.14, 4), mat(0x5d8fb5), 0, 0.06, 0.3);
-      tail.rotation.x = -Math.PI / 2; tail.scale.set(1, 1, 0.3);
-      add(sph(0.022, 8, 6), M.eye, 0.07, 0.09, -0.16);
-      add(sph(0.022, 8, 6), M.eye, -0.07, 0.09, -0.16);
-      g.rotation.y = 0.4;
-      break;
-    }
-    case 'party': {
-      const cone = add(new THREE.ConeGeometry(0.15, 0.38, 18), mat(0xb84dff), 0, 0.15, 0);
-      cone.rotation.z = 0.15;
-      add(sph(0.05), mat(0xffe14d), -0.03, 0.35, 0);
-      break;
-    }
-    case 'chef': {
-      const m = mat(0xffffff, { roughness: 0.9 });
-      add(new THREE.CylinderGeometry(0.19, 0.2, 0.16, 20), m, 0, 0.04, 0);
-      for (let i = 0; i < 5; i++) { const a = (i / 5) * Math.PI * 2; add(sph(0.12), m, Math.cos(a) * 0.1, 0.2, Math.sin(a) * 0.1); }
-      add(sph(0.14), m, 0, 0.25, 0);
-      break;
-    }
-    case 'cone': {
-      add(new THREE.ConeGeometry(0.2, 0.42, 18), mat(0xff6a00), 0, 0.17, 0);
-      add(new THREE.CylinderGeometry(0.12, 0.145, 0.07, 18), mat(0xffffff), 0, 0.12, 0);
-      add(new THREE.BoxGeometry(0.42, 0.03, 0.42), mat(0xff6a00), 0, -0.03, 0);
-      break;
-    }
-    default: break;
+function applyQuality(l: Looks) {
+  for (const m of l.all) {
+    m.normalMap = lowQuality ? null : m.userData.normalMap;
+    m.sheen = lowQuality ? 0 : m.userData.sheen;
+    m.clearcoat = lowQuality ? 0 : m.userData.clearcoat;
+    m.needsUpdate = true;
   }
+}
+
+/** Fast graphics: drop the normal maps and the fuzzy sheen layer. */
+export function setPenguinQuality(low: boolean) {
+  if (low === lowQuality) return;
+  lowQuality = low;
+  if (looks) applyQuality(looks);
+}
+
+const SNOW = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 });
+function lumpy(r: number, detail: number, seed: number, amount = 0.12) {
+  const g = new THREE.IcosahedronGeometry(r, detail);
+  const p = g.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+    const n = Math.sin(x * 31.7 / r + seed) * Math.sin(y * 27.3 / r + seed * 1.7) * Math.sin(z * 29.1 / r + seed * 2.3);
+    const k = 1 + n * amount;
+    p.setXYZ(i, x * k, y * k, z * k);
+  }
+  g.computeVertexNormals();
   return g;
+}
+const G = { ball: lumpy(0.07, 2, 1.3), splat: lumpy(1, 2, 4.1, 0.2), lump: lumpy(1, 3, 2.2, 0.1) };
+
+/** A copy of a Blender-built hat, ready to sit on the head's hat joint. Null for 'none' (or a hat that isn't built). */
+export function makeHat(name: string): THREE.Object3D | null {
+  const src = Assets.hats.get(name);
+  return src ? src.clone(true) : null;
 }
 
 function nameTag(text: string, team: number) {
@@ -200,195 +130,163 @@ function nameTag(text: string, team: number) {
   return s;
 }
 
+type Side = 'L' | 'R';
+const BONES = ['body', 'chest', 'head', 'jaw', 'tail', 'footL', 'footR', 'armL', 'armR', 'forearmL', 'forearmR', 'handL', 'handR'] as const;
+type BoneName = typeof BONES[number];
+interface Target { q: THREE.Quaternion; p: THREE.Vector3; s: THREE.Vector3; bone: THREE.Bone; rest: THREE.Vector3 }
+
+const _e = new THREE.Euler();
+const _q = new THREE.Quaternion();
+const _q2 = new THREE.Quaternion();
+const _v = new THREE.Vector3();
+const _v2 = new THREE.Vector3();
+const X = new THREE.Vector3(1, 0, 0), Z = new THREE.Vector3(0, 0, 1);
+const ARM_BIND = { L: new THREE.Vector3(-Math.sin(ARM_REST), -Math.cos(ARM_REST), 0), R: new THREE.Vector3(Math.sin(ARM_REST), -Math.cos(ARM_REST), 0) };
+const ELBOW_AXIS = { L: new THREE.Vector3(Math.cos(ARM_REST), -Math.sin(ARM_REST), 0), R: new THREE.Vector3(Math.cos(ARM_REST), Math.sin(ARM_REST), 0) };
+const LID_AXIS = { L: new THREE.Vector3(Math.cos(EYE_YAW), 0, -Math.sin(EYE_YAW)), R: new THREE.Vector3(Math.cos(EYE_YAW), 0, Math.sin(EYE_YAW)) };
+const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
+const ease = (x: number) => { x = clamp01(x); return x * x * (3 - 2 * x); };
+
+/** A strand that trails behind: a scarf tail of three joints that hangs by gravity and streams out with speed. */
+class Strand {
+  dir: THREE.Vector3; vel = new THREE.Vector3();
+  constructor(readonly bones: THREE.Bone[], readonly rest: THREE.Vector3, readonly phase: number) { this.dir = rest.clone(); }
+}
+
 export class PenguinModel {
   readonly root = new THREE.Group(); // positioned at feet, yawed
-  private body = new THREE.Group(); // leans / waddles
-  private flipperL = new THREE.Group();
-  private flipperR = new THREE.Group();
-  private mittens: THREE.Mesh[] = [];
-  private feet: THREE.Group[] = [];
-  private hat: THREE.Object3D;
-  private hatName: string;
-  private headGroup = new THREE.Group();
+  private model: THREE.Object3D;
+  private t = {} as Record<BoneName, Target>;
+  private lids: Record<Side, THREE.Bone>;
+  private hatBone: THREE.Bone;
+  private strands: Strand[] = [];
+  private mittenMeshes: THREE.Mesh[] = [];
+  private near: THREE.Mesh[] = []; private far: THREE.Mesh[] = []; // full-detail meshes, and the light copies used far away
+  private farNow = false;
+  private hat: THREE.Object3D | null = null;
+  private hatName = '';
+  private spinner: THREE.Object3D | null = null;
+  private jiggles: { o: THREE.Object3D; rest: THREE.Quaternion; a: THREE.Vector2; v: THREE.Vector2 }[] = [];
   private splats: THREE.Mesh[] = [];
   private lump: THREE.Mesh;
   private tag: THREE.Sprite | null = null;
-  private scarfTail: THREE.Mesh;
   private walkPhase = Math.random() * 10;
+  private seed = Math.random() * 100;
   private mittenLevel = -1;
-  private blink = 0;
+  private blink = 1 + Math.random() * 3;
+  private lidNow = LID_OPEN;
   private landSquash = 0;
   private wasGrounded = true;
+  private lastHealth = 99;
+  private hitT = 9;
+  private jawNow = 0;
+  private hatWobble = new THREE.Vector2(); private hatVel = new THREE.Vector2();
+  private lastVel = new THREE.Vector3();
+  private snapPose = true;
   carriedBalls: THREE.Mesh[] = [];
   private board: THREE.Group | null = null;
-  camDist = 99;
+  /** How far the camera is. The game sets it every frame; it picks the detail level and hides the name tag up close. */
+  camDist = 0;
   private boardYaw = 0;
 
   constructor(public team: number, hat: string, name: string | null, private showTag = true) {
-    this.root.add(this.body);
-    const bodyMesh = new THREE.Mesh(BODY_GEO, M.body);
-    bodyMesh.castShadow = true;
-    this.body.add(bodyMesh);
-    const belly = new THREE.Mesh(G.belly, M.belly);
-    belly.scale.set(0.27, 0.34, 0.25);
-    belly.position.set(0, 0.35, -0.165);
-    this.body.add(belly);
-
-    const jacket = new THREE.Mesh(JACKET_GEO, jacketMats[team]);
-    this.body.add(jacket);
-    // white fluffy hem + collar so the jacket reads as clothing
-    for (const [y, r, tube] of [[0.16, 0.358, 0.03], [0.705, 0.268, 0.034]]) {
-      const trim = new THREE.Mesh(new THREE.TorusGeometry(r, tube, 8, 28, Math.PI * 2 - 2.1), jacketTrimMats[team]);
-      trim.rotation.x = Math.PI / 2; trim.rotation.z = -Math.PI / 2 + 1.05; trim.position.y = y;
-      this.body.add(trim);
+    if (!looks) looks = buildLooks();
+    const L = looks;
+    this.model = SkeletonUtils.clone(Assets.penguin!);
+    this.root.add(this.model);
+    this.model.traverse(o => {
+      const m = o as THREE.SkinnedMesh;
+      if (!m.isSkinnedMesh) return;
+      const n = (m.material as THREE.Material).name;
+      m.material = n === 'TeamJacket' ? L.jacket[team] : n === 'TeamScarf' ? L.scarf[team] : n === 'Mitten' ? L.mitten[team][0] : n === 'Eye' ? L.eye : L.base;
+      if (n === 'Mitten') this.mittenMeshes.push(m);
+      (m.parent!.name.startsWith('PenguinLOD') ? this.far : this.near).push(m);
+      m.castShadow = true;
+      m.frustumCulled = false; // the skeleton moves the mesh well away from its rest box (belly slides, squashes)
+    });
+    for (const m of this.far) m.visible = false;
+    const bone = (n: string) => this.model.getObjectByName(n) as THREE.Bone;
+    for (const n of BONES) { const b = bone(n); this.t[n] = { q: new THREE.Quaternion(), p: new THREE.Vector3(), s: new THREE.Vector3(1, 1, 1), bone: b, rest: b.position.clone() }; }
+    this.lids = { L: bone('lidL'), R: bone('lidR') };
+    this.hatBone = bone('hat');
+    for (const [k, ch] of ['A', 'B'].entries()) {
+      const bs = [1, 2, 3].map(i => bone(`scarf${ch}${i}`));
+      // the strand's rest direction: from its first joint to its last, in the chest's space
+      const rest = bs[2].position.clone().add(bs[1].position).normalize();
+      this.strands.push(new Strand(bs, rest, k * 1.9));
     }
-    const tail = new THREE.Mesh(G.tail, M.body);
-    tail.position.set(0, 0.09, 0.3); tail.rotation.x = -2.0;
-    this.body.add(tail);
+    this.setHat(hat);
 
-    // head
-    this.headGroup.position.set(0, 0.86, 0);
-    this.body.add(this.headGroup);
-    const head = new THREE.Mesh(G.head, M.body);
-    head.castShadow = true;
-    this.headGroup.add(head);
-    const face = new THREE.Mesh(G.belly, M.belly);
-    face.scale.set(0.19, 0.15, 0.12);
-    face.position.set(0, -0.02, -0.16);
-    this.headGroup.add(face);
-    for (const s of [-1, 1]) {
-      const eye = new THREE.Mesh(G.eye, M.eye);
-      eye.position.set(s * 0.085, 0.05, -0.235);
-      eye.scale.set(1, 1.25, 0.7);
-      eye.name = 'eye';
-      this.headGroup.add(eye);
-      const sh = new THREE.Mesh(G.shine, M.shine);
-      sh.position.set(s * 0.085 + 0.012, 0.068, -0.262);
-      this.headGroup.add(sh);
-      const cheek = new THREE.Mesh(G.cheek, M.cheek);
-      cheek.position.set(s * 0.14, -0.035, -0.2);
-      cheek.scale.set(1, 0.6, 0.5);
-      this.headGroup.add(cheek);
-    }
-    const beak = new THREE.Mesh(G.beak, M.beak);
-    beak.rotation.x = -Math.PI / 2;
-    beak.position.set(0, -0.025, -0.3);
-    beak.scale.set(1, 1, 0.7);
-    beak.castShadow = true;
-    this.headGroup.add(beak);
-
-    // scarf
-    const scarf = new THREE.Mesh(G.scarf, teamMats[team]);
-    scarf.rotation.x = Math.PI / 2;
-    scarf.position.set(0, 0.7, 0);
-    scarf.scale.set(1.08, 1.08, 1);
-    scarf.castShadow = true;
-    this.body.add(scarf);
-    this.scarfTail = new THREE.Mesh(G.scarfTail, teamMats[team]);
-    this.scarfTail.position.set(0.14, 0.68, 0.2);
-    this.scarfTail.castShadow = true;
-    this.body.add(this.scarfTail);
-
-    // flippers + mittens
-    for (const [grp, s] of [[this.flipperL, -1], [this.flipperR, 1]] as [THREE.Group, number][]) {
-      // the flippers wear the jacket's sleeves, so they sit just outside it
-      grp.position.set(s * 0.375, 0.61, 0);
-      const fl = new THREE.Mesh(G.flipper, jacketMats[team]);
-      fl.scale.set(0.075, 0.23, 0.125);
-      fl.position.set(0, -0.19, 0);
-      fl.castShadow = true;
-      grp.add(fl);
-      const mit = new THREE.Mesh(G.mitten, teamMittenMats[team]);
-      mit.position.set(0, -0.43, 0);
-      mit.scale.set(1, 1.1, 0.9);
-      mit.castShadow = true;
-      const thumb = new THREE.Mesh(G.thumb, teamMittenMats[team]);
-      thumb.position.set(-s * 0.06, 0.03, -0.06);
-      mit.add(thumb);
-      const cuff = new THREE.Mesh(G.cuff, M.belly);
-      cuff.rotation.x = Math.PI / 2;
-      cuff.position.set(0, 0.08, 0);
-      mit.add(cuff);
-      grp.add(mit);
-      this.mittens.push(mit);
-      this.body.add(grp);
-    }
-    // legs + webbed feet: tucked under the body, toes turned out a little. They hang off the body so they follow
-    // the waddle, and update() keeps them flat on the ground when the body leans.
-    for (const s of [-1, 1]) {
-      const f = new THREE.Group();
-      const leg = new THREE.Mesh(G.leg, M.foot);
-      leg.position.set(0, 0.05, 0);
-      f.add(leg);
-      const foot = new THREE.Mesh(G.foot, M.foot);
-      foot.rotation.y = -s * 0.32;
-      foot.position.set(0, 0, -0.02);
-      f.add(foot);
-      f.userData.side = s;
-      this.body.add(f);
-      this.feet.push(f);
-    }
-    this.hatName = hat;
-    this.hat = makeHat(hat);
-    this.hat.position.set(0, 0.2, 0);
-    this.headGroup.add(this.hat);
-
-    // snow splat marks (show damage)
-    for (let i = 0; i < 3; i++) {
-      const s = new THREE.Mesh(G.splat, M.snow);
-      s.visible = false;
-      this.body.add(s);
+    // snow splat marks (show damage): clumps stuck to the jacket and the face
+    const stuck: [BoneName, number, number, number, number, number, number][] = [
+      ['chest', 0.17, 0.02, -0.335, 0.105, 0.085, 0.05], ['head', -0.15, 0.26, -0.215, 0.085, 0.07, 0.045], ['body', -0.2, 0.3, -0.31, 0.11, 0.09, 0.05],
+    ];
+    for (const [b, x, y, z, sx, sy, sz] of stuck) {
+      const s = new THREE.Mesh(G.splat, SNOW);
+      s.position.set(x, y, z); s.scale.set(sx, sy, sz); s.rotation.set(0.3, x * 2, 0.4);
+      s.visible = false; s.castShadow = true;
+      this.t[b].bone.add(s);
       this.splats.push(s);
     }
-    this.splats[0].position.set(0.12, 0.45, -0.3); this.splats[0].scale.set(0.11, 0.09, 0.06);
-    this.splats[1].position.set(-0.14, 0.9, -0.22); this.splats[1].scale.set(0.1, 0.08, 0.06);
-    this.splats[2].position.set(-0.2, 0.3, -0.25); this.splats[2].scale.set(0.12, 0.1, 0.06);
 
     // the snow lump you become when splatted
-    this.lump = new THREE.Mesh(G.lump, M.snow);
-    this.lump.scale.set(0.55, 0.42, 0.55);
+    this.lump = new THREE.Mesh(G.lump, SNOW);
     this.lump.position.y = 0.2;
     this.lump.visible = false;
     this.lump.castShadow = true;
     this.root.add(this.lump);
 
-    // carried snowballs on a little belt
-    const ballGeo = sph(0.07, 10, 8);
+    // carried snowballs: tucked round the back of the jacket hem, so you can count them from behind
     for (let i = 0; i < 6; i++) {
-      const b = new THREE.Mesh(ballGeo, M.snow);
-      const a = Math.PI * (0.25 + i * 0.1);
-      b.position.set(Math.cos(a + Math.PI / 2) * 0.36, 0.22, Math.sin(a + Math.PI / 2) * 0.36 * 0.9);
+      const b = new THREE.Mesh(G.ball, SNOW);
+      const a = (i - 2.5) * 0.36;
+      b.position.set(Math.sin(a) * 0.41, 0.2 + (i % 2) * 0.012, Math.cos(a) * 0.4);
+      b.rotation.set(i, i * 2, i * 3);
       b.castShadow = true;
       b.visible = false;
-      this.body.add(b);
+      this.t.body.bone.add(b);
       this.carriedBalls.push(b);
     }
 
     if (name && showTag) {
       this.tag = nameTag(name, team);
-      this.tag.position.y = 1.75;
+      this.tag.position.y = 1.8;
       this.root.add(this.tag);
     }
-    this.root.traverse(o => { if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).castShadow = true; });
   }
 
   setHat(name: string) {
     if (name === this.hatName) return;
-    this.headGroup.remove(this.hat);
+    if (this.hat) this.hatBone.remove(this.hat);
     this.hat = makeHat(name);
-    this.hat.position.set(0, 0.2, 0);
-    this.headGroup.add(this.hat);
     this.hatName = name;
+    this.spinner = null; this.jiggles = [];
+    if (!this.hat) return;
+    this.hatBone.add(this.hat);
+    this.hat.traverse(o => {
+      if (o.name.startsWith('spin')) this.spinner = o;
+      if (o.name.startsWith('jiggle')) this.jiggles.push({ o, rest: o.quaternion.clone(), a: new THREE.Vector2(), v: new THREE.Vector2() });
+    });
   }
 
   setMittenLevel(level: number) {
     if (level === this.mittenLevel) return;
     this.mittenLevel = level;
-    const m = level === 0 ? teamMittenMats[this.team] : MITTEN_MATS[level]!;
-    for (const mit of this.mittens) {
-      mit.material = m;
-      mit.children.forEach(c => { if ((c as THREE.Mesh).geometry === G.thumb) (c as THREE.Mesh).material = m; });
-    }
+    for (const m of this.mittenMeshes) m.material = looks!.mitten[this.team][level];
+  }
+
+  // ── pose helpers: they write this frame's target for a joint; update() eases the skeleton toward the targets ──
+  private rot(b: BoneName, x: number, y: number, z: number) { this.t[b].q.setFromEuler(_e.set(x, y, z, 'XYZ')); }
+  private addRot(b: BoneName, x: number, y: number, z: number) { this.t[b].q.multiply(_q.setFromEuler(_e.set(x, y, z, 'XYZ'))); }
+  /** Point a flipper: out to its own side, up, and forward (any length; it is normalised). */
+  private arm(side: Side, out: number, up: number, fwd: number) {
+    _v.set(side === 'R' ? out : -out, up, -fwd).normalize();
+    this.t[side === 'R' ? 'armR' : 'armL'].q.setFromUnitVectors(ARM_BIND[side], _v);
+  }
+  /** Bend the elbow forward and/or in toward the belly. */
+  private elbow(side: Side, forward: number, inward = 0) {
+    const q = this.t[side === 'R' ? 'forearmR' : 'forearmL'].q.setFromAxisAngle(ELBOW_AXIS[side], forward);
+    if (inward) q.multiply(_q.setFromAxisAngle(Z, side === 'R' ? -inward : inward));
   }
 
   /** Pose the penguin for this frame. */
@@ -398,27 +296,23 @@ export class PenguinModel {
     this.root.rotation.y = p.yaw;
     this.setMittenLevel(p.mitten);
     const speed = Math.hypot(p.vx, p.vz);
+    const T = this.t;
 
-    // landing squash
+    // landing squash, hit flinch
     if (p.grounded && !this.wasGrounded) this.landSquash = 0.25;
     this.wasGrounded = p.grounded;
     this.landSquash = Math.max(0, this.landSquash - dt * 1.5);
+    if (p.health < this.lastHealth) this.hitT = 0;
+    this.lastHealth = p.health;
+    this.hitT += dt;
 
-    // reset pose
-    const b = this.body;
-    b.position.set(0, 0, 0); b.rotation.set(0, 0, 0); b.scale.set(1, 1, 1);
-    this.flipperL.rotation.set(0, 0, 0.18); this.flipperR.rotation.set(0, 0, -0.18);
-    this.headGroup.rotation.set(0, 0, 0);
-    for (const f of this.feet) { f.visible = true; f.position.set(f.userData.side * 0.135, 0.0, -0.04); f.rotation.set(0, 0, 0); }
     this.lump.visible = false;
-    b.visible = true;
 
     // riding the surfboard
     if (p.surfing && p.alive) {
       if (!this.board) { this.board = makeSurfboard(); this.root.add(this.board); }
       this.board.visible = true;
-      const sp = Math.hypot(p.vx, p.vz);
-      if (sp > 0.4) {
+      if (speed > 0.4) {
         const want = Math.atan2(-p.vx, -p.vz);
         let d = want - this.boardYaw; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2;
         this.boardYaw += d * Math.min(1, dt * 8);
@@ -430,129 +324,265 @@ export class PenguinModel {
     } else if (this.board) this.board.visible = false;
 
     if (!p.alive) {
-      b.visible = false;
+      this.model.visible = false;
       this.lump.visible = true;
       const t = Math.min(1, (3.5 - p.downT) * 4);
       this.lump.scale.set(0.55 * t + 0.1, 0.45 * t + 0.05, 0.55 * t + 0.1);
       if (this.tag) this.tag.visible = false;
+      this.snapPose = true;
       return;
     }
     if (this.tag) this.tag.visible = !isLocal && this.camDist > 3.5;
+    // far-away penguins switch to the light copy (sooner on Fast graphics); the gap between the two numbers stops flicker
+    const lodAt = lowQuality ? 9 : 20;
+    const far = this.farNow ? this.camDist > lodAt - 1.5 : this.camDist > lodAt;
+    if (far !== this.farNow) {
+      this.farNow = far;
+      for (const m of this.near) m.visible = !far;
+      for (const m of this.far) m.visible = far;
+    }
+
+    // ── this frame's target pose ──
+    for (const n of BONES) { const t = T[n]; t.q.identity(); t.p.set(0, 0, 0); t.s.set(1, 1, 1); }
+    const breathe = Math.sin(time * 2.1 + this.seed);
+    let lid = LID_OPEN, jaw = 0;
+    let armsSet = false;
+    const idleArms = () => { this.arm('L', 0.42, -1, 0.04); this.arm('R', 0.42, -1, 0.04); };
+    idleArms();
 
     const sq = this.landSquash;
-    b.scale.set(1 + sq * 0.3, 1 - sq * 0.35, 1 + sq * 0.3);
+    T.body.s.set(1 + sq * 0.3, 1 - sq * 0.35, 1 + sq * 0.3);
 
     switch (p.action) {
       case 'slide': {
-        // belly down, head first, flippers swept back, feet kicking up behind
-        b.rotation.x = -1.42;
-        b.position.set(0, 0.36, 0.38);
-        this.headGroup.rotation.x = 0.9;
-        this.flipperL.rotation.set(1.3, 0, 0.5); this.flipperR.rotation.set(1.3, 0, -0.5);
-        // feet trail straight out behind the body, soles up, paddling
-        for (const [i, f] of this.feet.entries()) { f.position.set((i ? 1 : -1) * 0.11, 0.03, 0.03); f.rotation.x = -1.5 + Math.sin(time * 14 + i * 3) * 0.28; }
-        b.rotation.z = Math.sin(time * 9) * 0.05;
+        // belly down, head first, flippers swept back like little wings, feet trailing with their soles up
+        this.rot('body', -1.32, 0, Math.sin(time * 9) * 0.05);
+        T.body.p.set(0, 0.33, 0.36);
+        this.rot('head', 1.22, 0, 0);
+        const flut = Math.sin(time * 16) * 0.08;
+        this.arm('L', 0.62 + flut, -1, -0.42); this.arm('R', 0.62 - flut, -1, -0.42);
+        for (const [i, f] of ([T.footL, T.footR] as Target[]).entries()) {
+          f.p.set(0, 0.27, 0.44).sub(_v.set(0, 0, f.rest.z));
+          f.q.setFromEuler(_e.set(-2.95 + Math.sin(time * 14 + i * 3) * 0.3, 0, 0));
+        }
+        this.rot('tail', 0.5, Math.sin(time * 11) * 0.3, 0);
+        lid = LID_OPEN + 0.2; jaw = 0.5;
+        armsSet = true;
         break;
       }
       case 'plow': {
         // lean in and shove with both mittens
-        const push = Math.sin(time * 9) * 0.06;
-        b.rotation.x = -0.42;
-        this.flipperL.rotation.set(-1.45 + push, 0, -0.35); this.flipperR.rotation.set(-1.45 - push, 0, 0.35);
-        this.walk(speed * 1.6, dt, 0.07);
+        const push = Math.sin(time * 9) * 0.1;
+        this.rot('body', -0.36, 0, 0);
+        this.rot('head', 0.3, 0, 0);
+        this.arm('L', 0.2, -0.3 + push, 1); this.arm('R', 0.2, -0.3 - push, 1);
+        this.elbow('L', 0.25 - push, 0.15); this.elbow('R', 0.25 + push, 0.15);
+        this.walk(speed * 1.6, dt, 0.07, false);
+        lid = LID_OPEN - 0.45;
+        armsSet = true;
         break;
       }
       case 'pack': {
         // crouch and pat-pat-pat a snowball together
         const pat = Math.abs(Math.sin(time * 14));
-        b.rotation.x = -0.55; b.position.y = -0.06; b.scale.y *= 0.92;
-        this.flipperL.rotation.set(-1.0, 0, -0.65 + pat * 0.35); this.flipperR.rotation.set(-1.0, 0, 0.65 - pat * 0.35);
-        this.headGroup.rotation.x = 0.35;
+        this.rot('body', -0.46, 0, 0);
+        T.body.s.y *= 0.93;
+        this.rot('head', -0.12, 0, 0);
+        this.arm('L', 0.34 - pat * 0.14, -0.72, 0.78); this.arm('R', 0.34 - pat * 0.14, -0.72, 0.78);
+        this.elbow('L', 0.35, 0.5 + pat * 0.3); this.elbow('R', 0.35, 0.5 + pat * 0.3);
+        armsSet = true;
         break;
       }
       case 'dig': {
+        // reach in, then sweep the snow out behind
         const s = (time * 3.2) % 1;
-        const swing = s < 0.55 ? -0.9 - s * 1.2 : -1.56 + (s - 0.55) * 7;
-        b.rotation.x = -0.35 + (s > 0.55 ? 0.25 : 0);
-        this.flipperL.rotation.set(swing, 0, -0.3); this.flipperR.rotation.set(swing, 0, 0.3);
-        this.walk(speed, dt, 0.05);
+        const k = s < 0.55 ? ease(s / 0.55) : 1 - ease((s - 0.55) / 0.45);
+        this.rot('body', -0.5 + k * 0.28, 0, 0);
+        this.rot('head', 0.12, 0, 0);
+        for (const sd of ['L', 'R'] as Side[]) { this.arm(sd, 0.2 + k * 0.4, -0.75, 0.9 - k * 1.35); this.elbow(sd, 0.3 * (1 - k)); }
+        this.walk(speed, dt, 0.05, false);
+        armsSet = true;
         break;
       }
       case 'build': {
+        // scoop low, fling it up onto the pile
         const s = (time * 3.5) % 1;
-        const fling = s < 0.5 ? -0.4 - s * 1.4 : -1.1 - (s - 0.5) * 1.6;
-        b.rotation.x = s < 0.5 ? -0.45 : -0.1;
-        this.flipperL.rotation.set(fling, 0, -0.25); this.flipperR.rotation.set(fling, 0, 0.25);
-        this.walk(speed, dt, 0.05);
+        const k = s < 0.5 ? ease(s / 0.5) : 1 - ease((s - 0.5) / 0.5);
+        this.rot('body', -0.42 + k * 0.4, 0, 0);
+        this.rot('head', 0.1 + k * 0.15, 0, 0);
+        for (const sd of ['L', 'R'] as Side[]) { this.arm(sd, 0.3, -0.85 + k * 1.5, 0.6 + k * 0.4); this.elbow(sd, 0.4 * (1 - k)); }
+        this.walk(speed, dt, 0.05, false);
+        jaw = k * 0.3;
+        armsSet = true;
         break;
       }
       case 'charge': {
-        // right flipper cocked back over the head
-        this.flipperR.rotation.set(-2.6 - p.charge * 0.5, 0, -0.2);
-        this.flipperL.rotation.set(-0.9, 0, -0.2);
-        b.rotation.y = 0.35 * p.charge; b.rotation.x = 0.1 * p.charge;
-        this.walk(speed, dt, 0.08);
+        // wind up: throwing flipper cocked back over the shoulder, the other one points at the target
+        const c = p.charge;
+        this.rot('body', 0.06 + 0.1 * c, 0, 0);
+        this.rot('chest', 0, -0.3 - 0.3 * c, 0);
+        this.rot('head', 0, 0.25 + 0.2 * c, 0);
+        this.arm('R', 0.5, 0.75 + 0.2 * c, -0.45 - 0.35 * c); this.elbow('R', 0.7);
+        this.arm('L', 0.25, -0.15, 1); 
+        this.walk(speed, dt, 0.08, false);
+        lid = LID_OPEN - 0.5;
+        armsSet = true;
         break;
       }
       default: {
         if (p.surfing) {
           // surfer stance: low, flippers out for balance, no waddle
-          b.position.y += 0.12; b.scale.y *= 0.93;
-          b.rotation.z = Math.sin(time * 3) * 0.05 + (p.input.moveX || 0) * -0.18;
-          b.rotation.x = -0.12;
-          this.flipperL.rotation.z = 1.1 + Math.sin(time * 4) * 0.12; this.flipperR.rotation.z = -1.1 + Math.sin(time * 4 + 1) * 0.12;
-          if (p.throwAnim > 0) this.flipperR.rotation.set(-1.2, 0, -0.3);
+          const lean = (p.input.moveX || 0);
+          this.rot('body', -0.12, 0.5, Math.sin(time * 3) * 0.05 - lean * 0.18);
+          T.body.p.y += 0.1; T.body.s.y *= 0.93;
+          this.rot('head', 0, -0.45, 0);
+          this.arm('L', 1, -0.1 + Math.sin(time * 4) * 0.12, 0.1); this.arm('R', 1, -0.1 + Math.sin(time * 4 + 1) * 0.12, 0.1);
+          T.footL.p.y += 0.1; T.footR.p.y += 0.1;
+          if (p.throwAnim > 0) this.throwPose(1 - p.throwAnim / 0.25);
+          armsSet = true;
           break;
         }
-        this.walk(speed, dt, 0.12);
-        if (p.throwAnim > 0) {
-          const t = p.throwAnim / 0.25;
-          this.flipperR.rotation.set(-1.6 + (1 - t) * 1.2 * 0 - t * 0.2 + (1 - t) * 0.4, 0, -0.3);
-          b.rotation.y = -0.35 * t;
-          b.rotation.x = -0.2 * t;
-        }
         if (!p.grounded) {
-          this.flipperL.rotation.z = 0.9 + Math.sin(time * 30) * 0.4;
-          this.flipperR.rotation.z = -0.9 - Math.sin(time * 30) * 0.4;
+          // in the air: flap!
+          const f = Math.sin(time * 26);
+          this.arm('L', 1, 0.15 + f * 0.45, 0.05); this.arm('R', 1, 0.15 - f * 0.45, 0.05);
+          T.footL.q.setFromEuler(_e.set(-0.5 + f * 0.25, 0, 0)); T.footR.q.setFromEuler(_e.set(-0.5 - f * 0.25, 0, 0));
+          T.footL.p.y += 0.03; T.footR.p.y += 0.03;
+          T.body.s.y *= 1.04;
+          lid = LID_OPEN + 0.25; jaw = 0.6;
+          armsSet = true;
+        }
+        this.walk(speed, dt, 0.12, !armsSet);
+        if (p.throwAnim > 0) this.throwPose(1 - p.throwAnim / 0.25);
+        if (speed < 0.3 && p.grounded && p.throwAnim <= 0) {
+          // standing about: breathe, glance around, a little tail wag
+          T.chest.s.multiplyScalar(1 + breathe * 0.012);
+          this.addRot('head', Math.sin(time * 0.9 + this.seed) * 0.04, Math.sin(time * 0.53 + this.seed * 2) * 0.16, 0);
+          this.rot('tail', 0, Math.sin(time * 5 + this.seed) * 0.25 * clamp01(Math.sin(time * 0.7 + this.seed) * 2), 0);
         }
       }
     }
-    // keep the feet flat on the snow however the body leans (the slide pose sets its own)
-    if (p.action !== 'slide') for (const f of this.feet) { f.rotation.x += -b.rotation.x; f.rotation.z += -b.rotation.z * 0.6; f.position.y -= b.position.y; }
+    if (p.throwAnim > 0) { jaw = Math.max(jaw, 0.7); lid = LID_OPEN - 0.35; }
 
-    // look up/down with the head a little
-    if (p.action !== 'slide') this.headGroup.rotation.x += -p.lookPitch * 0.35;
+    // look up / down with the head
+    if (p.action !== 'slide') this.addRot('head', p.lookPitch * 0.4, 0, 0);
+
+    // flinch when a snowball lands
+    if (this.hitT < 0.32) {
+      const k = 1 - this.hitT / 0.32;
+      this.addRot('body', 0.22 * k, 0, 0);
+      this.addRot('head', -0.3 * k, 0, 0.12 * k);
+      T.body.s.multiply(_v.set(1 + 0.1 * k, 1 - 0.1 * k, 1 + 0.1 * k));
+      lid = Math.min(lid, 0.5); jaw = Math.max(jaw, 0.5);
+    }
+
+    // ── ease the skeleton toward the pose ──
+    const k = this.snapPose ? 1 : 1 - Math.exp(-dt * 20);
+    this.snapPose = false;
+    for (const n of BONES) {
+      const t = T[n];
+      t.bone.quaternion.slerp(t.q, k);
+      t.bone.position.lerp(_v.copy(t.rest).add(t.p), k);
+      t.bone.scale.lerp(t.s, k);
+    }
 
     // blink
     this.blink -= dt;
-    const blinking = this.blink < 0.12 && this.blink > 0;
-    if (this.blink < 0) this.blink = 2 + Math.random() * 3;
-    this.headGroup.children.forEach(c => { if (c.name === 'eye') c.scale.y = blinking ? 0.15 : 1.25; });
+    if (this.blink < 0) this.blink = 2 + Math.random() * 3.5;
+    if (this.blink < 0.11) lid = 0.25;
+    this.lidNow += (lid - this.lidNow) * Math.min(1, dt * 30);
+    this.lids.L.quaternion.setFromAxisAngle(LID_AXIS.L, -this.lidNow);
+    this.lids.R.quaternion.setFromAxisAngle(LID_AXIS.R, -this.lidNow);
+    this.jawNow += (jaw - this.jawNow) * Math.min(1, dt * 14);
+    T.jaw.bone.rotation.set(-0.42 * this.jawNow, 0, 0);
+
+    this.secondary(p, dt, time, speed);
 
     // damage marks
     for (let i = 0; i < this.splats.length; i++) this.splats[i].visible = i < 3 - p.health;
     // carried snowballs
     for (let i = 0; i < this.carriedBalls.length; i++) this.carriedBalls[i].visible = i < p.carried;
     // spawn protection blink
-    b.visible = p.invuln <= 0 || Math.floor(time * 12) % 2 === 0;
+    this.model.visible = p.invuln <= 0 || Math.floor(time * 12) % 2 === 0;
     // propeller hat spins
-    const spin = this.hat.getObjectByName('spin');
-    if (spin) spin.rotation.y += dt * (6 + speed * 4);
-    // scarf tail flaps with speed
-    this.scarfTail.rotation.x = 0.2 + Math.min(1.2, speed * 0.12) + Math.sin(time * 12) * 0.08 * Math.min(1, speed);
+    if (this.spinner) this.spinner.rotation.y += dt * (6 + speed * 4);
   }
 
-  private walk(speed: number, dt: number, amount: number) {
+  /** The follow-through of a throw. u: 0 at release → 1 when the flipper has swung through. */
+  private throwPose(u: number) {
+    const a = ease(u / 0.45), b = ease((u - 0.3) / 0.7);
+    // cocked back → whipping over the top → down across the body
+    this.arm('R', 0.5 - 0.3 * a - 0.25 * b, 0.9 - 0.25 * a - 1.25 * b, -0.6 + 1.5 * a + 0.1 * b);
+    this.elbow('R', 0.6 * (1 - a));
+    this.arm('L', 0.45, -0.6 - 0.3 * a, 0.7 - 1.0 * a);
+    this.addRot('chest', 0, -0.4 + 0.85 * ease(u / 0.6), 0);
+    this.addRot('body', 0.1 - 0.34 * ease(u / 0.6), 0, 0);
+    this.addRot('head', 0.1, 0.25 - 0.4 * ease(u / 0.6), 0);
+  }
+
+  /** The waddle: roll from foot to foot, little shuffling steps, flippers out for balance. */
+  private walk(speed: number, dt: number, amount: number, arms: boolean) {
+    const T = this.t;
     const moving = Math.min(1, speed / 3);
     this.walkPhase += dt * (4 + speed * 2.2);
-    const s = Math.sin(this.walkPhase * 2);
-    this.body.rotation.z += s * amount * moving * 1.5;
-    this.body.position.y += Math.abs(Math.cos(this.walkPhase * 2)) * 0.05 * moving;
-    // little shuffling steps: lift and swing each foot in turn
-    this.feet[0].position.y += Math.max(0, s) * 0.07 * moving; this.feet[0].position.z += -s * 0.07 * moving; this.feet[0].rotation.x += Math.max(0, s) * 0.5 * moving;
-    this.feet[1].position.y += Math.max(0, -s) * 0.07 * moving; this.feet[1].position.z += s * 0.07 * moving; this.feet[1].rotation.x += Math.max(0, -s) * 0.5 * moving;
-    this.flipperL.rotation.z += 0.25 * moving + s * 0.15 * moving;
-    this.flipperR.rotation.z -= 0.25 * moving - s * 0.15 * moving;
+    const ph = this.walkPhase * 2;
+    const s = Math.sin(ph), c = Math.cos(ph);
+    this.addRot('body', 0, 0, -s * amount * 1.5 * moving);
+    T.body.p.y += Math.abs(c) * 0.045 * moving;
+    this.addRot('chest', 0, s * 0.1 * moving, 0);
+    this.addRot('head', 0, 0, s * amount * 1.0 * moving); // the head stays level while the body rocks
+    // left foot is in the air while s > 0, right foot while s < 0; each swings forward as it lifts
+    T.footL.p.y += Math.max(0, s) * 0.075 * moving; T.footL.p.z += c * 0.085 * moving;
+    T.footR.p.y += Math.max(0, -s) * 0.075 * moving; T.footR.p.z += -c * 0.085 * moving;
+    T.footL.q.multiply(_q.setFromEuler(_e.set(Math.max(0, s) * 0.45 * moving, 0, 0)));
+    T.footR.q.multiply(_q.setFromEuler(_e.set(Math.max(0, -s) * 0.45 * moving, 0, 0)));
+    this.addRot('tail', 0, -s * 0.4 * moving, 0);
+    if (arms && moving > 0.02) {
+      this.arm('L', 0.42 + 0.3 * moving, -1, 0.04 - c * 0.38 * moving);
+      this.arm('R', 0.42 + 0.3 * moving, -1, 0.04 + c * 0.38 * moving);
+    }
+  }
+
+  /** Things that follow along by themselves: scarf tails, the hat's wobble, and anything on the hat that jiggles. */
+  private secondary(p: Penguin, dt: number, time: number, speed: number) {
+    const T = this.t;
+    // the world, as the chest sees it
+    const chestQ = _q2.copy(T.body.bone.quaternion).multiply(T.chest.bone.quaternion);
+    const inv = chestQ.clone().invert();
+    const cy = Math.cos(-p.yaw), sy = Math.sin(-p.yaw);
+    const lvx = p.vx * cy + p.vz * sy, lvz = -p.vx * sy + p.vz * cy; // velocity in the penguin's own frame
+    const h = Math.min(0.05, Math.max(dt, 1e-3));
+    for (const st of this.strands) {
+      const flap = Math.min(1, speed / 6);
+      // gravity + the wind of moving + a flutter that grows with speed
+      _v.set(-lvx * 0.13 + Math.sin(time * 9 + st.phase) * 0.22 * flap, -1 - p.vy * 0.06, -lvz * 0.13 + Math.cos(time * 7.3 + st.phase) * 0.12 * flap);
+      _v.y += Math.min(0.75, speed * 0.05); // fast = streaming out nearly flat
+      _v.applyQuaternion(inv);
+      _v.z = Math.max(_v.z, 0.16 * _v.length()); // never through the back
+      _v.normalize();
+      // a soft spring on the direction
+      st.vel.addScaledVector(_v2.copy(_v).sub(st.dir), 140 * h).multiplyScalar(Math.exp(-9 * h));
+      st.dir.addScaledVector(st.vel, h).normalize();
+      _q.setFromUnitVectors(st.rest, st.dir);
+      const ident = _q2.identity();
+      st.bones[0].quaternion.copy(ident).slerp(_q, 0.5);
+      st.bones[1].quaternion.copy(ident).slerp(_q, 0.3);
+      st.bones[2].quaternion.copy(ident).slerp(_q, 0.3);
+    }
+    // the hat lags a touch behind sudden moves
+    const ax = (lvx - this.lastVel.x) / h, az = (lvz - this.lastVel.z) / h;
+    this.lastVel.set(lvx, 0, lvz);
+    this.hatVel.x += (-ax * 0.004 - this.hatWobble.x * 160) * h; this.hatVel.y += (-az * 0.004 - this.hatWobble.y * 160) * h;
+    this.hatVel.multiplyScalar(Math.exp(-10 * h));
+    this.hatWobble.addScaledVector(this.hatVel, h);
+    this.hatWobble.clampScalar(-0.16, 0.16);
+    this.hatBone.rotation.set(-this.hatWobble.y, 0, this.hatWobble.x);
+    for (const j of this.jiggles) {
+      j.v.x += (-ax * 0.02 - j.a.x * 90) * h; j.v.y += (-az * 0.02 - j.a.y * 90) * h;
+      j.v.multiplyScalar(Math.exp(-5 * h));
+      j.a.addScaledVector(j.v, h); j.a.clampScalar(-0.6, 0.6);
+      j.o.quaternion.copy(j.rest).multiply(_q.setFromEuler(_e.set(-j.a.y, 0, j.a.x)));
+    }
   }
 
   dispose(scene: THREE.Object3D) {
