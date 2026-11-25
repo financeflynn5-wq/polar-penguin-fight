@@ -1,10 +1,11 @@
 // Dev-only model viewer (npm run dev, then open /tools/viewer/). Lights the Blender assets like the game does so
 // they can be checked and screenshotted in any pose: see tools/viewer/shots.mjs.
 import * as THREE from 'three';
-import { loadAssets } from '../../src/render/Assets';
+import { Assets, loadAssets } from '../../src/render/Assets';
 import { PenguinModel, setPenguinQuality } from '../../src/render/PenguinModel';
 import { Penguin } from '../../src/sim/World';
 import { PostFX } from '../../src/render/PostFX';
+import { GUN_HOLD, GUN_BACK, GUN_BACK_Q } from '../../src/render/GunsView';
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
 renderer.setSize(innerWidth, innerHeight);
@@ -55,12 +56,36 @@ post.setSize(innerWidth, innerHeight, 1);
 
 interface Actor { model: PenguinModel; p: Penguin; tick?: (p: Penguin, t: number, dt: number) => void }
 const actors: Actor[] = [];
+const props: THREE.Object3D[] = [];
 let time = 0;
 let usePost = true;
 
 const api = {
   ready: false,
-  clear() { for (const a of actors) a.model.dispose(scene); actors.length = 0; },
+  clear() { for (const a of actors) a.model.dispose(scene); actors.length = 0; for (const o of props) o.removeFromParent(); props.length = 0; },
+  /** Add a gun ('cocoa' | 'water') on its own. It points along -Z when yaw is 0, like a penguin. Returns where its named nodes (muzzle, foregrip) ended up. */
+  gun(name: string, opts: { x?: number; y?: number; z?: number; yaw?: number; pitch?: number; roll?: number; scale?: number } = {}) {
+    const src = Assets.guns.get(name);
+    if (!src) throw new Error('no gun called ' + name);
+    const g = src.clone();
+    g.position.set(opts.x ?? 0, opts.y ?? 1, opts.z ?? 0);
+    g.rotation.set(opts.pitch ?? 0, opts.yaw ?? 0, opts.roll ?? 0, 'YXZ');
+    g.scale.setScalar(opts.scale ?? 1);
+    scene.add(g); props.push(g);
+    const out: Record<string, number[]> = {};
+    g.updateMatrixWorld(true);
+    g.traverse(o => { if (!(o as THREE.Mesh).isMesh) out[o.name] = o.getWorldPosition(new THREE.Vector3()).toArray(); });
+    return out;
+  },
+  /** Put a gun on penguin i where the game does (GUN_HOLD and GUN_BACK in src/render/GunsView.ts; the game also poses the arm): in its mittens, or slung on its back. */
+  hold(i: number, name: string, where: 'hand' | 'back' = 'hand') {
+    const g = Assets.guns.get(name)!.clone();
+    if (where === 'hand') g.position.copy(GUN_HOLD);
+    else { g.position.copy(GUN_BACK); g.quaternion.copy(GUN_BACK_Q); g.scale.setScalar(0.92); }
+    actors[i].model.root.add(g); props.push(g);
+  },
+  /** Names of the guns that loaded. */
+  guns() { return [...Assets.guns.keys()]; },
   /** Add a penguin. state: fields to set on its sim Penguin; anim: 'walk' | 'run' moves it as if walking. */
   add(opts: { team?: number; hat?: string; x?: number; z?: number; yaw?: number; name?: string | null; state?: Partial<Penguin>; anim?: string }) {
     const p = new Penguin(actors.length, opts.name ?? '', opts.team ?? 0, opts.hat ?? 'none', false);
@@ -101,6 +126,7 @@ if (!new URLSearchParams(location.search).has('script')) {
   // a default line-up when opened by hand
   const hats = ['none', 'beanie', 'tophat', 'propeller', 'viking', 'crown', 'fish', 'party', 'chef', 'cone'];
   hats.forEach((h, i) => api.add({ team: i % 2, hat: h, x: (i - 4.5) * 1.1, yaw: Math.PI, anim: i % 3 === 1 ? 'walk' : undefined }));
+  [...Assets.guns.keys()].forEach((n, i) => api.gun(n, { x: (i - 0.5) * 1.1, y: 0.75, z: -1.6, yaw: Math.PI / 2 }));
   api.camera(0, 1.6, -9, 0, 0.6, 0, 35);
   let last = performance.now();
   const loop = (now: number) => { const dt = Math.min(0.05, (now - last) / 1000); last = now; api.run(1, dt); requestAnimationFrame(loop); };

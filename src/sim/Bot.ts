@@ -1,13 +1,15 @@
 // Bot penguins: they build forts and turrets in the build phase, pack and stash snowballs, then fight, grab snowflakes,
 // roll big balls, knock down turrets, spend their streak rewards, in Conquest take and hold the flags, and in
-// Breakthrough attack or defend the section's objectives.
+// Breakthrough attack or defend the section's objectives. They pick up guns that are close by and use them: hot
+// chocolate on turrets, on walls someone is hiding behind and on anyone close; water on whoever they can see.
 import { ISO } from '../world/SnowField';
 import { V3 } from '../world/MapDef';
 import { houseLocal, turned } from '../world/Landmarks';
 import { World, Penguin, solveThrow } from './World';
 import { CFG } from './config';
+import { GUN_WATER, GUN_COCOA } from './Guns';
 
-type Goal = 'build' | 'pack' | 'stash' | 'grab' | 'fight' | 'flake' | 'roll' | 'retreat' | 'advance' | 'board' | 'turret' | 'capture';
+type Goal = 'build' | 'pack' | 'stash' | 'grab' | 'fight' | 'flake' | 'roll' | 'retreat' | 'advance' | 'board' | 'turret' | 'capture' | 'gun';
 
 /** What a bot is throwing at: a penguin or an enemy turret. */
 interface Mark { x: number; y: number; z: number; vx: number; vz: number; h: number; alive: boolean; }
@@ -65,6 +67,7 @@ export class BotBrain {
     inp.fire = inp.fire && p.charging; // keep holding only while charging
     inp.plow = inp.pack = inp.dig = inp.build = inp.use = inp.roll = inp.turret = false;
     inp.slide = false;
+    inp.gun = false;
     inp.moveX = 0; inp.moveZ = 0;
     if (!p.alive || w.phase === 'end') { inp.fire = false; return; }
     this.t += dt;
@@ -105,7 +108,11 @@ export class BotBrain {
       const pt = flags ? w.points[this.objective] : undefined;
       const onFlag = !!pt && Math.hypot(p.x - pt.x, p.z - pt.z) < pt.r;
       const pileDist = Math.hypot(p.x - base.stockpile.x, p.z - base.stockpile.z);
-      if (p.carried === 0) {
+      const crate = p.gun ? null : this.nearestGun(w, p);
+      if (p.gun && marked && this.targetDist(w, p) < (p.gun === GUN_WATER ? 22 : 15) && (this.targetVisible || p.gun === GUN_COCOA)) {
+        // a gun with something in the tank and someone to use it on: that comes before stocking up on snowballs
+        this.goal = 'fight';
+      } else if (p.carried === 0) {
         this.goal = w.piles[p.team] > 0 && pileDist < (flags ? 20 : 34) ? 'grab' : 'pack';
       } else if (bt && p.team === 0 && w.holdT > 0 && p.carried < CFG.maxCarry) {
         // waiting for the next section to open: fill your flippers
@@ -114,6 +121,8 @@ export class BotBrain {
         this.goal = 'retreat';
       } else if (w.board.active && w.board.holder < 0 && Math.hypot(w.board.x - p.x, w.board.z - p.z) < (flags ? 14 : 26)) {
         this.goal = 'board';
+      } else if (crate && crate.d < (flags ? 12 : 20) && !(this.targetVisible && this.targetDist(w, p) < 12)) {
+        this.goal = 'gun';
       } else if (flake && flake.d < (flags ? 9 : 16) && p.mitten < 3 && !(this.targetVisible && p.carried > 0 && this.targetDist(w, p) < 14)) {
         this.goal = 'flake';
       } else if (this.role === 'roller' && (!flags || (bt && p.team === 1 && w.holdT <= 0)) && this.findBall(w, p)) {
@@ -164,6 +173,12 @@ export class BotBrain {
       }
       case 'board': {
         this.moveTo(w, p, { x: w.board.x, y: w.board.y, z: w.board.z }, 0.3, dt);
+        this.combatWhileMoving(w, p);
+        break;
+      }
+      case 'gun': {
+        const c = this.nearestGun(w, p);
+        if (c) this.moveTo(w, p, c.c, 0.3, dt);
         this.combatWhileMoving(w, p);
         break;
       }
@@ -376,6 +391,53 @@ export class BotBrain {
     return best;
   }
 
+  private nearestGun(w: World, p: Penguin) {
+    let best: { c: V3; d: number } | null = null;
+    for (const c of w.guns.crates) {
+      const d = Math.hypot(c.x - p.x, c.z - p.z);
+      if (!best || d < best.d) best = { c: { x: c.x, y: c.y, z: c.z }, d };
+    }
+    return best;
+  }
+
+  /**
+   * Use the gun on this bot's mark, if it's the right tool right now. Returns true when it has the trigger this tick.
+   * Water: soak a penguin in sight until it's frozen stiff, then go back to snowballs to finish it.
+   * Hot chocolate: up close, melt turrets, scald penguins, and melt the wall a hidden one is behind.
+   */
+  private gunCombat(w: World, p: Penguin) {
+    if (!p.gun || w.phase !== 'fight' || p.charging || p.sliding) return false;
+    const t = this.mark(w);
+    if (!t || !t.alive || this.reactT > 0) return false;
+    const d = Math.hypot(t.x - p.x, t.z - p.z);
+    const foe = this.targetId >= 0 ? w.penguin(this.targetId) : undefined;
+    let aim: V3;
+    if (p.gun === GUN_WATER) {
+      if (!foe || !this.targetVisible || d > 22 || foe.invuln > 0 || (foe.chill > 0.9 && p.carried > 0)) return false;
+      const flight = d / CFG.waterSpeed, lead = this.skill * 0.9;
+      const err = (0.2 + d * 0.035) * (1.3 - this.skill);
+      aim = { x: t.x + t.vx * flight * lead + (Math.random() * 2 - 1) * err, y: t.y + t.h + (Math.random() * 2 - 1) * err * 0.4, z: t.z + t.vz * flight * lead + (Math.random() * 2 - 1) * err };
+    } else {
+      if (d > 13) return false;
+      aim = { x: t.x, y: t.y + t.h, z: t.z };
+      if (!this.targetVisible) {
+        // they're behind snow: melt it
+        const ox = p.x, oy = p.y + 1.0, oz = p.z;
+        const dx = aim.x - ox, dy = aim.y - oy, dz = aim.z - oz, dl = Math.hypot(dx, dy, dz) || 1;
+        const hit = w.field.raycast(ox, oy, oz, dx / dl, dy / dl, dz / dl, dl, 0.3);
+        if (!hit) return false;
+        aim = { x: hit.x, y: hit.y, z: hit.z };
+      } else if (foe && foe.invuln > 0) return false;
+      const err = 0.25 * (1.3 - this.skill);
+      aim.x += (Math.random() * 2 - 1) * err; aim.z += (Math.random() * 2 - 1) * err;
+    }
+    p.input.gun = true;
+    p.input.yaw = this.yawTo(p, aim.x, aim.z);
+    p.input.aim = aim;
+    p.input.fire = true;
+    return true;
+  }
+
   private faceYaw(p: Penguin, yaw: number) {
     const cur = p.input.yaw;
     p.input.yaw = cur + wrap(yaw - cur) * 0.25;
@@ -518,7 +580,7 @@ export class BotBrain {
     const t = this.mark(w);
     if (!t) return;
     const dx = t.x - p.x, dz = t.z - p.z, d = Math.hypot(dx, dz) || 1;
-    const want = 11 + this.skill * 5;
+    const want = p.gun === GUN_COCOA ? 7 : 11 + this.skill * 5; // hot chocolate doesn't reach far
     this.strafeT -= dt;
     if (this.strafeT <= 0) { this.strafeT = 0.8 + Math.random() * 1.6; this.strafeDir = Math.random() < 0.5 ? -1 : 1; }
     // face the target
@@ -543,6 +605,7 @@ export class BotBrain {
   }
 
   private combatWhileMoving(w: World, p: Penguin) {
+    if (this.gunCombat(w, p)) return;
     if (w.phase !== 'fight' || p.carried === 0) { p.input.fire = false; return; }
     const t = this.mark(w);
     if (!t || !this.targetVisible || !t.alive || this.reactT > 0) { if (!p.charging) p.input.fire = false; return; }

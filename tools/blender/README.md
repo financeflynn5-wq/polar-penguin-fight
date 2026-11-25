@@ -45,10 +45,31 @@ Each hat is modelled around the penguin's head and saved with its origin at the 
 To add a hat: write a `hat_<name>()` function in `hats.py`, add it to `HATS`, and add the name to `HATS` in
 `src/sim/World.ts`.
 
+## Guns
+
+    python tools/blender/guns.py                 # → src/assets/models/guns/cocoa.glb and water.glb   (about 2 minutes)
+    python tools/blender/guns.py water           # just one
+    python tools/blender/guns.py cocoa --shapes  # quick Cycles renders for judging shape (no bake, no export)
+
+`cocoa` is the Hot Chocolate Blaster (a mug of cocoa on a chocolate-dipped biscuit, candy-cane barrel, copper bell)
+and `water` is the Freeze Soaker (water bottle on a teal body, yellow pump, frost and icicles at the nozzle). Each is
+one mesh with one material (`Gun_cocoa`, `Gun_water`) and 1024 px baked textures.
+
+What the game relies on:
+
+- In the GLB the barrel points along -Z, up is +Y, the gun's right side is +X, and the origin is the middle of the
+  grip, where the right mitten holds it.
+- A child node called `muzzle` sits at the tip of the nozzle: the spray starts there.
+- A child node called `foregrip` sits at the middle of the pump under the barrel, where the left mitten rests.
+- About 0.65 to 0.69 m long, 0.36 m tall and 0.15 m wide; under 6,000 triangles; no team tint, skeleton or animation.
+
+To change a gun, edit `gun_cocoa()` or `gun_water()` in `guns.py`. The grip, muzzle and foregrip positions are the
+first lines of each. `guns.py` packs its own texture atlas (`pack_even`) so the texels stay square.
+
 ## Looking at the result
 
 `npm run dev`, then open `/tools/viewer/`. It shows the real in-game model under the game's lighting.
-`node tools/viewer/shots.mjs <folder> [turn poses teams hats hatclose]` saves screenshots (needs Playwright).
+`node tools/viewer/shots.mjs <folder> [turn poses teams hats hatclose guns]` saves screenshots (needs Playwright).
 
 ## Map props
 

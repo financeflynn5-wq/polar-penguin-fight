@@ -66,6 +66,67 @@ const SETS = {
       await shot('hatback_' + h);
     }
   },
+  // the two guns: each alone from four sides, both beside a penguin for scale, and small, as seen from 12 m away
+  guns: async (page, shot) => {
+    const views = { side: [1.25, 1.12, -0.19, 0, 1.06, -0.19], front: [0.72, 1.36, -1.25, 0, 1.06, -0.2], back: [-0.62, 1.5, 0.82, 0, 1.06, -0.2], left: [-1.25, 1.12, -0.19, 0, 1.06, -0.19], top: [0.25, 2.2, 0.05, 0, 1.06, -0.2] };
+    for (const g of ['cocoa', 'water']) {
+      await page.evaluate(g => { const v = window.viewer; v.clear(); v.gun(g, { y: 1 }); }, g);
+      for (const [name, cam] of Object.entries(views)) {
+        await page.evaluate(c => { window.viewer.camera(...c, 30); window.viewer.run(3); }, cam);
+        await shot(`gun_${g}_${name}`);
+      }
+    }
+    await page.evaluate(() => {
+      const v = window.viewer; v.clear();
+      v.gun('cocoa', { x: 0.40, y: 1.25, z: 0, yaw: Math.PI / 2 - 0.5 }); v.gun('water', { x: -0.04, y: 0.90, z: -0.05, yaw: Math.PI / 2 - 0.5 });
+      v.camera(0, 1.3, -1.6, 0, 1.17, 0, 30); v.run(3);
+    });
+    await shot('guns_both');
+    await page.evaluate(() => {
+      const v = window.viewer; v.clear();
+      v.add({ team: 0, hat: 'beanie', x: 0, yaw: 0.25 });
+      v.gun('cocoa', { x: -0.85, y: 0.62, z: -0.1, yaw: Math.PI / 2 - 0.35 }); v.gun('water', { x: 0.85, y: 0.62, z: -0.1, yaw: -Math.PI / 2 + 0.35 });
+      v.camera(0.2, 1.05, -3.9, 0, 0.6, 0, 30); v.run(40);
+    });
+    await shot('guns_scale');
+    await page.evaluate(() => { const v = window.viewer; v.camera(-0.5, 1.7, 3.6, 0, 0.6, 0, 30); v.run(2); });
+    await shot('guns_scale_back');
+    await page.evaluate(() => {
+      const v = window.viewer; v.clear();
+      v.gun('cocoa', { x: -0.5, y: 0.9, yaw: Math.PI / 2 - 0.5 }); v.gun('water', { x: 0.5, y: 0.9, yaw: Math.PI / 2 - 0.5 });
+      v.gun('cocoa', { x: -0.5, y: 0.35, yaw: 0.25 }); v.gun('water', { x: 0.5, y: 0.35, yaw: 0.25 });
+      v.camera(0, 2.6, 12, 0, 0.7, 0, 55); v.run(3);
+    });
+    await shot('guns_far');
+    // in the mittens and slung on the back, the way the game shows them
+    await page.evaluate(() => {
+      const v = window.viewer; v.clear();
+      const held = { gun: 1, gunOut: true };
+      v.hold(v.add({ team: 0, hat: 'beanie', x: -0.75, yaw: 0.35, state: held }), 'cocoa');
+      v.hold(v.add({ team: 1, hat: 'none', x: 0.75, yaw: 0.35, state: held }), 'water');
+      v.camera(1.6, 1.15, -3.9, 0.1, 0.6, 0, 30); v.run(40);
+    });
+    await shot('guns_held');
+    await page.evaluate(() => { const v = window.viewer; v.camera(1.3, 2.0, 4.6, 0.2, 0.7, -0.6, 32); v.run(2); });
+    await shot('guns_held_behind');
+    await page.evaluate(() => {
+      const v = window.viewer; v.clear();
+      v.hold(v.add({ team: 0, hat: 'none', x: -0.75, yaw: -0.5 }), 'cocoa', 'back');
+      v.hold(v.add({ team: 1, hat: 'none', x: 0.75, yaw: 0.5 }), 'water', 'back');
+      v.camera(0, 1.7, 4.4, 0, 0.6, 0, 30); v.run(40);
+    });
+    await shot('guns_slung');
+    await page.evaluate(() => {
+      const v = window.viewer; v.clear();
+      const held = { gun: 1, gunOut: true };
+      v.hold(v.add({ team: 0, hat: 'none', x: -1.2, yaw: 2.3, state: held }), 'cocoa');
+      v.hold(v.add({ team: 1, hat: 'none', x: 1.2, yaw: 2.3, state: held }), 'water');
+      v.hold(v.add({ team: 1, hat: 'none', x: -3.4, yaw: 0.6, state: held }), 'cocoa');
+      v.hold(v.add({ team: 0, hat: 'none', x: 3.4, yaw: 0.6, state: held }), 'water');
+      v.camera(0, 2.6, 12, 0, 0.7, 0, 55); v.run(40);
+    });
+    await shot('guns_held_far');
+  },
 };
 
 const browser = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });

@@ -112,7 +112,45 @@ export const CFG = {
   btRegroup: 20, // seconds the attackers wait after a section falls
   btLastStand: 60, // seconds the attackers have once their tickets are gone
   btRespawn: [3.5, 5], // seconds down: attackers, defenders
+
+  // guns: picked up from the gun pads on each team's side (cocoa to the north, water to the south), one at a time
+  gunRespawn: 40, // seconds before a pad makes another gun (5v5; bigger teams get them faster)
+  gunFirst: 6, // seconds into the fight before the first guns show up
+  gunDropLife: 20, // a gun dropped by a splatted penguin lies there this long
+  gunMoveSpeed: 3.6, // walking speed while spraying
+  // the Hot Chocolate Blaster: a short hot stream that melts snow (walls!), snowman turrets and, slowly, penguins
+  cocoaAmmo: 80, // squirts in a full tank
+  cocoaRate: 13, // squirts per second
+  cocoaSpeed: 21,
+  cocoaGravity: 14,
+  cocoaLife: 0.75, // seconds a squirt flies: with the speed, that's about 15 m of reach
+  cocoaSpread: 0.035,
+  cocoaMelt: 330, // snow melted per squirt (2040 = one cubic metre): a full tank is about 13 cubic metres of wall
+  cocoaMeltRadius: 0.6,
+  cocoaHitsPerHeart: 9, // squirts on a penguin for one heart
+  cocoaHitsPerTurret: 6, // squirts on a snowman for one of its hit points
+  heatFade: 0.3, // how fast a scalded penguin cools off, per second
+  // the Freeze Soaker: soaked penguins stiffen up and slow down; a miss freezes a slippery patch on the snow
+  waterAmmo: 24,
+  waterRate: 4,
+  waterSpeed: 34,
+  waterGravity: 9.5,
+  waterLife: 0.8, // about 26 m of reach
+  waterSpread: 0.01,
+  chillPerHit: 0.25, // four hits and you're frozen stiff
+  chillSlow: 0.5, // how much of your speed you lose when frozen stiff
+  chillHold: 2, // seconds before the chill starts to wear off
+  chillFade: 0.35, // ... and how fast it does, per second
+  patchRadius: 1.5,
+  patchMaxRadius: 2.6,
+  patchLife: 16,
+  maxPatches: 24,
+  slipTime: 0.9, // seconds on your belly after stepping on an ice patch
+  slipAgain: 2.2, // seconds before you can slip again
+  slipSpeed: 2.2, // slower than this and you keep your feet
 };
+
+export const GUN_NAMES = ['', 'Hot Chocolate Blaster', 'Freeze Soaker'];
 
 export const REWARD_NAMES = ['Snowball Frenzy', 'Insta-Turret', 'Avalanche'];
 

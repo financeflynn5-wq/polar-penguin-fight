@@ -1,5 +1,6 @@
 import { World, Penguin, SplatCause } from '../sim/World';
-import { CFG, MITTEN_NAMES, REWARD_NAMES } from '../sim/config';
+import { CFG, MITTEN_NAMES, REWARD_NAMES, GUN_NAMES } from '../sim/config';
+import { gunAmmoMax } from '../sim/Guns';
 
 const h = (html: string) => { const d = document.createElement('div'); d.innerHTML = html.trim(); return d.firstElementChild as HTMLElement; };
 const esc = (s: string) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
@@ -18,6 +19,7 @@ export class Hud {
   private bt: boolean;
   private lastStreak = '';
   private lastPoints = '';
+  private lastGun = '';
 
   constructor(w: World) {
     const conquest = this.conquest = w.mode === 'conquest';
@@ -25,6 +27,7 @@ export class Hud {
     const flags = conquest || bt;
     this.el = h(`<div class="ui">
       <div class="frost"></div>
+      <div class="chillfx"></div>
       <div class="splatfx"></div>
       <div class="score">
         <div class="team t0"><span id="s0">0</span><small>${bt ? 'tickets' : ''}</small></div>
@@ -49,6 +52,7 @@ export class Hud {
         <div class="card"><div class="label">Mittens</div><div class="mitten"><span id="mitName">Wool Mittens</span><span class="pip"></span><span class="pip"></span><span class="pip"></span></div></div>
         <div class="card"><div class="label">Health</div><div class="hearts" id="hearts"></div></div>
         <div class="card"><div class="label">Snowballs</div><div class="balls" id="balls"></div><div class="packbar"><div id="packbar"></div></div></div>
+        <div class="card gun hidden" id="gun"><div class="label" id="gunName"></div><div class="tank"><div id="gunTank"></div></div><div class="swap"><span class="key">X</span><span id="gunSwap"></span></div></div>
       </div>
       <div class="controls">
         <div><span class="key">LMB</span>throw (hold = farther)</div>
@@ -59,6 +63,7 @@ export class Hud {
         <div>hold <span class="key">T</span>build a turret (lots of snow)</div>
         ${flags ? '' : '<div><span class="key">1</span><span class="key">2</span><span class="key">3</span>streak rewards</div>'}
         <div><span class="key">E</span>grab &nbsp;·&nbsp; hold <span class="key">E</span>stash</div>
+        <div><span class="key">X</span>gun / snowballs (guns are on the gun pads)</div>
         <div><span class="key">Shift</span>belly slide &nbsp; <span class="key">Space</span>hop</div>
         <div><span class="key">Tab</span>scores</div>
       </div>
@@ -96,7 +101,7 @@ export class Hud {
   feed(killer: Penguin | undefined, victim: Penguin, cause: SplatCause) {
     const f = this.q('#feed');
     const k = killer ? `<span class="t${killer.team}">${esc(killer.name)}</span>` : '<span>Gravity</span>';
-    const icon = cause === 'bigball' ? 'flattened' : cause === 'turret' ? 'turret got' : cause === 'avalanche' ? 'buried' : 'splatted';
+    const icon = cause === 'bigball' ? 'flattened' : cause === 'turret' ? 'turret got' : cause === 'avalanche' ? 'buried' : cause === 'cocoa' ? 'melted' : 'splatted';
     const row = h(`<div class="row">${k}<span class="ic">${icon}</span><span class="t${victim.team}">${esc(victim.name)}</span></div>`);
     f.prepend(row);
     while (f.children.length > 5) f.lastElementChild!.remove();
@@ -163,6 +168,21 @@ export class Hud {
     this.q('#mitName').textContent = MITTEN_NAMES[me.mitten];
     this.el.querySelectorAll('.mitten .pip').forEach((p, i) => p.classList.toggle('on', i < me.mitten));
 
+    // the gun you're carrying: what it is, how full its tank is, and whether it's in your mittens or on your back
+    const gkey = `${me.gun}|${me.gunOut ? 1 : 0}`;
+    if (gkey !== this.lastGun) {
+      this.lastGun = gkey;
+      const card = this.q('#gun');
+      card.classList.toggle('hidden', !me.gun);
+      card.classList.toggle('cocoa', me.gun === 1);
+      card.classList.toggle('out', me.gunOut);
+      this.q('#gunName').textContent = GUN_NAMES[me.gun] ?? '';
+      this.q('#gunSwap').textContent = me.gunOut ? 'back to snowballs' : 'take it out';
+    }
+    if (me.gun) (this.q('#gunTank') as HTMLElement).style.width = `${Math.min(1, me.gunAmmo / gunAmmoMax(me.gun)) * 100}%`;
+    this.q('.chillfx').classList.toggle('on', me.alive && me.chill > 0.05);
+    (this.q('.chillfx') as HTMLElement).style.setProperty('--chill', String(Math.min(1, me.chill)));
+
     // charge ring
     const c = this.q('#charge');
     const len = 2 * Math.PI * 18;
@@ -183,7 +203,7 @@ export class Hud {
       const t = w.nearTurret(me);
       if (t) prompts.push(`Hold <span class="key">E</span>Load the turret (${t.ammo} shots left)`);
     }
-    if (me.alive && me.carried === 0 && w.phase === 'fight' && pile < 0) prompts.push(`Out of snowballs: hold <span class="key">F</span> to pack`);
+    if (me.alive && me.carried === 0 && w.phase === 'fight' && pile < 0 && !me.gunOut) prompts.push(`Out of snowballs: hold <span class="key">F</span> to pack`);
     if (aimOkHint) prompts.push(aimOkHint);
     const pr = this.q('#prompt');
     const html = prompts.map(p => `<div class="p">${p}</div>`).join('');

@@ -464,6 +464,15 @@ export class PenguinModel {
     }
     if (p.throwAnim > 0) { jaw = Math.max(jaw, 0.7); lid = LID_OPEN - 0.35; }
 
+    // a gun in the mittens (see GunsView): right flipper on the grip, left one under the barrel, shoulders squared to it
+    if (p.gunOut && (p.action === 'idle' || p.action === 'throw')) {
+      const pitch = Math.max(-0.7, Math.min(0.75, p.lookPitch));
+      this.arm('R', 0.55, -0.62 + pitch * 0.6, 1); this.elbow('R', 0.5);
+      this.arm('L', 0.5, -1, 0.3);
+      this.addRot('chest', 0, -0.22, 0);
+      lid = Math.min(lid, LID_OPEN - 0.3);
+    }
+
     // look up / down with the head
     if (p.action !== 'slide') this.addRot('head', p.lookPitch * 0.4, 0, 0);
 

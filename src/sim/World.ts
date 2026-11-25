@@ -6,6 +6,7 @@ import { MapDef, V3, Front, mulberry32 } from '../world/MapDef';
 import type { Mode } from '../world/Maps';
 import { CFG } from './config';
 import { boxGround, boxPush, pointInBoxes, slideY } from '../world/Playground';
+import { Guns, GUN_NONE } from './Guns';
 
 export type { Mode };
 
@@ -24,17 +25,18 @@ export interface PenguinInput {
   roll: boolean; // held: scoop up a new giant snowball in front of you
   turret: boolean; // held: scoop snow into a snowman turret at the aim point
   reward: number; // edge, consumed by the sim: 1..3 = use that splat-streak reward
+  gun: boolean; // held state: use the gun you picked up (if you have one) instead of throwing snowballs
   aim: V3 | null; // point under the crosshair
 }
 
 export const emptyInput = (): PenguinInput => ({
   moveX: 0, moveZ: 0, yaw: 0, pitch: 0, jump: false, slide: false, fire: false,
-  plow: false, pack: false, dig: false, build: false, use: false, roll: false, turret: false, reward: 0, aim: null,
+  plow: false, pack: false, dig: false, build: false, use: false, roll: false, turret: false, reward: 0, gun: false, aim: null,
 });
 
 export type Action = 'idle' | 'plow' | 'pack' | 'dig' | 'build' | 'charge' | 'throw' | 'slide' | 'down';
 export type Phase = 'build' | 'fight' | 'end';
-export type SplatCause = 'snowball' | 'bigball' | 'turret' | 'avalanche';
+export type SplatCause = 'snowball' | 'bigball' | 'turret' | 'avalanche' | 'cocoa';
 
 export type GameEvent =
   | { type: 'plow'; pid: number; x: number; y: number; z: number; fx: number; fz: number; mass: number }
@@ -73,6 +75,15 @@ export type GameEvent =
   | { type: 'sector'; sector: number; tickets: number } // Breakthrough: the attackers took this section (tickets = what they got for it)
   | { type: 'sectorOpen'; sector: number } // Breakthrough: the regroup is over, this section is on
   | { type: 'lastStand' } // Breakthrough: the attackers are out of tickets
+  | { type: 'gunSpawn'; gun: number; team: number; x: number; y: number; z: number } // a gun turned up on `team`'s pad
+  | { type: 'gunGrab'; pid: number; gun: number; x: number; y: number; z: number }
+  | { type: 'gunDrop'; pid: number; gun: number; x: number; y: number; z: number }
+  | { type: 'gunShot'; pid: number; gun: number; x: number; y: number; z: number; vx: number; vy: number; vz: number }
+  | { type: 'gunEmpty'; pid: number; gun: number }
+  | { type: 'soak'; pid: number; by: number; x: number; y: number; z: number; chill: number } // the Freeze Soaker hit `pid`
+  | { type: 'thaw'; pid: number; by: number } // hot chocolate warmed `pid` out of a chill
+  | { type: 'icePatch'; x: number; y: number; z: number }
+  | { type: 'slip'; pid: number }
   | { type: 'gameOver'; winner: number };
 
 export class Penguin {
@@ -129,6 +140,17 @@ export class Penguin {
   turretBlock = 0;
   /** where this penguin last went down (Conquest brings you back at the nearest flag you hold) */
   downX = 0; downZ = 0;
+  /** the gun this penguin picked up (see Guns.ts: 0 none, 1 Hot Chocolate Blaster, 2 Freeze Soaker) and what's left in its tank */
+  gun = GUN_NONE; gunAmmo = 0;
+  /** the gun is in its mittens right now (rather than slung on its back) */
+  gunOut = false;
+  gunCd = 0;
+  /** how soaked by the Freeze Soaker (0..1: slower the higher), and seconds before that starts wearing off */
+  chill = 0; chillT = 0;
+  /** hot chocolate soaked up so far toward losing a heart (0..1) */
+  heat = 0;
+  /** seconds left on its belly after slipping on an ice patch, and seconds before it can slip again */
+  slipT = 0; slipCd = 0;
 
   constructor(public id: number, public name: string, public team: number, public hat: string, public bot: boolean) {}
 }
@@ -222,6 +244,8 @@ export class World {
   turrets: Turret[] = [];
   points: CapturePoint[] = [];
   barrages: Barrage[] = [];
+  /** the guns: pads, pickups, squirts in flight and ice patches */
+  readonly guns: Guns = new Guns(this);
   readonly scoreToWin: number;
   readonly buildLen: number;
   readonly fightLen: number;
@@ -309,6 +333,7 @@ export class World {
     if (this.board.holder === p.id) { this.board.holder = -1; this.board.x = p.x; this.board.y = p.y + 0.6; this.board.z = p.z; this.board.vy = 4; p.surfing = false; }
     p.bot = false; p.name = name; p.hat = hat;
     p.splats = 0; p.downs = 0; p.mitten = 0;
+    p.gun = GUN_NONE; p.gunAmmo = 0;
     p.streak = 0; p.rewards = [0, 0, 0]; p.frenzyT = 0; p.turretSnow = 0; p.turretAt = null; p.turretBlock = 0;
     p.input = emptyInput();
     this.spawn(p);
@@ -389,6 +414,7 @@ export class World {
     p.alive = true; p.health = CFG.maxHealth; p.invuln = CFG.spawnProtect; p.sinceHit = 99;
     p.carried = 0; p.packProgress = 0; p.charge = 0; p.charging = false; p.sliding = false;
     p.action = 'idle';
+    this.guns.reset(p);
   }
 
   /**
@@ -418,6 +444,7 @@ export class World {
     for (const p of this.penguins) this.stepPenguin(p, dt);
     this.separatePenguins();
     this.stepSnowballs(dt);
+    this.guns.step(dt);
     this.stepBigBalls(dt);
     this.stepFlakes(dt);
     this.stepBoard(dt);
@@ -468,6 +495,7 @@ export class World {
     p.sinceHit += dt;
     p.frenzyT = Math.max(0, p.frenzyT - dt);
     const reward = inp.reward; inp.reward = 0;
+    this.guns.tick(p, dt);
 
     if (!p.alive) {
       p.action = 'down';
@@ -498,12 +526,13 @@ export class World {
       p.vy = Math.max(p.vy, 1.6);
       this.emit({ type: 'slideStart', pid: p.id });
     }
-    if (p.sliding && !p.onSlide && (inp.jump || (!inp.slide && p.grounded))) p.sliding = false;
+    // (a penguin that slipped on an ice patch stays on its belly until the slip is over)
+    if (p.sliding && !p.onSlide && p.slipT <= 0 && (inp.jump || (!inp.slide && p.grounded))) p.sliding = false;
 
     // what are the mittens doing?
     const busy = !p.sliding && p.grounded;
     let action: Action = p.sliding ? 'slide' : 'idle';
-    const canThrow = this.phase === 'fight' && p.carried > 0 && p.throwCd <= 0;
+    const canThrow = this.phase === 'fight' && p.carried > 0 && p.throwCd <= 0 && !p.gunOut; // gun out: the trigger sprays instead
     if (inp.fire && canThrow && !inp.plow) { p.charging = true; }
     if (p.charging) {
       if (inp.fire && p.carried > 0) {
@@ -527,12 +556,23 @@ export class World {
     p.action = action;
 
     // ── movement ──
-    const ice = this.isIce(p.x, p.z);
+    const patch = p.grounded && this.guns.onPatch(p.x, p.y, p.z);
+    const ice = this.isIce(p.x, p.z) || patch;
     p.onIce = ice;
+    const chilled = this.guns.speedMult(p); // soaked by a Freeze Soaker: everything is slower
+    if (patch && !p.sliding && !p.surfing && p.slipCd <= 0 && Math.hypot(p.vx, p.vz) > CFG.slipSpeed) {
+      // stepped on an ice patch: feet out from under you, and off you go on your belly
+      p.sliding = true; p.slideSlowT = 0;
+      p.slipT = CFG.slipTime; p.slipCd = CFG.slipAgain;
+      const sp = Math.hypot(p.vx, p.vz), k = Math.max(sp, 5.5) / sp;
+      p.vx *= k; p.vz *= k;
+      p.charging = false; p.charge = 0;
+      if (!this.predicting) this.emit({ type: 'slip', pid: p.id });
+    }
     if (p.sliding) {
       // steer by turning the velocity a little
       const sp = Math.hypot(p.vx, p.vz);
-      const steer = inp.moveX * CFG.slideSteer * dt;
+      const steer = inp.moveX * CFG.slideSteer * dt * (p.slipT > 0 ? 0.2 : 1);
       if (sp > 0.1 && steer !== 0) {
         const c = Math.cos(-steer), s = Math.sin(-steer);
         const nvx = p.vx * c - p.vz * s, nvz = p.vx * s + p.vz * c;
@@ -556,8 +596,8 @@ export class World {
           p.vx += (c.tx * sp - p.vx) * k; p.vz += (c.tz * sp - p.vz) * k;
         }
       }
-      const s3 = Math.hypot(p.vx, p.vz);
-      if (s3 > CFG.slideMaxSpeed) { p.vx *= CFG.slideMaxSpeed / s3; p.vz *= CFG.slideMaxSpeed / s3; }
+      const s3 = Math.hypot(p.vx, p.vz), slideMax = CFG.slideMaxSpeed * chilled;
+      if (s3 > slideMax) { p.vx *= slideMax / s3; p.vz *= slideMax / s3; }
       if (s3 < 1.2 && !p.onSlide) { p.slideSlowT += dt; if (p.slideSlowT > 0.5) p.sliding = false; } else p.slideSlowT = 0;
       p.yaw = Math.atan2(-p.vx, -p.vz);
     } else {
@@ -565,7 +605,9 @@ export class World {
       if (action === 'plow') speed = CFG.plowSpeed / (1 + p.plowLoad * 0.0004);
       else if (action === 'pack' || action === 'dig' || action === 'build') speed = CFG.busySpeed;
       else if (action === 'charge') speed = CFG.chargeSpeed;
+      else if (this.guns.spraying(p)) speed = CFG.gunMoveSpeed;
       if (p.surfing) speed *= CFG.surfSpeedMult;
+      speed *= chilled;
       const tx = wishX * speed, tz = wishZ * speed;
       let accel = p.grounded ? (ice ? 2.2 : 12) : 3;
       if (p.surfing) accel = p.grounded ? (ice ? 4 : CFG.surfAccel) : 2.5;
@@ -593,7 +635,7 @@ export class World {
     }
 
     if (inp.jump) {
-      if (p.grounded) { p.vy = CFG.jumpVel * (p.surfing ? 1.15 : 1); p.grounded = false; p.sliding = false; p.onSlide = false; this.emit({ type: 'jump', pid: p.id }); }
+      if (p.grounded && p.slipT <= 0) { p.vy = CFG.jumpVel * (p.surfing ? 1.15 : 1) * (0.6 + 0.4 * chilled); p.grounded = false; p.sliding = false; p.onSlide = false; this.emit({ type: 'jump', pid: p.id }); }
       inp.jump = false;
     }
 
@@ -623,6 +665,7 @@ export class World {
     if (action === 'build' && !turreting) this.doBuild(p, dt, fwdX, fwdZ); else { p.buildBlock = 0; p.slumping = false; }
     if (turreting) this.doTurret(p, dt, fwdX, fwdZ); else { p.turretBlock = 0; this.dropTurretSnow(p); }
     if (reward) this.useReward(p, reward - 1);
+    this.guns.use(p, dt);
     p.rollCd = Math.max(0, p.rollCd - dt);
     if (inp.roll && busy && !p.charging && p.rollCd <= 0) this.startBigBall(p, fwdX, fwdZ);
 
@@ -1133,6 +1176,7 @@ export class World {
     p.downX = p.x; p.downZ = p.z;
     p.frenzyT = 0;
     this.dropTurretSnow(p);
+    this.guns.drop(p);
     p.downT = this.mode === 'breakthrough' ? CFG.btRespawn[p.team] : CFG.respawnTime;
     p.downs++;
     // Breakthrough: every attacker who goes down costs the attackers a ticket
@@ -1146,7 +1190,7 @@ export class World {
       if (this.phase === 'fight' && this.mode === 'tdm') {
         this.scores[killer.team]++;
         // only splats you land yourself build a streak: turrets and Avalanches don't feed it
-        if (cause === 'snowball' || cause === 'bigball') this.addStreak(killer);
+        if (cause === 'snowball' || cause === 'bigball' || cause === 'cocoa') this.addStreak(killer);
       }
     }
     p.streak = 0;
@@ -1464,7 +1508,7 @@ export class World {
     return t;
   }
 
-  private hitTurret(t: Turret, by: number, x: number, y: number, z: number) {
+  hitTurret(t: Turret, by: number, x: number, y: number, z: number) {
     t.health--;
     this.emit({ type: 'turretHit', tid: t.id, by, x, y, z, health: t.health });
     if (t.health <= 0) this.destroyTurret(t, by);

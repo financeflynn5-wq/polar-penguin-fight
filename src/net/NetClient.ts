@@ -217,6 +217,7 @@ export class NetClient {
     this.reconciled = s.tick;
     w.phase = s.phase; // movement depends on the phase (build-phase line, no moving at the end)
     w.sector = Math.min(s.sector, Math.max(0, w.map.sectors.length - 1)); w.holdT = s.holdT; // ... and on Breakthrough's hold line
+    w.guns.patches = s.patches; // ... and on the ice patches under your feet
     const st = s.penguins.find(p => p.id === me.id);
     if (!st) return;
     while (this.history.length && this.history[0].seq <= s.ack) this.history.shift();
@@ -311,5 +312,9 @@ export class NetClient {
     const ba = a.board, bz = b.board;
     w.board.active = ba.active; w.board.holder = ba.holder;
     w.board.x = lerp(ba.x, bz.x, t); w.board.y = lerp(ba.y, bz.y, t); w.board.z = lerp(ba.z, bz.z, t); w.board.yaw = lerpA(ba.yaw, bz.yaw, t);
+
+    // guns waiting to be picked up; the ice patches come from the newest snapshot because your own penguin can slip on them
+    w.guns.crates = a.crates;
+    w.guns.patches = now.patches;
   }
 }
