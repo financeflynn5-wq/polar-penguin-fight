@@ -1,0 +1,51 @@
+# Blender assets
+
+The penguin and every hat are built by Python scripts that drive Blender. Nothing is hand-edited: change a script,
+run it again, and the `.glb` files in `src/assets/models/` are rebuilt.
+
+## Setup
+
+    pip install bpy pillow        # Blender as a Python module (Blender 5.x, Python 3.13)
+
+## Rebuild
+
+    python tools/blender/penguin.py                 # → src/assets/models/penguin.glb   (about 4 minutes)
+    python tools/blender/hats.py                    # → src/assets/models/hats/*.glb    (about 3 minutes)
+    python tools/blender/hats.py beanie crown       # just these hats
+
+Useful options:
+
+    penguin.py --size=1024        quicker draft (the real one is 2048)
+    penguin.py --shapes           grey renders of the sculpt only, no baking
+    hats.py --size=512 --ao=16    quick draft
+
+Baked textures are also written to `tools/blender/out/` (not checked in).
+
+## How it works
+
+- `lib/geom.py`: shapes are written as maths (smooth blends of ellipsoids, capsules and so on) and skinned with clean
+  quad grids. Every grid is its own rectangle in the texture, so nothing has to be unwrapped by hand.
+- `lib/nodes.py`, `lib/looks.py`: materials are written as small formulas (knit stitches, quilting, feathers, scales).
+- `lib/bake.py`: packs the texture atlas and bakes each look into colour, normal and
+  occlusion/roughness/metal textures, so the game only draws ordinary textured meshes.
+- `lib/rig.py`: the skeleton and skin weights. Every bone stands straight up, so in the game a joint's rotation is
+  simply "how far from the rest pose".
+- `lib/export.py`: writes the GLB with WebP textures.
+
+## The penguin
+
+One mesh, five materials: `Penguin` (feathers, beak, feet), `Eye`, `TeamJacket`, `TeamScarf` and `Mitten`. The last
+three are baked in neutral greys and tinted in the game, which is how the two teams and the mitten upgrades get
+their colours. The joints are listed in `bones()` in `penguin.py`; `src/render/PenguinModel.ts` animates them.
+
+## Hats
+
+Each hat is modelled around the penguin's head and saved with its origin at the head's `hat` joint. Parts named
+`spin…` turn (the propeller) and parts named `jiggle…` wobble on a spring (pom-poms, the fish's tail).
+To add a hat: write a `hat_<name>()` function in `hats.py`, add it to `HATS`, and add the name to `HATS` in
+`src/sim/World.ts`.
+
+## Looking at the result
+
+`npm run dev`, then open `/tools/viewer/`. It shows the real in-game model under the game's lighting.
+`node tools/viewer/shots.mjs <folder> [turn poses teams hats hatclose]` saves screenshots (needs Playwright).

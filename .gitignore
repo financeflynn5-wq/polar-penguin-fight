@@ -3,3 +3,5 @@ dist
 .DS_Store
 *.log
 server-dist
+__pycache__
+tools/blender/out

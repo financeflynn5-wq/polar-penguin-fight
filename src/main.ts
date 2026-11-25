@@ -4,6 +4,7 @@ import { HATS, World, Mode } from './sim/World';
 import { CFG } from './sim/config';
 import { TEAM_NAMES } from './render/Environment';
 import { NetClient, serverStatus, serverUrl } from './net/NetClient';
+import { loadAssets } from './render/Assets';
 
 const HAT_LABELS: Record<string, [string, string]> = {
   none: ['—', 'None'], beanie: ['🧶', 'Beanie'], tophat: ['🎩', 'Top hat'], propeller: ['🌀', 'Propeller'], viking: ['🪓', 'Viking'],
@@ -16,6 +17,12 @@ const store = {
 };
 
 const app = document.getElementById('app')!;
+// the penguin and hat models load first: everything in the game wears them
+{
+  const bar = document.querySelector<HTMLElement>('#boot .fill');
+  await loadAssets(f => { if (bar) bar.style.width = `${Math.round(f * 100)}%`; });
+  document.getElementById('boot')?.remove();
+}
 const game = new Game(app);
 const params = new URLSearchParams(location.search);
 
