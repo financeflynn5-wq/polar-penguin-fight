@@ -31,6 +31,7 @@ const DT = 1 / TICK_HZ;
 const MIME: Record<string, string> = {
   '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png',
   '.jpg': 'image/jpeg', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.mp3': 'audio/mpeg',
+  '.webp': 'image/webp', '.glb': 'model/gltf-binary', // the Blender-made models and their textures
 };
 
 const rooms: Room[] = [];

@@ -169,3 +169,10 @@ canvas { display: block; }
 .online { min-height: 18px; font: 700 13px 'Nunito'; color: #bfe6ff; text-align: center; }
 .panel .next { font: 700 15px 'Nunito'; color: #bfe6ff; }
 .btn:disabled { opacity: .6; cursor: progress; }
+
+/* ── loading the models ── */
+#boot { position: fixed; inset: 0; z-index: 50; display: grid; place-content: center; justify-items: center; gap: 14px; background: linear-gradient(#0d2a4a, #17497c); color: #fff; font-family: 'Fredoka', sans-serif; }
+#boot .name { font-size: 34px; font-weight: 700; letter-spacing: .5px; }
+#boot .bar { width: 260px; height: 12px; border-radius: 8px; background: rgba(255,255,255,.16); overflow: hidden; }
+#boot .fill { width: 0; height: 100%; border-radius: 8px; background: #8fd3ff; transition: width .15s; }
+#boot .sub { font: 600 14px 'Nunito', sans-serif; opacity: .8; }
