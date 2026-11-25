@@ -1,3 +1,4 @@
+import { setPropAnisotropy } from '../render/PropMaterials';
 import * as THREE from 'three';
 import { MapDef } from '../world/MapDef';
 import { buildMap, MapId, mapForMode } from '../world/Maps';
@@ -85,6 +86,7 @@ export class Game {
 
   constructor(container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    setPropAnisotropy(this.renderer.capabilities.getMaxAnisotropy());
     try { if (localStorage.getItem('ppf.quality') === 'low') this.quality = 'low'; } catch { /* private mode */ }
     setPenguinQuality(this.quality === 'low');
     this.renderer.setPixelRatio(this.pixelRatio());
@@ -200,7 +202,8 @@ export class Game {
     this.bots.clear();
     let rndSeed = 1;
     const rnd = () => { rndSeed = (rndSeed * 16807) % 2147483647; return rndSeed / 2147483647; };
-    const slots = [1, 0]; // the player takes the first job slot on team 0
+    const slots = [0, 0];
+    slots[this.world.player.team] = 1; // the player takes the first job slot on their team
     this.world.penguins.forEach((p, i) => {
       const m = new PenguinModel(p.team, p.hat, p.bot ? p.name : p.name, true);
       this.scene.add(m.root);
@@ -216,7 +219,8 @@ export class Game {
     this.countdownLast = -1;
     this.audio.unlock();
     this.audio.whistle();
-    if (this.world.mode === 'conquest') this.hud.banner('CONQUEST', `${this.world.buildLen} seconds to fortify flag A: build walls, pack snowballs, hold T for a turret`, 4.5);
+    if (this.world.mode === 'breakthrough') this.hud.banner('BREAKTHROUGH', this.breakthroughBrief(this.world.player.team), 5);
+    else if (this.world.mode === 'conquest') this.hud.banner('CONQUEST', `${this.world.buildLen} seconds to fortify flag A: build walls, pack snowballs, hold T for a turret`, 4.5);
     else this.hud.banner('BUILD PHASE', `${this.world.buildLen} seconds to build your fort and pack snowballs!`, 3.5);
     this.rewardQueued = 0;
     this.input.lock();
@@ -247,12 +251,18 @@ export class Game {
     this.audio.whistle();
     this.world.phase = info.phase;
     const team = TEAM_NAMES[me.team];
-    const sub = info.phase === 'build' ? (info.mode === 'conquest' ? 'Fortify your flag: build walls, pack snowballs, hold T for a turret' : 'Build your fort and pack snowballs: the fight starts soon!')
+    const sub = info.phase === 'build' ? (info.mode === 'breakthrough' ? this.breakthroughBrief(me.team) : info.mode === 'conquest' ? 'Fortify your flag: build walls, pack snowballs, hold T for a turret' : 'Build your fort and pack snowballs: the fight starts soon!')
       : info.phase === 'fight' ? 'The fight is on! Grab snowballs from your stockpile with E' : 'This match is wrapping up: the next one starts in a moment';
     this.hud.banner(first ? `YOU'RE ON ${team.toUpperCase()}` : 'NEW MATCH', sub, 3.5);
     this.hooks?.onMatchStart?.();
     if (first) this.input.lock();
     else if (!this.input.locked) this.setPaused(true);
+  }
+
+  private breakthroughBrief(team: number) {
+    const s = this.world!.buildLen;
+    return team === 0 ? `You attack! ${s} seconds to pack snowballs, then take rings A and B on the Flats`
+      : `You defend! ${s} seconds to dig in at rings A and B: build walls, hold T for a turret`;
   }
 
   /** Make sure every penguin has a model that matches its hat and name (online, people join and leave mid-match). */
@@ -410,7 +420,7 @@ export class Game {
     // build-phase countdown
     if (w.phase === 'build') {
       const s = Math.ceil(w.phaseT);
-      if (s <= 5 && s !== this.countdownLast && s > 0) { this.countdownLast = s; this.hud!.banner(String(s), w.mode === 'conquest' ? 'Get ready to take the flags!' : 'Get ready to throw!', 0.9); this.audio.countdown(false); }
+      if (s <= 5 && s !== this.countdownLast && s > 0) { this.countdownLast = s; this.hud!.banner(String(s), w.mode === 'breakthrough' ? (me.team === 0 ? 'Get ready to charge!' : 'Here they come!') : w.mode === 'conquest' ? 'Get ready to take the flags!' : 'Get ready to throw!', 0.9); this.audio.countdown(false); }
     }
 
     // HUD
@@ -807,13 +817,42 @@ export class Game {
         const pt = w.points[e.point];
         P.sparkle(pt.x, pt.y + 5, pt.z, 80, e.team === 0 ? 0.3 : 1.0, e.team === 0 ? 0.6 : 0.5, e.team === 0 ? 1.0 : 0.2);
         A.flake(pt.x, pt.y, pt.z);
-        if (e.team === me.team) H.banner(`FLAG ${pt.name} IS OURS!`, 'Hold it to keep scoring', 2.2);
+        if (w.mode === 'breakthrough') {
+          const more = w.activePoints().some(i => w.points[i].owner !== 0);
+          if (e.team === 0) H.banner(me.team === 0 ? `${pt.name} IS OURS!` : `WE LOST ${pt.name}!`, me.team === 0 ? (more ? 'Hold it, and take the other one' : 'That\'s the whole section!') : (more ? 'Take it back before they get the other one' : 'Fall back!'), 2.4);
+          else H.banner(me.team === 1 ? `${pt.name} IS OURS AGAIN!` : `THEY TOOK ${pt.name} BACK!`, me.team === 1 ? 'Keep them out of it' : 'Get back in that ring', 2.2);
+        } else if (e.team === me.team) H.banner(`FLAG ${pt.name} IS OURS!`, 'Hold it to keep scoring', 2.2);
         else H.banner(`${TEAM_NAMES[e.team].toUpperCase()} TOOK ${pt.name}!`, 'Take it back', 2.2);
+        break;
+      }
+      case 'sector': {
+        // Breakthrough: a whole section fell (the last one ends the match, and the end screen says so)
+        const next = w.map.sectors[e.sector + 1];
+        if (!next) break;
+        const name = w.map.sectors[e.sector].name.toUpperCase();
+        if (me.team === 0) H.banner(`${name} IS OURS!`, `+${e.tickets} tickets. Regroup at the new camp: ${next.name} opens in ${CFG.btRegroup} seconds`, 4.5);
+        else H.banner(`WE LOST ${name}!`, `Fall back to ${next.name} and dig in: they come in ${CFG.btRegroup} seconds`, 4.5);
+        A.whistle();
+        break;
+      }
+      case 'sectorOpen': {
+        const sec = w.map.sectors[e.sector];
+        const rings = sec.points.length > 1 ? 'rings A and B' : 'ring A';
+        if (me.team === 0) H.banner('GO GO GO!', `Take ${rings} in ${sec.name}`, 2.6);
+        else H.banner('HERE THEY COME!', `Hold ${rings} in ${sec.name}`, 2.6);
+        A.whistle();
+        break;
+      }
+      case 'lastStand': {
+        if (me.team === 0) H.banner('LAST STAND!', `No tickets left, so nobody comes back. Take the section in ${CFG.btLastStand} seconds or it's over`, 4.5);
+        else H.banner('THEY\'RE OUT OF TICKETS!', 'Splat the ones still standing and it\'s over', 4);
+        A.countdown(false);
         break;
       }
       case 'neutral': {
         const pt = w.points[e.point];
-        H.toast(e.team === me.team ? `We lost flag ${pt.name}!` : `Flag ${pt.name} is up for grabs!`, 2.2);
+        const what = w.mode === 'breakthrough' ? 'ring' : 'flag';
+        H.toast(e.team === me.team ? `We're losing ${what} ${pt.name}!` : `${what === 'ring' ? 'Ring' : 'Flag'} ${pt.name} is up for grabs!`, 2.2);
         if (e.team === me.team) A.noSnow();
         break;
       }
@@ -833,7 +872,10 @@ export class Game {
       case 'slideStart': { const p = w.penguin(e.pid)!; A.slide(p.x, p.y, p.z); P.burst(p.x, p.y, p.z, 12, 2, 0.8); break; }
       case 'phase':
         if (e.phase === 'fight') {
-          if (w.mode === 'conquest') H.banner('TAKE THE FLAGS!', `Stand in a flag's ring to take it. First to ${w.scoreToWin} points wins!`, 3);
+          if (w.mode === 'breakthrough') {
+            if (me.team === 0) H.banner('BREAK THROUGH!', 'Stand in rings A and B to take them. Every splat costs your team a ticket', 3.2);
+            else H.banner('HOLD THE LINE!', 'Keep them out of rings A and B until their tickets run out', 3.2);
+          } else if (w.mode === 'conquest') H.banner('TAKE THE FLAGS!', `Stand in a flag's ring to take it. First to ${w.scoreToWin} points wins!`, 3);
           else H.banner('FIGHT!', 'Splat the other team. First to ' + w.scoreToWin + ' wins!', 2.2);
           A.whistle();
         }

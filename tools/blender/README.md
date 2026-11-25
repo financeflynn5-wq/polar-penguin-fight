@@ -49,3 +49,7 @@ To add a hat: write a `hat_<name>()` function in `hats.py`, add it to `HATS`, an
 
 `npm run dev`, then open `/tools/viewer/`. It shows the real in-game model under the game's lighting.
 `node tools/viewer/shots.mjs <folder> [turn poses teams hats hatclose]` saves screenshots (needs Playwright).
+
+## Map props
+
+The houses, ruins, candy canes, cargo sled and ice blocks on the maps are built by `props.py`, `houses.py`, `kit.py` and `textures.py` in this folder, into `public/models/` and `public/textures/`. They are described under "Props (Blender)" in the README at the top of the repository.

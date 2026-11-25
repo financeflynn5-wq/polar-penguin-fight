@@ -24,7 +24,7 @@ export interface NetHooks {
   onClose(reason: string): void;
 }
 
-export interface JoinRequest { name: string; hat: string; size: number; mode: Mode; }
+export interface JoinRequest { name: string; hat: string; size: number; mode: Mode; /** Breakthrough: the side you'd like (0 attack, 1 defend) */ team?: number; }
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 const lerpA = (a: number, b: number, t: number) => { let d = b - a; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; return a + d * t; };
@@ -216,6 +216,7 @@ export class NetClient {
     if (s.tick === this.reconciled) return;
     this.reconciled = s.tick;
     w.phase = s.phase; // movement depends on the phase (build-phase line, no moving at the end)
+    w.sector = Math.min(s.sector, Math.max(0, w.map.sectors.length - 1)); w.holdT = s.holdT; // ... and on Breakthrough's hold line
     const st = s.penguins.find(p => p.id === me.id);
     if (!st) return;
     while (this.history.length && this.history[0].seq <= s.ack) this.history.shift();
@@ -247,7 +248,10 @@ export class NetClient {
     w.scores[0] = a.scores[0]; w.scores[1] = a.scores[1];
     w.piles[0] = a.piles[0]; w.piles[1] = a.piles[1];
     w.winner = a.winner;
-    if (this.latest) w.phase = this.latest.phase;
+    w.lastStandT = a.lastStandT;
+    // what your own penguin's movement depends on comes from the newest snapshot, so the prediction agrees with the server
+    const now = this.latest ?? a;
+    w.phase = now.phase; w.sector = Math.min(now.sector, Math.max(0, w.map.sectors.length - 1)); w.holdT = now.holdT;
 
     const bp = new Map(b.penguins.map(s => [s.id, s]));
     for (const sa of a.penguins) {

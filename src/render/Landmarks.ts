@@ -1,8 +1,10 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MapDef, mulberry32 } from '../world/MapDef';
 import { IceShard, House } from '../world/Landmarks';
 import { seeThrough } from './Environment';
+import { propMaterial } from './PropMaterials';
 
 const tmpM = new THREE.Matrix4(), tmpQ = new THREE.Quaternion(), tmpV = new THREE.Vector3(), tmpS = new THREE.Vector3(1, 1, 1);
 
@@ -198,17 +200,57 @@ function buildHouse(h: House) {
     mint.position.set(s * (h.hx + 0.03), h.wallH + 0.72, 0);
     g.add(mint);
   }
-  // warm light spilling out of the doors and windows
-  const glow = new THREE.PointLight(0xffc27a, 9, 9, 1.6);
-  glow.position.set(0, 1.9, 0);
-  g.add(glow);
-
   g.traverse(o => { if ((o as THREE.Mesh).isMesh) { o.castShadow = true; o.receiveShadow = true; } });
   g.position.set(h.x, h.y, h.z);
+  g.rotation.y = -h.rot;
   return g;
 }
 
-/** Ice pillars, icebergs and gingerbread houses. */
+// ───────────────────────── models made in Blender ─────────────────────────
+
+/** One mesh of a model: its geometry and the name of the material it was given in Blender. */
+interface ModelPart { geo: THREE.BufferGeometry; mat: string; }
+const models = new Map<string, Promise<ModelPart[]>>();
+
+/** Load public/models/<name>.glb once. The parts come back with their transforms baked in. */
+function loadModel(name: string): Promise<ModelPart[]> {
+  let p = models.get(name);
+  if (!p) {
+    p = new GLTFLoader().loadAsync(`${import.meta.env.BASE_URL}models/${name}.glb`).then(gltf => {
+      const parts: ModelPart[] = [];
+      gltf.scene.updateMatrixWorld(true);
+      gltf.scene.traverse(o => {
+        const m = o as THREE.Mesh;
+        if (!m.isMesh) return;
+        const geo = m.geometry.clone().applyMatrix4(m.matrixWorld);
+        parts.push({ geo, mat: (m.material as THREE.Material).name });
+      });
+      return parts;
+    });
+    models.set(name, p);
+  }
+  return p;
+}
+
+interface Spot { x: number; y: number; z: number; rot: number; }
+
+const NO_SHADOW = new Set(['glow', 'icing', 'gumdrop', 'snow', 'rope', 'ribbon', 'mint', 'metal']);
+
+/** Every copy of one model on the map, drawn instanced: one draw call per material however many there are. */
+async function placeModel(group: THREE.Group, name: string, spots: Spot[]) {
+  const parts = await loadModel(name);
+  const q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0), one = new THREE.Vector3(1, 1, 1), at = new THREE.Vector3();
+  for (const part of parts) {
+    const im = new THREE.InstancedMesh(part.geo, propMaterial(part.mat), spots.length);
+    spots.forEach((s, i) => im.setMatrixAt(i, tmpM.compose(at.set(s.x, s.y, s.z), q.setFromAxisAngle(up, -s.rot), one)));
+    im.instanceMatrix.needsUpdate = true;
+    im.castShadow = !NO_SHADOW.has(part.mat); im.receiveShadow = true; // the trimmings are too small for their shadows to show
+    im.computeBoundingSphere();
+    group.add(im);
+  }
+}
+
+/** Ice pillars, icebergs, houses, and the smaller props (ruins, candy canes, sleds, ice blocks). */
 export class LandmarksView {
   readonly group = new THREE.Group();
 
@@ -233,6 +275,23 @@ export class LandmarksView {
       this.group.add(iceMesh);
       this.group.add(merged(snow, seeThrough(new THREE.MeshStandardMaterial({ color: 0xf6faff, roughness: 0.85 }))));
     }
-    for (const h of map.houses) this.group.add(buildHouse(h));
+    // houses and props are Blender models (tools/blender), one model per kind, instanced
+    const kinds = new Map<string, Spot[]>();
+    const put = (kind: string, s: Spot) => { const l = kinds.get(kind); if (l) l.push(s); else kinds.set(kind, [s]); };
+    for (const h of map.houses) put(h.style, h);
+    for (const p of map.props) put(p.kind, p);
+    for (const [kind, spots] of kinds) {
+      placeModel(this.group, kind, spots).catch(err => {
+        console.error(`model ${kind} did not load`, err);
+        // a gingerbread house can still be drawn the old way
+        if (kind === 'gingerbread') for (const h of map.houses) if (h.style === kind) this.group.add(buildHouse(h));
+      });
+    }
+    // warm light spilling out of the doors and windows (only where there are a couple of houses: lights cost every pixel)
+    if (map.houses.length <= 2) for (const h of map.houses) {
+      const glow = new THREE.PointLight(0xffc27a, 9, 9, 1.6);
+      glow.position.set(h.x, h.y + 1.9, h.z);
+      this.group.add(glow);
+    }
   }
 }

@@ -15,20 +15,23 @@ export class Hud {
   private lastCarried = -1;
   private showBoard = false;
   private conquest: boolean;
+  private bt: boolean;
   private lastStreak = '';
   private lastPoints = '';
 
   constructor(w: World) {
     const conquest = this.conquest = w.mode === 'conquest';
+    const bt = this.bt = w.mode === 'breakthrough';
+    const flags = conquest || bt;
     this.el = h(`<div class="ui">
       <div class="frost"></div>
       <div class="splatfx"></div>
       <div class="score">
-        <div class="team t0" id="s0">0</div>
-        <div class="mid"><div class="clock" id="clock">1:00</div><div class="phase" id="phase">Build phase</div><div class="goal">first to ${w.scoreToWin}</div></div>
-        <div class="team t1" id="s1">0</div>
+        <div class="team t0"><span id="s0">0</span><small>${bt ? 'tickets' : ''}</small></div>
+        <div class="mid"><div class="clock" id="clock">1:00</div><div class="phase" id="phase">Build phase</div><div class="goal" id="goal">first to ${w.scoreToWin}</div></div>
+        <div class="team t1"><span id="s1">0</span><small>${bt ? 'sections left' : ''}</small></div>
       </div>
-      ${conquest ? '<div class="points" id="points"></div>' : ''}
+      ${flags ? '<div class="points" id="points"></div>' : ''}
       <div class="feed" id="feed"></div>
       <div class="crosshair" id="cross">
         <svg viewBox="0 0 46 46"><circle cx="23" cy="23" r="18" fill="none" stroke="rgba(255,255,255,.25)" stroke-width="3"/>
@@ -41,7 +44,7 @@ export class Hud {
       <div class="toast" id="toast"></div>
       <div class="prompt" id="prompt"></div>
       <div class="status">
-        ${conquest ? '' : `<div class="card streak"><div class="label">Splat streak <b id="streakN">0</b></div><div class="rewards" id="rewards">${
+        ${flags ? '' : `<div class="card streak"><div class="label">Splat streak <b id="streakN">0</b></div><div class="rewards" id="rewards">${
           REWARD_NAMES.map((n, i) => `<div class="rw" data-i="${i}"><span class="key">${i + 1}</span><span class="nm">${n}</span><span class="at">${CFG.streakAt[i]}</span></div>`).join('')}</div></div>`}
         <div class="card"><div class="label">Mittens</div><div class="mitten"><span id="mitName">Wool Mittens</span><span class="pip"></span><span class="pip"></span><span class="pip"></span></div></div>
         <div class="card"><div class="label">Health</div><div class="hearts" id="hearts"></div></div>
@@ -54,7 +57,7 @@ export class Hud {
         <div><span class="key">R</span>build (sweep to draw, hold to stack)</div>
         <div><span class="key">Q</span>dig &nbsp; <span class="key">G</span>giant snowball</div>
         <div>hold <span class="key">T</span>build a turret (lots of snow)</div>
-        ${conquest ? '' : '<div><span class="key">1</span><span class="key">2</span><span class="key">3</span>streak rewards</div>'}
+        ${flags ? '' : '<div><span class="key">1</span><span class="key">2</span><span class="key">3</span>streak rewards</div>'}
         <div><span class="key">E</span>grab &nbsp;·&nbsp; hold <span class="key">E</span>stash</div>
         <div><span class="key">Shift</span>belly slide &nbsp; <span class="key">Space</span>hop</div>
         <div><span class="key">Tab</span>scores</div>
@@ -106,14 +109,24 @@ export class Hud {
     this.q('#s0').textContent = String(w.scores[0]);
     this.q('#s1').textContent = String(w.scores[1]);
     this.q('#clock').textContent = w.phase === 'end' ? '0:00' : fmt(w.phaseT);
-    this.q('#phase').textContent = w.phase === 'build' ? 'Build phase' : w.phase === 'fight' ? (this.conquest ? 'Conquest' : 'Team splat-match') : 'Match over';
+    const fightName = this.conquest ? 'Conquest' : !this.bt ? 'Team splat-match'
+      : w.holdT > 0 ? `Regroup ${Math.ceil(w.holdT)}s` : w.lastStandT >= 0 ? `Last stand ${Math.ceil(w.lastStandT)}s` : 'Breakthrough';
+    this.q('#phase').textContent = w.phase === 'build' ? 'Build phase' : w.phase === 'fight' ? fightName : 'Match over';
+    if (this.bt) {
+      const goal = `${w.map.sectors[w.sector].name} · ${w.sector + 1} of ${w.map.sectors.length}`;
+      const g = this.q('#goal');
+      if (g.textContent !== goal) g.textContent = goal;
+      this.q('#phase').classList.toggle('warn', w.phase === 'fight' && w.lastStandT >= 0 && w.holdT <= 0);
+    }
 
-    if (this.conquest) {
+    if (this.conquest || this.bt) {
       // the flags: owner colour, a ring that fills as it's taken, and a blink while both teams are on it
-      const key = w.points.map(p => `${p.owner},${Math.round(p.cap * 30)},${p.n0 > 0 && p.n1 > 0 ? 1 : 0}`).join('|');
+      // (Breakthrough shows the objectives of the section in play)
+      const pts = this.bt ? w.activePoints().map(i => w.points[i]) : w.points;
+      const key = pts.map(p => `${p.id},${p.owner},${Math.round(p.cap * 30)},${p.n0 > 0 && p.n1 > 0 ? 1 : 0}`).join('|');
       if (key !== this.lastPoints) {
         this.lastPoints = key;
-        this.q('#points').innerHTML = w.points.map(p => {
+        this.q('#points').innerHTML = pts.map(p => {
           const side = p.cap < 0 ? 0 : 1, amt = Math.abs(p.cap), col = side === 0 ? '#59a8ff' : '#ff9a5c';
           const ring = amt > 0.01 ? `background: conic-gradient(${col} ${amt * 360}deg, rgba(255,255,255,.16) 0)` : '';
           const mine = p.owner === me.team ? ' mine' : '';
@@ -181,7 +194,8 @@ export class Hud {
     down.classList.toggle('hidden', me.alive || w.phase === 'end');
     if (!me.alive) {
       const k = w.penguin(me.lastHitBy);
-      this.q('#downSmall').textContent = `${k ? `${k.name} got you. ` : ''}Back to base in ${Math.max(0, me.downT).toFixed(1)}s`;
+      const out = this.bt && me.team === 0 && w.phase === 'fight' && w.scores[0] <= 0;
+      this.q('#downSmall').textContent = `${k ? `${k.name} got you. ` : ''}${out ? 'No tickets left: you\'re out unless your team takes the section' : `Back in ${Math.max(0, me.downT).toFixed(1)}s`}`;
     }
     this.q('.frost').classList.toggle('on', me.alive && me.health === 1);
 
@@ -198,7 +212,7 @@ export class Hud {
     const cols = [0, 1].map(t => {
       const ps = w.penguins.filter(p => p.team === t).sort((a, b) => b.splats - a.splats || a.downs - b.downs);
       const rows = ps.map(p => `<div class="r ${p === me ? 'me' : ''}"><span>${esc(p.name)}${p.bot ? '' : ' ★'}</span><span>${p.splats}</span><span>${p.downs}</span></div>`).join('');
-      return `<div class="col"><h3 style="color:${t === 0 ? '#8fc6ff' : '#ffb48a'}">${t === 0 ? 'Team Blizzard' : 'Team Sunrise'} · ${w.scores[t]}</h3>
+      return `<div class="col"><h3 style="color:${t === 0 ? '#8fc6ff' : '#ffb48a'}">${t === 0 ? 'Team Blizzard' : 'Team Sunrise'} · ${w.scores[t]}${this.bt ? (t === 0 ? ' tickets' : w.scores[t] === 1 ? ' section left' : ' sections left') : ''}</h3>
         <div class="r hd"><span>Penguin</span><span>Splats</span><span>Downs</span></div>${rows}</div>`;
     }).join('');
     const b = this.q('#board');

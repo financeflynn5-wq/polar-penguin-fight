@@ -81,8 +81,8 @@ export class Props {
   private bigGeo = lumpySnowGeometry(1, 4, 0.035);
   private bigMat = new THREE.MeshStandardMaterial({ color: 0xf7faff, roughness: 0.85 });
   private bigMeshes = new Map<number, THREE.Mesh>();
-  private piles: THREE.InstancedMesh[] = [];
-  private pileLabels: { sprite: THREE.Sprite; draw: (t: string) => void; last: number }[] = [];
+  /** one heap of snowballs and a count per stockpile spot (a team's spots all show the same shared pile) */
+  private piles: { team: number; sector: number; ring: THREE.Mesh | null; x: number; y: number; z: number; im: THREE.InstancedMesh; sprite: THREE.Sprite; draw: (t: string) => void; last: number }[] = [];
   private flakeMeshes = new Map<number, THREE.Group>();
   private flakeProto: THREE.Group;
   private barrier: THREE.Mesh;
@@ -102,19 +102,32 @@ export class Props {
 
     // stockpiles: pyramids of snowballs + a count label
     const pileGeo = lumpySnowGeometry(0.17, 1, 0.08);
-    for (const b of map.bases) {
+    // Breakthrough: every camp has its own spots, and only the section in play shows them (with a team-coloured ring,
+    // since the camp in the middle changes hands)
+    const spots = map.sectors.length
+      ? map.sectors.flatMap((s, sector) => s.fronts.flatMap((f, team) => f.stockpiles.map(sp => ({ team, sp, sector }))))
+      : map.bases.flatMap(b => b.stockpiles.map(sp => ({ team: b.team, sp, sector: -1 })));
+    for (const { team, sp, sector } of spots) {
+      const b = { team };
+      let ring: THREE.Mesh | null = null;
+      if (sector >= 0) {
+        ring = new THREE.Mesh(new THREE.RingGeometry(1.7, 2.0, 48), new THREE.MeshBasicMaterial({ color: TEAM_COLORS[team], transparent: true, opacity: 0.6, depthWrite: false }));
+        ring.rotation.x = -Math.PI / 2;
+        ring.position.set(sp.x, sp.y + 0.08, sp.z);
+        ring.renderOrder = 2;
+        this.group.add(ring);
+      }
       const im = new THREE.InstancedMesh(pileGeo, snowballMat, 60);
       im.castShadow = true; im.receiveShadow = true;
       im.count = 0;
-      im.position.set(b.stockpile.x, b.stockpile.y, b.stockpile.z);
+      im.position.set(sp.x, sp.y, sp.z);
       this.group.add(im);
-      this.piles.push(im);
       const label = textSprite('0', b.team === 0 ? '#9fd0ff' : '#ffc29a', 1.0);
-      label.sprite.position.set(b.stockpile.x, b.stockpile.y + 2.2, b.stockpile.z);
+      label.sprite.position.set(sp.x, sp.y + 2.2, sp.z);
       label.sprite.visible = false;
       (label.sprite.material as THREE.SpriteMaterial).depthTest = true;
       this.group.add(label.sprite);
-      this.pileLabels.push({ ...label, last: -1 });
+      this.piles.push({ team: b.team, sector, ring, x: sp.x, y: sp.y, z: sp.z, im, ...label, last: -1 });
     }
 
     // snowflake pickup: a glowing six-armed crystal
@@ -230,10 +243,14 @@ export class Props {
     for (const [id, m] of this.bigMeshes) if (!seen.has(id)) { this.group.remove(m); this.bigMeshes.delete(id); }
 
     // stockpiles
-    for (let t = 0; t < 2; t++) {
-      const count = w.piles[t];
+    for (const pile of this.piles) {
+      const here = pile.sector < 0 || pile.sector === w.sector;
+      pile.im.visible = here;
+      if (pile.ring) pile.ring.visible = here;
+      if (!here) { pile.sprite.visible = false; continue; }
+      const count = w.piles[pile.team];
       const show = Math.min(60, count);
-      const im = this.piles[t];
+      const im = pile.im;
       if (im.count !== show) {
         let i = 0;
         // stack in rings: big bottom layer, smaller on top
@@ -250,10 +267,9 @@ export class Props {
         im.count = show;
         im.instanceMatrix.needsUpdate = true;
       }
-      const lab = this.pileLabels[t];
-      lab.sprite.visible = true;
-      if (lab.last !== count) { lab.draw(String(count)); lab.last = count; }
-      lab.sprite.position.y = this.map.bases[t].stockpile.y + 1.4 + Math.min(1.5, show * 0.03) + Math.sin(time * 2) * 0.05;
+      pile.sprite.visible = true;
+      if (pile.last !== count) { pile.draw(String(count)); pile.last = count; }
+      pile.sprite.position.y = pile.y + 1.4 + Math.min(1.5, show * 0.03) + Math.sin(time * 2) * 0.05;
     }
 
     // snowflakes
@@ -279,7 +295,9 @@ export class Props {
     }
 
     // build-phase barrier
-    this.barrier.visible = w.phase === 'build';
+    const line = w.holdLine();
+    this.barrier.visible = line !== null;
+    if (line !== null) this.barrier.position.x = line;
     this.barrierMat.uniforms.uTime.value = time;
   }
 }

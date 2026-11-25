@@ -1,7 +1,8 @@
 // The online wire format, shared by the game server and the browser. No Three.js and no DOM.
 //
 // Browser → server: small JSON text messages.
-//   { t: 'join', v, name, hat, size, mode }      join a 5v5 or 10v10 match of Team Deathmatch or Conquest
+//   { t: 'join', v, name, hat, size, mode, team? } join a 5v5 or 10v10 match of Team Deathmatch, Conquest or Breakthrough
+//                                                 (team: the side you'd like in Breakthrough, 0 attack / 1 defend)
 //   { t: 'in', s, i: InputRow[] }                 one row per 60 Hz tick, s = sequence number of the first row
 //   { t: 'ping', c }                              round-trip timer
 //
@@ -13,13 +14,13 @@
 import type { World, Penguin, PenguinInput, Action, Phase, GameEvent, RosterEntry, CapturePoint } from '../sim/World';
 import type { Mode } from '../world/Maps';
 
-export const PROTOCOL = 2;
+export const PROTOCOL = 4;
 export const TICK_HZ = 60;
 export const SNAP_EVERY = 2; // ticks per snapshot: 30 snapshots a second
 export const MSG_MATCH = 1;
 export const MSG_SNAP = 2;
 export const TEAM_SIZES = [5, 10];
-export const MODES: Mode[] = ['tdm', 'conquest'];
+export const MODES: Mode[] = ['tdm', 'conquest', 'breakthrough'];
 
 export interface MatchInfo {
   you: number; // your penguin's id
@@ -154,6 +155,8 @@ export interface PointState { id: number; owner: number; cap: number; n0: number
 export interface Snapshot {
   tick: number; ack: number;
   phase: Phase; phaseT: number; scores: [number, number]; piles: [number, number]; winner: number;
+  /** Breakthrough: the section in play, the regroup time left, the attackers' last-stand time left (-1 = not yet) */
+  sector: number; holdT: number; lastStandT: number;
   penguins: PenguinState[];
   balls: BallState[];
   bigBalls: BigBallState[];
@@ -176,6 +179,7 @@ export function encodeSnapshot(w: World, tick: number, snow: Uint8Array, events:
   o.u8(MSG_SNAP); o.u32(tick); o.u32(0);
   o.u8(PHASES.indexOf(w.phase)); o.f32(w.phaseT);
   o.u16(clampU16(w.scores[0])); o.u16(clampU16(w.scores[1])); o.u16(clampU16(w.piles[0])); o.u16(clampU16(w.piles[1])); o.i8(w.winner);
+  o.u8(w.sector); o.f32(w.holdT); o.f32(w.lastStandT);
   o.u8(w.penguins.length);
   for (const p of w.penguins) writePenguin(o, p);
   o.u16(w.snowballs.length);
@@ -259,6 +263,7 @@ export function decodeSnapshot(buf: Uint8Array): Snapshot {
   const scores: [number, number] = [r.u16(), r.u16()];
   const piles: [number, number] = [r.u16(), r.u16()];
   const winner = r.i8();
+  const sector = r.u8(), holdT = r.f32(), lastStandT = r.f32();
   const penguins: PenguinState[] = [];
   for (let n = r.u8(); n > 0; n--) penguins.push(readPenguin(r));
   const balls: BallState[] = [];
@@ -288,7 +293,7 @@ export function decodeSnapshot(buf: Uint8Array): Snapshot {
   const evLen = r.u32();
   const events = evLen ? JSON.parse(dec.decode(r.bytes(evLen))) as GameEvent[] : [];
   return {
-    tick, ack, phase, phaseT, scores, piles, winner, penguins, balls, bigBalls, flakes, turrets, points,
+    tick, ack, phase, phaseT, scores, piles, winner, sector, holdT, lastStandT, penguins, balls, bigBalls, flakes, turrets, points,
     board: { active, holder, x: bx, y: by, z: bz, yaw: byaw }, snow, events,
   };
 }

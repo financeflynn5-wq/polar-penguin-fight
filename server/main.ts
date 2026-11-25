@@ -31,6 +31,7 @@ const DT = 1 / TICK_HZ;
 const MIME: Record<string, string> = {
   '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png',
   '.jpg': 'image/jpeg', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.mp3': 'audio/mpeg',
+  '.webp': 'image/webp', '.glb': 'model/gltf-binary', // the Blender-made models and their textures
 };
 
 const rooms: Room[] = [];
@@ -130,7 +131,9 @@ wss.on('connection', (ws: WebSocket, _req: http.IncomingMessage, ip: string) => 
         const mode: Mode = MODES.includes(msg.mode) ? msg.mode : 'tdm';
         const hat = HATS.includes(msg.hat) ? msg.hat : 'beanie';
         const c: Client = {
-          ws, name: cleanName(msg.name, 'Penguin', { max: 16, prefix: 'Penguin' }), hat, team: -1, penguinId: -1,
+          ws, name: cleanName(msg.name, 'Penguin', { max: 16, prefix: 'Penguin' }), hat,
+          // Breakthrough: you can ask to attack or defend, and get it when that side has room
+          team: mode === 'breakthrough' && (msg.team === 0 || msg.team === 1) ? msg.team : -1, penguinId: -1,
           queue: [], last: emptyInput(), lastSeq: -1, ack: 0, held: null, resync: false,
         };
         const r = roomFor(size, mode);

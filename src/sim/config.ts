@@ -101,6 +101,17 @@ export const CFG = {
   conquestRate: 0.5, // points per second for every flag you hold
   captureTime: 7, // seconds for one penguin to take a neutral flag
   captureCrowd: 3, // more penguins than this on a flag don't speed it up further
+
+  // Breakthrough (Team Blizzard attacks, Team Sunrise defends)
+  btBuildPhase: 45, // the defenders dig in at the first section
+  btFightPhase: 1200, // the attackers have this long in all
+  btTickets: 8, // attackers' tickets at the start, per penguin on the team (each attacker who goes down costs one)
+  btSectorTickets: 5, // tickets the attackers get back for taking a section, per penguin on the team
+  btCaptureTime: 5, // an objective goes from all theirs to all yours in twice this long with one penguin on it, faster with more
+  btRetake: 0.4, // how fast the defenders win an objective back, next to how fast the attackers take it
+  btRegroup: 20, // seconds the attackers wait after a section falls
+  btLastStand: 60, // seconds the attackers have once their tickets are gone
+  btRespawn: [3.5, 5], // seconds down: attackers, defenders
 };
 
 export const REWARD_NAMES = ['Snowball Frenzy', 'Insta-Turret', 'Avalanche'];

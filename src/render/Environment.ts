@@ -131,7 +131,19 @@ export class Environment {
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(4096, 4096);
     const sc = this.sun.shadow.camera as THREE.OrthographicCamera;
-    sc.left = -86; sc.right = 86; sc.top = 78; sc.bottom = -78; sc.near = 20; sc.far = 320;
+    {
+      // fit the shadow map to the arena: every corner of it (at ground level and at tree-top height), seen from the sun
+      const f = map.field, x1 = f.x0 + f.nx * f.cell, z1 = f.z0 + f.nz * f.cell;
+      const right = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), this.sunDir).normalize();
+      const up = new THREE.Vector3().crossVectors(this.sunDir, right).normalize();
+      let r = 0, t = 0;
+      for (const x of [f.x0, x1]) for (const z of [f.z0, z1]) for (const y of [0, 26]) {
+        const v = new THREE.Vector3(x, y - 4, z);
+        r = Math.max(r, Math.abs(v.dot(right))); t = Math.max(t, Math.abs(v.dot(up)));
+      }
+      sc.left = -r; sc.right = r; sc.top = t; sc.bottom = -t; sc.near = 20; sc.far = 340 + Math.max(x1, z1);
+      this.sun.position.copy(this.sunDir).multiplyScalar(140 + Math.max(x1, z1));
+    }
     this.sun.shadow.bias = -0.0005;
     this.sun.shadow.normalBias = 0.06;
     this.sun.shadow.radius = 2.2;
@@ -188,12 +200,12 @@ export class Environment {
   /** The snowy land that carries on past the edge of the arena, so the world doesn't end at the rim. */
   private addOuterLand() {
     const f = this.map.field;
-    const step = 4, half = 300, n = (half * 2) / step + 1;
+    const step = 4, half = 320, n = (half * 2) / step + 1;
     const pos = new Float32Array(n * n * 3), col = new Float32Array(n * n * 3);
     const x1 = f.x0 + (f.nx - 1) * f.cell, z1 = f.z0 + (f.nz - 1) * f.cell;
     for (let k = 0; k < n; k++) for (let i = 0; i < n; i++) {
       const x = -half + i * step, z = -half + k * step;
-      let y = outerHeight(this.map.ground, x, z);
+      let y = outerHeight(this.map, x, z);
       // inside the arena the real snow field takes over: tuck this sheet underneath it
       if (x > f.x0 + 0.1 && x < x1 - 0.1 && z > f.z0 + 0.1 && z < z1 - 0.1) y -= 5;
       const o = (k * n + i) * 3;
@@ -274,12 +286,12 @@ export class Environment {
     const f = this.map.field;
     const x1 = f.x0 + f.nx * f.cell, z1 = f.z0 + f.nz * f.cell;
     for (let n = 0; n < 5200 && all.length < this.map.trees.length + 950; n++) {
-      const x = (rand() * 2 - 1) * 215, z = (rand() * 2 - 1) * 200;
+      const x = (rand() * 2 - 1) * (x1 + 143), z = (rand() * 2 - 1) * (z1 + 148);
       if (x > f.x0 - 0.5 && x < x1 + 0.5 && z > f.z0 - 0.5 && z < z1 + 0.5) continue;
-      const d = Math.max(Math.abs(x) - 72, Math.abs(z) - 52);
+      const d = Math.max(Math.abs(x) - x1, Math.abs(z) - z1);
       if (rand() > 1.05 - d / 150) continue; // thins out with distance
       const h = 4.5 + rand() * rand() * 7;
-      all.push({ x, z, y: outerHeight(this.map.ground, x, z) - 0.3, h, r: 0.3, cb: 1.0 + h * 0.16, cw: 0.9 + h * 0.2 });
+      all.push({ x, z, y: outerHeight(this.map, x, z) - 0.3, h, r: 0.3, cb: 1.0 + h * 0.16, cw: 0.9 + h * 0.2 });
     }
 
     const trunk = new THREE.InstancedMesh(trunkGeo, trunkMat, all.length);
@@ -417,13 +429,30 @@ export class Environment {
       this.flags.push(flag);
       this.group.add(flag);
 
-      // a team-coloured ring around the stockpile
-      const ring = new THREE.Mesh(new THREE.RingGeometry(1.7, 2.0, 48), new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.6, depthWrite: false }));
-      ring.rotation.x = -Math.PI / 2;
-      ring.position.set(b.stockpile.x, b.stockpile.y + 0.08, b.stockpile.z);
-      ring.renderOrder = 2;
-      ring.userData.stockRing = true;
-      this.group.add(ring);
+      // a team-coloured ring around every stockpile, and a pennant over the camps at the ends of the line
+      for (const sp of this.map.sectors.length ? [] : b.stockpiles) { // (Breakthrough's camps move: Props draws those)
+        const ring = new THREE.Mesh(new THREE.RingGeometry(1.7, 2.0, 48), new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.6, depthWrite: false }));
+        ring.rotation.x = -Math.PI / 2;
+        ring.position.set(sp.x, sp.y + 0.08, sp.z);
+        ring.renderOrder = 2;
+        ring.userData.stockRing = true;
+        this.group.add(ring);
+        if (sp === b.stockpile) continue;
+        const s = b.team === 0 ? -1 : 1;
+        const px = sp.x + s * 2.6, pz = sp.z, py = this.map.ground(px, pz);
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.06, 4.6, 8), new THREE.MeshStandardMaterial({ color: 0x8a6a4a }));
+        post.position.set(px, py + 2.3, pz);
+        post.castShadow = true;
+        this.group.add(post);
+        const penGeo = new THREE.PlaneGeometry(1.7, 1.0, 10, 4);
+        penGeo.translate(0.85, 0, 0);
+        const pennant = new THREE.Mesh(penGeo, new THREE.MeshStandardMaterial({ color: col, side: THREE.DoubleSide, roughness: 0.75, emissive: col, emissiveIntensity: 0.12 }));
+        pennant.position.set(px, py + 4.0, pz);
+        pennant.castShadow = true;
+        pennant.userData.base = penGeo.attributes.position.array.slice();
+        this.flags.push(pennant);
+        this.group.add(pennant);
+      }
     }
   }
 
@@ -451,9 +480,10 @@ export class Environment {
 }
 
 /** Land height outside the arena: the rim carries on into rolling foothills that climb toward the mountains. */
-export function outerHeight(groundHeight: (x: number, z: number) => number, x: number, z: number) {
-  const d = Math.max(0, Math.max(Math.abs(x) - 72, Math.abs(z) - 52));
+export function outerHeight(map: MapDef, x: number, z: number) {
+  const f = map.field;
+  const d = Math.max(0, Math.max(Math.abs(x) - (f.x0 + f.nx * f.cell), Math.abs(z) - (f.z0 + f.nz * f.cell)));
   const t = Math.min(1, d / 70);
   const roll = Math.sin(x * 0.021 + 1.3) * Math.cos(z * 0.024 + 0.4) * 7 + Math.sin(x * 0.05 + z * 0.043) * 2.2;
-  return groundHeight(x, z) + t * t * (3 - 2 * t) * (roll + d * 0.07);
+  return map.ground(x, z) + t * t * (3 - 2 * t) * (roll + d * 0.07);
 }

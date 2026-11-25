@@ -5,3 +5,4 @@ dist
 server-dist
 __pycache__
 tools/blender/out
+tools/blender/renders/
