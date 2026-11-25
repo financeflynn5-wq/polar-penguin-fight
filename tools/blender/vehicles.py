@@ -1206,6 +1206,9 @@ def main():
                     if n.type == 'MIX' and n.blend_type == 'MULTIPLY': n.inputs[6].default_value = (*TEAMS[team], 1)
                 for v in views:
                     o = {**view, **VIEWS.get(v, {})}
+                    if v == 'hero': o['dist'] *= 1.24                      # the longer lens stands further back
+                    if '--riders' in sys.argv and name == 'snowmobile':    # the riders stand well above it
+                        o['target'] = (o['target'][0], o['target'][1] + 0.38, o['target'][2]); o['dist'] *= 1.3
                     for a in sys.argv:
                         if a.startswith('--dist='): o['dist'] = float(a.split('=')[1])
                         if a.startswith('--sun='): o['sun_yaw'] = float(a.split('=')[1])
