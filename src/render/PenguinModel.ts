@@ -304,7 +304,7 @@ export class PenguinModel {
       const hb = this.heldBall = new THREE.Mesh(G.giant, SNOW);
       hb.scale.setScalar(def.ballRadius);
       hb.castShadow = true; hb.visible = false;
-      onto('chest', hb, 0, facts.height + def.ballRadius + 0.22, 0.06);
+      onto('chest', hb, 0, facts.height + def.ballRadius * 0.85, 0.2);
     }
 
     if (name && showTag) {
@@ -421,14 +421,14 @@ export class PenguinModel {
         // the polar bear's charge: head down, shoulders first, bounding along with the arms pumping
         this.walkPhase += dt * 13;
         const s = Math.sin(this.walkPhase * 2), c = Math.cos(this.walkPhase * 2);
-        this.rot('body', -0.92 + s * 0.07, 0, 0);
+        this.rot('body', -0.66 + s * 0.08, 0, 0);
         T.body.p.set(0, (0.03 + Math.abs(c) * 0.08) * S, 0);
-        this.rot('head', 0.78, 0, 0);
+        this.rot('head', 0.52, 0, 0);
         // in the leaning body's own frame, "down at the snow" is forward and a bit down
         this.arm('L', 0.22, -0.55 + s * 0.3, 0.85 + s * 0.35); this.arm('R', 0.22, -0.55 - s * 0.3, 0.85 - s * 0.35);
         this.elbow('L', 0.3); this.elbow('R', 0.3);
-        T.footL.p.y += Math.max(0, s) * 0.11 * S; T.footL.p.z += (c * 0.16 + 0.1) * S;
-        T.footR.p.y += Math.max(0, -s) * 0.11 * S; T.footR.p.z += (-c * 0.16 + 0.1) * S;
+        T.footL.p.y += Math.max(0, s) * 0.13 * S; T.footL.p.z += (c * 0.2 - 0.14) * S;
+        T.footR.p.y += Math.max(0, -s) * 0.13 * S; T.footR.p.z += (-c * 0.2 - 0.14) * S;
         T.footL.q.setFromEuler(_e.set(Math.max(0, s) * 0.6, 0, 0)); T.footR.q.setFromEuler(_e.set(Math.max(0, -s) * 0.6, 0, 0));
         this.rot('tail', 0.4, s * 0.3, 0);
         lid = LID_OPEN - 0.55; jaw = 0.75;

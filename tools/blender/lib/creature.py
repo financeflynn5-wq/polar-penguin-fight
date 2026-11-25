@@ -97,7 +97,7 @@ def lumpy(ob, amp, freq, seed=0.0):
 
 # ───────────────────────── tufts ─────────────────────────
 
-def lock(name, root, tip, width, thick, normal, bend=0.0, nu=7, n=5, fat=0.35):
+def lock(name, root, tip, width, thick, normal, bend=0.0, nu=7, n=5, fat=0.35, point=2.2):
     """A lock of fur: a flattened, curved cone from root (buried in the body) to a pointed tip. normal: the way the
     body's surface faces there (the lock lies flat against it and arcs away from it by `bend` × its length)."""
     root = np.asarray(root, dtype=float); tip = np.asarray(tip, dtype=float); nrm = unit(normal)
@@ -112,16 +112,15 @@ def lock(name, root, tip, width, thick, normal, bend=0.0, nu=7, n=5, fat=0.35):
     across = unit(across)
     T, Nn, Bn = G.path_frames(P, across)
     th = np.linspace(0, TAU, nu, endpoint=False)
-    sec = G.superellipse(1.0, 1.0, 2.5)
-    sx, sy = sec(th)
+    sx, sy = np.cos(th), np.sin(th)
     rows = []
     for i, t in enumerate(ts):
-        prof = (0.70 + 0.30 * math.sin(min(t / fat, 1.0) * math.pi / 2)) * max(0.0, 1 - t ** 2.2) ** 0.8
+        prof = (0.70 + 0.30 * math.sin(min(t / fat, 1.0) * math.pi / 2)) * max(0.0, 1 - t ** point) ** 0.8
         rows.append(P[i] + Nn[i] * (sx * width * prof)[:, None] + Bn[i] * (sy * thick * prof)[:, None])
     return G.build_mesh(name, G.Grid(np.array(rows), closed_u=True, pole1=True))
 
 
-def tuft(name, f, origin, direction, flow, length, width, thick=None, lift=0.25, embed=0.03, bend=0.12, nu=7, n=5):
+def tuft(name, f, origin, direction, flow, length, width, thick=None, lift=0.25, embed=0.03, bend=0.12, nu=7, n=5, point=2.2, fat=0.35):
     """A lock growing out of the skin of f: found by a ray from origin along direction, lying along `flow` (made
     tangent to the skin) and lifted away from it by `lift` × length at the tip."""
     p = hit(f, origin, direction)
@@ -131,7 +130,18 @@ def tuft(name, f, origin, direction, flow, length, width, thick=None, lift=0.25,
     fl = unit(fl) if np.linalg.norm(fl) > 1e-6 else unit(np.cross(nrm, (1, 0, 0)))
     root = p - nrm * embed - fl * (length * 0.12)
     tip = p + fl * length * 0.88 + nrm * (lift * length)
-    return lock(name, root, tip, width, thick if thick is not None else width * 0.55, nrm, bend=bend, nu=nu, n=n)
+    return lock(name, root, tip, width, thick if thick is not None else width * 0.55, nrm, bend=bend, nu=nu, n=n, point=point, fat=fat)
+
+
+def limb_tuft(name, origin, axis, d, phi, r, length, width, thick=None, lift=0.2, embed=0.03, bend=0.12, splay=0.0, nu=7, n=5, point=2.2, fat=0.35):
+    """A lock on a limb: d metres down the axis from origin, at angle phi round it (0 = forward, toward +Y),
+    growing from the limb's skin (radius r) down the limb. splay swings its tip sideways round the limb."""
+    e1, e2, e3 = G.frame_from_axis(axis, (0, 1, 0))
+    rad = e1 * math.cos(phi) + e2 * math.sin(phi)
+    tan = -e1 * math.sin(phi) + e2 * math.cos(phi)
+    root = np.asarray(origin, dtype=float) + e3 * d + rad * (r - embed)
+    tip = np.asarray(origin, dtype=float) + e3 * (d + length) + rad * (r + lift * length) + tan * (splay * length)
+    return lock(name, root, tip, width, thick if thick is not None else width * 0.55, rad, bend=bend, nu=nu, n=n, point=point, fat=fat)
 
 
 # ───────────────────────── eyes ─────────────────────────
@@ -388,11 +398,12 @@ class Scarf:
     """The penguin's scarf: two loose wraps round the neck, a knot behind the right shoulder, two fringed tails."""
     TAIL_N = 16
 
-    def __init__(self, radius, z, knot, tails, k=1.0, wraps=2.0, rise=0.066, gap=0.036):
+    def __init__(self, radius, z, knot, tails, k=1.0, wraps=2.0, rise=0.066, gap=0.036, dip=0.0):
         """radius(z, theta): the body under the scarf. knot: where the tails leave. tails: two lists of points
         relative to the knot. k: overall thickness scale against the penguin's scarf."""
         self.radius, self.z, self.knot, self.k, self.wraps, self.rise, self.gap = radius, z, np.asarray(knot, dtype=float), k, wraps, rise, gap
         self.tails = [np.asarray(t, dtype=float) + self.knot for t in tails]
+        self.dip = dip  # how much lower the scarf hangs at the front than at the back
 
     def ring_path(self, n=76):
         k = self.k
@@ -402,6 +413,7 @@ class Scarf:
             t = i / (n - 1)
             a = a0 + 0.10 + t * (self.wraps * TAU - 0.20)
             z = self.z - self.rise * 0.55 * k + self.rise * k * t + 0.010 * k * math.sin(a * 3 + 1.0) - 0.012 * k * math.cos(a)
+            z -= self.dip * (0.5 + 0.5 * math.cos(a))
             r = float(self.radius(z, a)[0, 0]) + self.gap * k - 0.008 * k * t + 0.004 * k * math.sin(a * 5)
             pts.append((math.sin(a) * r, math.cos(a) * r, z))
         return np.array(pts)
