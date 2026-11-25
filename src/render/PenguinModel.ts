@@ -34,6 +34,7 @@ let lowQuality = false;
 function tinted(src: THREE.MeshPhysicalMaterial, color: number, glow: number) {
   const m = src.clone();
   m.color.set(color);
+  m.sheenColor.multiply(m.color); // the fuzz on wool picks up the dye, so sunlit scarves stay colourful instead of going pale
   // a little self-light in the team colour keeps jackets readable in shade
   m.emissive.set(color); m.emissiveMap = m.map; m.emissiveIntensity = glow;
   return m;

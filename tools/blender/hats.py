@@ -115,7 +115,7 @@ def gold(g, engrave=None):
 # ───────────────────────── beanie ─────────────────────────
 
 def hat_beanie():
-    hat = Hat('beanie', tilt=(-0.05, 0, 0), sheen=0.2, sheen_rough=0.7)
+    hat = Hat('beanie', tilt=(-0.05, 0, 0))  # no fuzzy sheen: in full sun it turns the red pink
     c = HEAD_C + (0, 0, 0.0)
     shell = G.offset(HEAD, 0.026)
     slouch = G.ellipsoid((0, -0.045, 1.125), (0.225, 0.225, 0.165))
@@ -135,7 +135,7 @@ def hat_beanie():
         zig = bump_band(0.118, 0.011, uv.y - tri * 0.040)
         dots = bump_band(0.5, 0.26, frac(uv.x / (zz / 2.0))) * (bump_band(0.095, 0.008, uv.y) + bump_band(0.186, 0.008, uv.y))
         white = clamp01(smooth(0.3, 0.6, zig) + smooth(0.4, 0.7, dots))
-        red = lerp(rgb('#8f0d1d'), rgb('#e0182f'), shade)
+        red = lerp(rgb('#74081a'), rgb('#c20e28'), shade)
         cream = lerp(rgb('#d8d2c4'), rgb('#fffaf0'), shade)
         return dict(color=lerp(red, cream, white), rough=V(0.93), height=h + fuzz(p, 0.0007))
     hat.add(dome, dome_look, density=1.0)
@@ -248,7 +248,7 @@ def hat_tophat():
 # ───────────────────────── propeller cap ─────────────────────────
 
 def hat_propeller():
-    hat = Hat('propeller', tilt=(-0.05, 0, 0), sheen=0.15)
+    hat = Hat('propeller', tilt=(-0.05, 0, 0))
     c = HEAD_C + (0, 0, 0.05)
     f = G.offset(HEAD, 0.020)
     g = G.dome(f, c, 0.40, nu=48, nv=12, ref=(0, 1, 0))
