@@ -53,3 +53,41 @@ To add a hat: write a `hat_<name>()` function in `hats.py`, add it to `HATS`, an
 ## Map props
 
 The houses, ruins, candy canes, cargo sled and ice blocks on the maps are built by `props.py`, `houses.py`, `kit.py` and `textures.py` in this folder, into `public/models/` and `public/textures/`. They are described under "Props (Blender)" in the README at the top of the repository.
+
+## Vehicles
+
+The snowmobile and the snowplow are built by `vehicles.py` (on top of `kit.py`, like the props) into
+`public/models/snowmobile.glb` and `public/models/snowplow.glb`. `src/render/VehicleModel.ts` loads them.
+
+    python tools/blender/vehicles.py                       # both (about a minute)
+    python tools/blender/vehicles.py snowplow --stats      # one, with a triangle count per mesh
+    python tools/blender/vehicles.py --render --riders --views=hero,rear,side,top --team=blue --team=orange
+    python tools/blender/textures.py tread                 # the track's texture set (public/textures/tread_*.webp)
+
+Unlike the props, a vehicle keeps a node hierarchy, because parts of it move. Every moving part is an empty placed
+at its pivot, unrotated, with one child mesh per material (`mesh_<part>_<material>`), so the game only ever sets a
+rotation on it. The front is +x and the origin is on the snow under the middle.
+
+| node | what it is | the game sets |
+| --- | --- | --- |
+| `body` | everything fixed | |
+| `steer`, `skiL`, `skiR` | snowmobile: handlebars, each ski with its leg (L is -z) | `rotation.y` |
+| `blade` | snowplow: blade, push arms and rams, hinged low on the nose | `rotation.z` (0 down, + lifts) |
+| `track`, `trackL`, `trackR` | the belts, material `tread` | texture `offset.y` (+ = driving forward) |
+| `wheel…` | sprockets, idlers, bogies; custom property `radius` (m) | `rotation.z` |
+| `beacon` | the amber lens on the snowplow's roof | emissive strength |
+| `seat0`, `seat1`, `gripL`, `gripR`, `exhaust` | bare empties: where a rider's feet go, where mittens hold the bars (children of `steer`), where smoke comes out | |
+
+Things worth knowing:
+
+- Tread UVs: u runs across the belt (0..1), v along it, one unit to a metre of belt (stretched by under half a
+  percent so a whole number of lugs fits round the loop: `LUGS` in `vehicles.py` and `textures.py` must agree).
+- `paint` is baked light grey (two shades) and multiplied by the team colour in the game. `trim` and `seat` are
+  white materials whose colours (charcoal, ivory, hazard yellow, leather) are vertex tints, so one material and one
+  draw call covers all of them. The hazard stripes on the blade are geometry, not a texture.
+- Wheels are shaded on their own (`ao='self'`), so their baked shading does not turn with them.
+- The exporter's output is rewritten by `slim_glb`: normals as bytes, colours as bytes, no UVs on untextured
+  meshes (the `KHR_mesh_quantization` extension, which three.js reads without a decoder). That halves the files.
+- The models are written to a temporary name and renamed, so a running game never loads half a file.
+
+To look at them under the game's lighting: `node tools/viewer/shots.mjs <folder> vehicles`.

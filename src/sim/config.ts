@@ -84,6 +84,21 @@ export const CFG = {
   turretHeight: 1.9,
   maxTeamTurrets: 4,
 
+  // vehicles: tap E beside one to hop on, E again to hop off. W/S drive, A/D steer.
+  // (the driving numbers for each kind are in VEHICLE_SPECS in src/sim/Vehicles.ts)
+  snowmobilesPer5: 1, // snowmobiles parked at each team's camp for every 5 penguins on the team
+  snowmobileHealth: 5, // snowball hits to wreck one (the riders are out in the open and get hit like anyone else)
+  snowmobileRespawn: 20, // seconds until a wrecked one is back at camp
+  snowmobileRam: 9, // m/s: run into an enemy faster than this and it knocks them flying
+  snowmobileRamDamage: 2,
+  plowHealth: 3.5, // snowball hits to wreck the snowplow, for each penguin on a team (its driver is safe inside until then)
+  plowBallDamage: 7, // what a rolling giant snowball does to it
+  plowFirst: 30, // Breakthrough: seconds into the fight before the attackers' first snowplow turns up
+  plowEvery: 90, // ... and seconds after one is wrecked before the next
+  plowRam: 2.2, // m/s: the blade flattens any enemy it reaches faster than this
+  plowBotWait: 6, // seconds a fresh snowplow waits for a person before a bot may take it
+  vehicleIdleHome: 30, // an empty vehicle left out in the field goes back to camp after this long
+
   // splat streak rewards (Team Deathmatch only)
   streakAt: [3, 5, 7], // splats in one life for Snowball Frenzy, Insta-Turret, Avalanche
   frenzyTime: 10,

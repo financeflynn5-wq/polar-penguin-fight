@@ -16,6 +16,8 @@ import { CFG, MITTEN_NAMES, REWARD_NAMES } from '../sim/config';
 import { LandmarksView } from '../render/Landmarks';
 import { TurretsView } from '../render/Turrets';
 import { FlagsView } from '../render/Flags';
+import { VehiclesView } from '../render/Vehicles';
+import { vehicleOf, VEHICLE_NAMES, Vehicle } from '../sim/Vehicles';
 import { TEAM_NAMES } from '../render/Environment';
 import { Input } from './Input';
 import { Audio } from './Audio';
@@ -50,6 +52,11 @@ export class Game {
   private landmarks!: LandmarksView;
   private turretsView!: TurretsView;
   private flagsView!: FlagsView;
+  private vehiclesView!: VehiclesView;
+  /** the heading of the vehicle you're driving, last frame (the camera turns with it) */
+  private rideYaw: number | null = null;
+  private camClear = 20;
+  private taughtDrive = false;
   mapId: MapId = 'bay';
   private rewardQueued = 0;
   private taughtTurret = false;
@@ -77,6 +84,7 @@ export class Game {
   private aimTarget: Penguin | null = null;
   private taughtRoll = false;
   private focusTmp = new THREE.Vector3();
+  private seatTurn = new THREE.Quaternion();
   private aimSnow: { x: number; y: number; z: number } | null = null;
   private aimAny: { x: number; y: number; z: number } | null = null;
   paused = false;
@@ -167,6 +175,8 @@ export class Game {
     this.scene.add(this.turretsView.group);
     this.flagsView = new FlagsView(this.map);
     this.scene.add(this.flagsView.group);
+    this.vehiclesView = new VehiclesView();
+    this.scene.add(this.vehiclesView.group);
     this.trails.clear();
   }
 
@@ -308,11 +318,12 @@ export class Game {
     this.env.update(this.time, this.camera, window.innerHeight);
     this.playground.update(this.time);
     this.flagsView.update(this.mode === 'play' ? this.world : null, this.time, dt);
+    if (this.mode !== 'play') this.vehiclesView.update(null, 1, dt, this.time, this.particles, this.decals);
     this.decals.update(this.time);
     this.snow.update(this.camera.position, this.mode === 'menu' ? 8 : 4, this.time);
     this.particles.update(dt, window.innerHeight * this.pixelRatio(), this.camera.fov);
     const me = this.world?.player;
-    if (this.post && this.quality === 'high') this.post.render(dt, me && me.sliding ? Math.hypot(me.vx, me.vz) : 0);
+    if (this.post && this.quality === 'high') this.post.render(dt, me && me.sliding ? Math.hypot(me.vx, me.vz) : me && me.riding >= 0 ? Math.hypot(me.vx, me.vz) * 0.7 : 0);
     else this.renderer.render(this.scene, this.camera);
   }
 
@@ -355,6 +366,15 @@ export class Game {
     if (this.rewardQueued && playing) pi.reward = this.rewardQueued;
     this.rewardQueued = 0;
 
+    // driving: the view swings round with the vehicle, so "ahead" stays ahead (the mouse still looks around)
+    const myRide = me.alive && me.seat === 0 ? vehicleOf(w, me) : null;
+    if (myRide && this.rideYaw !== null) {
+      let d = myRide.yaw - this.rideYaw;
+      while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2;
+      if (Math.abs(d) < 0.5) { inp.yaw += d; pi.yaw = inp.yaw; }
+    }
+    this.rideYaw = myRide ? myRide.yaw : null;
+
     // camera first (so aiming uses this frame's view)
     this.updateCamera(dt, me);
     this.computeAim(me);
@@ -394,6 +414,19 @@ export class Game {
       m.update(p, alpha, dt, this.time, p === me);
       if (p === me && this.net) { const o = this.net.drawOffset; m.root.position.x += o.x; m.root.position.y += o.y; m.root.position.z += o.z; }
     }
+    // vehicles, and the penguins sitting on them
+    this.vehiclesView.update(w, alpha, dt, this.time, this.particles, this.decals);
+    this.vehiclesView.group.updateMatrixWorld(true);
+    for (const p of w.penguins) {
+      if (p.riding < 0 || !p.alive) continue;
+      const m = this.models.get(p.id), seat = this.vehiclesView.seat(p.riding, p.seat), body = this.vehiclesView.body(p.riding);
+      const v = vehicleOf(w, p);
+      if (!m || !seat || !body || !v) continue;
+      seat.getWorldPosition(m.root.position);
+      body.getWorldQuaternion(m.root.quaternion);
+      // the models face +x, penguins face -z; a passenger also turns to where they're looking
+      m.root.quaternion.multiply(this.seatTurn.setFromAxisAngle(THREE.Object3D.DEFAULT_UP, -Math.PI / 2 + (p.seat === 0 ? 0 : p.yaw - v.yaw)));
+    }
     this.updateTrails(w);
     // a wisp of snow behind every flying snowball so you can follow it
     for (const b of w.snowballs) this.particles.spawn(PKind.Puff, b.px + (b.x - b.px) * alpha, b.py + (b.y - b.py) * alpha, b.pz + (b.z - b.pz) * alpha, 0, 0.1, 0, 0.1, 0.3);
@@ -412,7 +445,19 @@ export class Game {
     }
     this.audio.setRumble(rumble * 0.8);
     this.audio.setWind(0.04);
-    if (me.alive && me.grounded && !me.sliding && Math.hypot(me.vx, me.vz) > 1.5) {
+    {
+      // engines: yours is loud, others fade with distance
+      let level = 0, pitch = 0, heavy = 0;
+      for (const v of w.vehicles) {
+        if (!v.seats.some(s => s >= 0)) continue;
+        const mine = v.id === me.riding;
+        const d = Math.hypot(v.x - this.camera.position.x, v.z - this.camera.position.z);
+        const l = (mine ? 1 : 0.8) / (1 + d * d * 0.004);
+        if (l > level) { level = l; pitch = Math.abs(v.speed) / (v.kind === 'snowplow' ? 6.6 : 17) + (v.grounded ? 0 : 0.35); heavy = v.kind === 'snowplow' ? 1 : 0; }
+      }
+      this.audio.setEngine(level, pitch, heavy);
+    }
+    if (me.alive && me.riding < 0 && me.grounded && !me.sliding && Math.hypot(me.vx, me.vz) > 1.5) {
       this.stepT -= dt * Math.hypot(me.vx, me.vz) / 4.5;
       if (this.stepT <= 0) { this.stepT = 0.3; this.audio.step(me.x, me.y, me.z); }
     }
@@ -425,8 +470,9 @@ export class Game {
 
     // HUD
     let hint: string | null = null;
-    if ((pi.dig || pi.build) && !this.aimInReach(me)) hint = 'Aim closer to dig or build';
-    if (pi.turret && !pi.build && !pi.dig) {
+    const riding = me.riding >= 0;
+    if ((pi.dig || pi.build) && !riding && !this.aimInReach(me)) hint = 'Aim closer to dig or build';
+    if (pi.turret && !pi.build && !pi.dig && !riding) {
       hint = me.turretBlock === 2 ? 'A turret can\'t stand there'
         : me.turretBlock === 3 ? 'Too close to another turret'
         : me.turretBlock === 4 ? `Your team already has ${CFG.maxTeamTurrets} turrets`
@@ -434,7 +480,7 @@ export class Game {
     }
     if (pi.build && me.buildBlock === 1) hint = 'Too tall to reach from here: get closer or climb up';
     if (pi.build && me.slumping) hint = 'Too thin to go higher: the snow is sliding down to widen the base';
-    if (me.noSnowT > 0 && (pi.pack || pi.build || pi.dig || pi.roll || pi.turret)) hint = me.carried >= CFG.maxCarry && pi.pack ? 'Your mittens are full (5): stash or throw!' : 'No loose snow here';
+    if (me.noSnowT > 0 && !riding && (pi.pack || pi.build || pi.dig || pi.roll || pi.turret)) hint = me.carried >= CFG.maxCarry && pi.pack ? 'Your mittens are full (5): stash or throw!' : 'No loose snow here';
     if (w.phase === 'build' && pi.fire && me.carried > 0) hint = 'No throwing until the fight starts!';
     this.hud!.update(w, me, dt, hint);
   }
@@ -446,7 +492,7 @@ export class Game {
       if (!t) { t = { dist: 0, side: 1, x: p.x, z: p.z }; this.trails.set(p.id, t); }
       const d = Math.hypot(p.x - t.x, p.z - t.z);
       t.x = p.x; t.z = p.z;
-      if (!p.alive || !p.grounded || p.onProp || p.onIce || d > 2) { t.dist = 0; continue; }
+      if (!p.alive || p.riding >= 0 || !p.grounded || p.onProp || p.onIce || d > 2) { t.dist = 0; continue; }
       t.dist += d;
       const sp = Math.hypot(p.vx, p.vz);
       const moveYaw = sp > 0.1 ? Math.atan2(-p.vx, -p.vz) : p.yaw;
@@ -479,6 +525,24 @@ export class Game {
     return Math.hypot(a.x - me.x, a.y - (me.y + 0.8), a.z - me.z) <= CFG.reach + (me.input.build ? 1.2 : me.input.turret ? 0.8 : 0.3);
   }
 
+  /** How far a ray gets before it runs into a tree (its trunk, or the cone of its branches), up to max. */
+  private treeClear(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, max: number) {
+    let best = max;
+    for (const t of this.map.trees) {
+      const ex = t.x - ox, ez = t.z - oz;
+      if (ex * ex + ez * ez > (max + t.cw) * (max + t.cw)) continue;
+      const along = ex * dx + ez * dz;
+      if (along < -t.cw || along > best + t.cw) continue;
+      for (let d = Math.max(0.5, along - t.cw - 0.5); d < Math.min(best, along + t.cw + 0.5); d += 0.25) {
+        const yy = oy + dy * d - t.y;
+        if (yy < -0.5 || yy > t.h) continue;
+        const r = yy < t.cb ? 0.6 : t.cw * (1 - 0.72 * (yy - t.cb) / Math.max(0.1, t.h - t.cb)) + 0.35;
+        if (Math.hypot(ox + dx * d - t.x, oz + dz * d - t.z) < r) { best = Math.max(0, d - 0.4); break; }
+      }
+    }
+    return best;
+  }
+
   private updateCamera(dt: number, me: Penguin) {
     const inp = this.input;
     const alpha = this.acc / STEP;
@@ -487,23 +551,31 @@ export class Game {
     const yaw = inp.yaw, pitch = inp.pitch;
     const fx = -Math.sin(yaw) * Math.cos(pitch), fy = Math.sin(pitch), fz = -Math.cos(yaw) * Math.cos(pitch);
     const rx = Math.cos(yaw), rz = -Math.sin(yaw);
+    const ride = me.alive ? vehicleOf(this.world!, me) : null;
     let want = me.sliding ? 5.6 : me.charging ? 3.9 : me.input.build || me.input.turret ? 5.6 : 4.8;
+    if (ride) want = ride.kind === 'snowplow' ? 10.5 : me.charging ? 5.2 : 6.6 + Math.min(1.6, Math.abs(ride.speed) * 0.1);
     if (!me.alive) want = 6.5;
     this.camDist += (want - this.camDist) * Math.min(1, dt * 6);
-    const pivY = py + (me.sliding ? 1.0 : 1.5);
-    const sh = 0.62;
+    const pivY = py + (ride ? (ride.kind === 'snowplow' ? 2.5 : 1.55) : me.sliding ? 1.0 : 1.5);
+    const sh = ride ? (ride.kind === 'snowplow' ? 0 : 0.3) : 0.62;
     const pivX = px + rx * sh, pivZ = pz + rz * sh;
     // pull in if snow is in the way
     let dist = this.camDist;
     const f = this.map.field;
     const hit = f.raycast(pivX, pivY, pivZ, -fx, -fy, -fz, dist, 0.15);
     if (hit) dist = Math.max(0.6, hit.t - 0.3);
+    if (ride) {
+      // a vehicle's camera sits a long way back: keep it out of the trees too (in quickly, back out gently)
+      const clear = Math.max(ride.kind === 'snowplow' ? 3.2 : 2.4, this.treeClear(pivX, pivY, pivZ, -fx, -fy, -fz, dist));
+      this.camClear += (clear - this.camClear) * Math.min(1, dt * (clear < this.camClear ? 14 : 2.5));
+      dist = Math.min(dist, this.camClear);
+    } else this.camClear = 20;
     let cx = pivX - fx * dist, cy = pivY - fy * dist, cz = pivZ - fz * dist;
     const g = f.surfaceBelow(cx, cy + 1, cz, 0, 4);
     if (g !== null && cy < g + 0.35) cy = g + 0.35;
     this.camera.position.set(cx, cy, cz);
     this.camera.rotation.set(pitch, yaw, 0, 'YXZ');
-    const fovWant = me.sliding ? 78 + Math.min(10, Math.hypot(me.vx, me.vz) * 0.5) : me.charging ? 64 : 70;
+    const fovWant = ride ? (me.charging ? 66 : 72 + Math.min(12, Math.abs(ride.speed) * 0.7)) : me.sliding ? 78 + Math.min(10, Math.hypot(me.vx, me.vz) * 0.5) : me.charging ? 64 : 70;
     this.camera.fov += (fovWant - this.camera.fov) * Math.min(1, dt * 5);
     this.camera.updateProjectionMatrix();
   }
@@ -607,7 +679,7 @@ export class Game {
     const f = this.map.field;
     const marker = this.props.aimMarker, ghost = this.props.buildGhost;
     const turreting = pi.turret && !pi.build && !pi.dig;
-    const showMarker = me.alive && (pi.dig || pi.build || turreting) && (me.turretAt || (this.aimSnow && this.aimInReach(me)));
+    const showMarker = me.alive && me.riding < 0 && (pi.dig || pi.build || turreting) && (me.turretAt || (this.aimSnow && this.aimInReach(me)));
     marker.visible = !!showMarker && !turreting;
     ghost.visible = !!showMarker && (pi.build || turreting);
     if (showMarker && turreting) {
@@ -636,7 +708,7 @@ export class Game {
     // throw arc: faint whenever you're holding snowballs, bold while you wind up
     const w = this.world!;
     const busy = pi.dig || pi.build || pi.plow || pi.pack || pi.turret;
-    if (me.alive && w.phase === 'fight' && me.carried > 0 && (me.charging || !busy)) {
+    if (me.alive && w.phase === 'fight' && me.carried > 0 && (me.charging || !busy) && !(me.riding >= 0 && me.seat === 0)) {
       const speed = this.throwSpeed(me);
       const h = w.handPos(me);
       const v = solveThrow(h, this.throwAim(me), speed, CFG.snowballGravity) ?? lookVelocity(me.lookYaw, me.lookPitch + 0.07, speed);
@@ -764,7 +836,7 @@ export class Game {
         const victim = w.penguin(e.pid)!;
         const killer = w.penguin(e.by);
         H.feed(killer, victim, e.cause);
-        if (e.by === me.id && e.pid !== me.id) H.banner('SPLAT!', e.cause === 'turret' ? `Your turret got ${victim.name}` : `You got ${victim.name}`, 1.3);
+        if (e.by === me.id && e.pid !== me.id) H.banner('SPLAT!', e.cause === 'turret' ? `Your turret got ${victim.name}` : e.cause === 'vehicle' ? `You ran over ${victim.name}` : `You got ${victim.name}`, 1.3);
         break;
       }
       case 'turretBuilt': {
@@ -880,6 +952,53 @@ export class Game {
           A.whistle();
         }
         break;
+      case 'vehicle': {
+        const name = VEHICLE_NAMES[e.kind], plow = e.kind === 'snowplow';
+        const p = w.penguin(e.pid);
+        if (e.what === 'spawn') {
+          P.burst(e.x, e.y + 0.5, e.z, plow ? 60 : 24, 3.5, 1.2);
+          if (plow && w.phase === 'fight') {
+            if (me.team === e.team) H.banner('SNOWPLOW READY!', 'It\'s at your camp: hop in with E. It drives straight through snow walls', 4);
+            else H.banner('SNOWPLOW INCOMING!', 'Snowballs and giant snowballs wreck it. Stay out from in front of the blade!', 4);
+            A.whistle();
+          }
+        } else if (e.what === 'home') P.burst(e.x, e.y + 0.5, e.z, 30, 3, 1.2);
+        else if (e.what === 'enter') {
+          A.engineStart(e.x, e.y, e.z, plow);
+          if (e.pid === me.id) {
+            const driving = me.seat === 0;
+            if (!this.taughtDrive || plow) H.banner(plow ? 'SNOWPLOW!' : driving ? 'SNOWMOBILE!' : 'ON THE BACK!', plow ? 'W/S drive, A/D steer. Walls, turrets and penguins in front of the blade go flying. E hops out' : driving ? 'W/S drive, A/D steer, E hops off. A friend on the back seat can throw' : 'You can still pack and throw from the back seat. E hops off', 3.2);
+            this.taughtDrive = true;
+          } else if (plow && p && w.phase === 'fight') H.toast(p.team === me.team ? `${p.name} is driving the snowplow: follow it in!` : `${p.name} is driving the snowplow!`, 2.4);
+        } else if (e.what === 'exit') { if (e.pid === me.id) A.click(); }
+        else if (e.what === 'denied' && e.pid === me.id) { A.noSnow(); H.toast(plow ? 'Only the attackers can drive the snowplow' : `The other team is on that ${name}`, 2); }
+        break;
+      }
+      case 'vehicleHit': {
+        P.burst(e.x, e.y, e.z, 18, 3.2, 1); A.clank(e.x, e.y, e.z);
+        if (e.by === me.id) { H.hitMarker(e.health <= 0); A.hitMarker(); }
+        break;
+      }
+      case 'vehicleDown': {
+        const plow = e.kind === 'snowplow';
+        P.burst(e.x, e.y + 0.8, e.z, plow ? 220 : 110, plow ? 9 : 7, 1.6);
+        for (let k = 0; k < (plow ? 26 : 12); k++) P.spawn(PKind.Puff, e.x + (Math.random() - 0.5) * 3, e.y + 0.5 + Math.random() * 2, e.z + (Math.random() - 0.5) * 3, (Math.random() - 0.5) * 3, 2 + Math.random() * 3, (Math.random() - 0.5) * 3, 0.9 + Math.random(), 1.6, 0.35, 0.35, 0.38);
+        P.sparkle(e.x, e.y + 1.2, e.z, plow ? 50 : 24, 1.0, 0.7, 0.3);
+        A.crush(e.x, e.y, e.z, 0.9); A.clank(e.x, e.y, e.z); A.splat(e.x, e.y, e.z);
+        if (plow) H.banner(me.team === e.team ? 'THE SNOWPLOW IS WRECKED!' : 'SNOWPLOW WRECKED!', me.team === e.team ? `The next one turns up in ${CFG.plowEvery} seconds` : 'Nice throwing. They get another one soon', 3);
+        else if (e.by === me.id) H.toast('Snowmobile wrecked!', 1.8);
+        break;
+      }
+      case 'vehicleBump': P.burst(e.x, e.y, e.z, 10 + Math.floor(e.hard * 30), 3 + e.hard * 3, 1); A.crush(e.x, e.y, e.z, 0.25 + e.hard * 0.5); A.clank(e.x, e.y, e.z, 0.5); break;
+      case 'vehicleAir': { const mine = w.vehicles.find(v => v.id === e.vid); if (mine && mine.id === me.riding) H.toast('AIR!', 1); break; }
+      case 'vehicleLand': P.burst(e.x, e.y, e.z, 20 + Math.floor(e.hard * 50), 3 + e.hard * 4, 0.8); A.crush(e.x, e.y, e.z, 0.3 + e.hard * 0.5); break;
+      case 'plowSnow': {
+        const v = w.vehicles.find(q => q.id === e.vid) as Vehicle | undefined;
+        if (v) this.vehiclesView.plowSpray(v, e.mass, P);
+        if (e.mass > 500) A.crush(e.x, e.y, e.z, Math.min(0.7, e.mass / 5000));
+        else if (Math.random() < 0.3) A.crunch(e.x, e.y, e.z, 0.2);
+        break;
+      }
       case 'gameOver': {
         const win = e.winner === me.team;
         A.fanfare(win);

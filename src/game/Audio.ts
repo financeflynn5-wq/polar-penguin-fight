@@ -7,6 +7,7 @@ export class Audio {
   private plowFilter: BiquadFilterNode | null = null;
   private rumbleGain: GainNode | null = null;
   private windGain: GainNode | null = null;
+  private engine: { gain: GainNode; osc: OscillatorNode; sub: OscillatorNode; filter: BiquadFilterNode; lfo: OscillatorNode } | null = null;
   listener = { x: 0, y: 0, z: 0, yaw: 0 };
   volume = 0.7;
   muted = false;
@@ -29,6 +30,22 @@ export class Audio {
     this.rumbleGain = this.loopNoise(140, 0.7, 'lowpass');
     this.windGain = this.loopNoise(500, 0.4, 'lowpass');
     this.windGain.gain.value = 0.05;
+    {
+      // the engine: a buzzy saw over a low square, chopped by a fast tremolo so it putters
+      const ctx = this.ctx;
+      const osc = ctx.createOscillator(); osc.type = 'sawtooth'; osc.frequency.value = 70;
+      const sub = ctx.createOscillator(); sub.type = 'square'; sub.frequency.value = 35;
+      const filter = ctx.createBiquadFilter(); filter.type = 'lowpass'; filter.frequency.value = 500; filter.Q.value = 1.2;
+      const trem = ctx.createGain(); trem.gain.value = 0.7;
+      const lfo = ctx.createOscillator(); lfo.type = 'sawtooth'; lfo.frequency.value = 22;
+      const depth = ctx.createGain(); depth.gain.value = 0.3;
+      lfo.connect(depth); depth.connect(trem.gain);
+      const gain = ctx.createGain(); gain.gain.value = 0;
+      const subGain = ctx.createGain(); subGain.gain.value = 0.6;
+      osc.connect(filter); sub.connect(subGain); subGain.connect(filter); filter.connect(trem); trem.connect(gain); gain.connect(this.master);
+      osc.start(); sub.start(); lfo.start();
+      this.engine = { gain, osc, sub, filter, lfo };
+    }
   }
 
   setMuted(m: boolean) { this.muted = m; if (this.master) this.master.gain.value = m ? 0 : this.volume; }
@@ -136,6 +153,27 @@ export class Audio {
     notes.forEach((f, i) => this.tone(f, 0.4, 0.15, 'triangle', undefined, i * 0.15));
   }
   countdown(final: boolean) { this.tone(final ? 1046 : 523, final ? 0.4 : 0.15, 0.15, 'triangle'); }
+
+  clank(x: number, y: number, z: number, vol = 1) { this.tone(310 + Math.random() * 60, 0.09, 0.14 * vol, 'square', 180, 0, x, y, z); this.noiseBurst(0.07, 2600, 3, 0.2 * vol, 'bandpass', undefined, x, y, z); }
+  engineStart(x: number, y: number, z: number, heavy: boolean) {
+    const f = heavy ? 55 : 90;
+    this.tone(f, 0.35, 0.16, 'sawtooth', f * 2.2, 0, x, y, z);
+    this.noiseBurst(0.3, 300, 0.8, 0.2, 'lowpass', 900, x, y, z);
+  }
+
+  /** The nearest running engine. level 0..1 (how loud from here), revs 0..1 and a bit over, heavy = the snowplow's diesel. */
+  setEngine(level: number, revs: number, heavy: number) {
+    const e = this.engine;
+    if (!e || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    e.gain.gain.setTargetAtTime(this.muted ? 0 : Math.min(0.16, level * 0.16), t, 0.08);
+    if (level <= 0.001) return;
+    const base = heavy ? 42 : 62, f = base * (1 + revs * (heavy ? 0.9 : 1.7));
+    e.osc.frequency.setTargetAtTime(f, t, 0.08);
+    e.sub.frequency.setTargetAtTime(f / 2, t, 0.08);
+    e.lfo.frequency.setTargetAtTime(heavy ? 13 + revs * 10 : 20 + revs * 30, t, 0.08);
+    e.filter.frequency.setTargetAtTime((heavy ? 320 : 480) + revs * (heavy ? 500 : 1300), t, 0.1);
+  }
 
   /** continuous sounds, called every frame */
   setPlow(amount: number) {

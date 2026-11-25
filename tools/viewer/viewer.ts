@@ -5,6 +5,7 @@ import { loadAssets } from '../../src/render/Assets';
 import { PenguinModel, setPenguinQuality } from '../../src/render/PenguinModel';
 import { Penguin } from '../../src/sim/World';
 import { PostFX } from '../../src/render/PostFX';
+import { makeVehicleModel, VehicleKind } from '../../src/render/VehicleModel';
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
 renderer.setSize(innerWidth, innerHeight);
@@ -53,6 +54,9 @@ scene.add(ground);
 const post = new PostFX(renderer, scene, camera);
 post.setSize(innerWidth, innerHeight, 1);
 
+const TEAM_TINT = [0x2f7ee8, 0xff8a2e];
+const vehicles: THREE.Group[] = [];
+
 interface Actor { model: PenguinModel; p: Penguin; tick?: (p: Penguin, t: number, dt: number) => void }
 const actors: Actor[] = [];
 let time = 0;
@@ -60,7 +64,59 @@ let usePost = true;
 
 const api = {
   ready: false,
-  clear() { for (const a of actors) a.model.dispose(scene); actors.length = 0; },
+  clear() { for (const a of actors) a.model.dispose(scene); actors.length = 0; for (const v of vehicles) scene.remove(v); vehicles.length = 0; },
+  /** Add a vehicle (front toward `yaw`, radians from +x turning toward -z). riders: put a penguin on every seat. */
+  async vehicle(opts: { kind: VehicleKind; team?: number; x?: number; z?: number; yaw?: number; riders?: boolean }) {
+    const g = await makeVehicleModel(opts.kind, TEAM_TINT[opts.team ?? 0]);
+    g.position.set(opts.x ?? 0, 0, opts.z ?? 0);
+    g.rotation.y = opts.yaw ?? 0;
+    scene.add(g);
+    vehicles.push(g);
+    g.updateMatrixWorld(true);
+    if (opts.riders) for (const name of ['seat0', 'seat1']) {
+      const seat = g.getObjectByName(name);
+      if (!seat) continue;
+      const at = seat.getWorldPosition(new THREE.Vector3());
+      // a penguin faces -z at yaw 0; the vehicle's front is its +x
+      api.add({ team: opts.team ?? 0, hat: name === 'seat1' ? 'beanie' : 'none', x: at.x, z: at.z, yaw: (opts.yaw ?? 0) - Math.PI / 2, state: { y: at.y, py: at.y } });
+    }
+    return vehicles.length - 1;
+  },
+  /** Turn a named part of a vehicle: rot = [x, y, z] radians. */
+  part(i: number, name: string, rot: [number, number, number]) { vehicles[i].getObjectByName(name)?.rotation.set(rot[0], rot[1], rot[2]); },
+  /** Run the belts `metres` along and roll the wheels to match. */
+  drive(i: number, metres: number) {
+    vehicles[i].traverse(o => {
+      for (const t of (o.userData.scroll as THREE.Texture[] | undefined) ?? []) t.offset.y = metres % 1;
+      if (o.name.startsWith('wheel')) o.rotation.z = -metres / (o.userData.radius ?? 0.2);
+    });
+  },
+  /** Which way a belt's v runs along its bottom run (should rise toward the front, +x), its bounding box, and whether its textures are its own. */
+  uvcheck(i: number) {
+    const out: Record<string, unknown> = {};
+    vehicles[i].traverse(o => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh || m.userData.mat !== 'tread') return;
+      const pos = m.geometry.attributes.position, uv = m.geometry.attributes.uv;
+      let lo: number[] | null = null, hi: number[] | null = null, vmin = 1e9, vmax = -1e9, umin = 1e9, umax = -1e9;
+      const base = m.getWorldPosition(new THREE.Vector3());
+      for (let k = 0; k < pos.count; k++) {
+        vmin = Math.min(vmin, uv.getY(k)); vmax = Math.max(vmax, uv.getY(k)); umin = Math.min(umin, uv.getX(k)); umax = Math.max(umax, uv.getX(k));
+        if (pos.getY(k) + base.y > 0.03) continue; // the bottom run only
+        const p = [pos.getX(k) + base.x, uv.getY(k)];
+        if (!lo || p[0] < lo[0]) lo = p; if (!hi || p[0] > hi[0]) hi = p;
+      }
+      out[m.parent!.name] = { rear: lo, front: hi, u: [umin, umax], v: [vmin, vmax], scroll: (m.parent!.userData.scroll as unknown[] | undefined)?.length };
+    });
+    out.box = new THREE.Box3().setFromObject(vehicles[i]).min.toArray().concat(new THREE.Box3().setFromObject(vehicles[i]).max.toArray()).map(v => +v.toFixed(3));
+    return out;
+  },
+  /** What the model is made of: every named node with its position, for checking pivots. */
+  nodes(i: number) {
+    const out: Record<string, number[]> = {};
+    vehicles[i].traverse(o => { if (o.name && !(o as THREE.Mesh).isMesh) out[o.name] = [...o.getWorldPosition(new THREE.Vector3()).sub(vehicles[i].position).toArray().map(v => +v.toFixed(3)), o.userData.radius ?? 0]; });
+    return out;
+  },
   /** Add a penguin. state: fields to set on its sim Penguin; anim: 'walk' | 'run' moves it as if walking. */
   add(opts: { team?: number; hat?: string; x?: number; z?: number; yaw?: number; name?: string | null; state?: Partial<Penguin>; anim?: string }) {
     const p = new Penguin(actors.length, opts.name ?? '', opts.team ?? 0, opts.hat ?? 'none', false);
@@ -101,6 +157,8 @@ if (!new URLSearchParams(location.search).has('script')) {
   // a default line-up when opened by hand
   const hats = ['none', 'beanie', 'tophat', 'propeller', 'viking', 'crown', 'fish', 'party', 'chef', 'cone'];
   hats.forEach((h, i) => api.add({ team: i % 2, hat: h, x: (i - 4.5) * 1.1, yaw: Math.PI, anim: i % 3 === 1 ? 'walk' : undefined }));
+  void api.vehicle({ kind: 'snowmobile', team: 0, x: -3.6, z: 3.2, yaw: 2.2, riders: true });
+  void api.vehicle({ kind: 'snowplow', team: 1, x: 3.2, z: 5.2, yaw: 1.2, riders: true });
   api.camera(0, 1.6, -9, 0, 0.6, 0, 35);
   let last = performance.now();
   const loop = (now: number) => { const dt = Math.min(0.05, (now - last) / 1000); last = now; api.run(1, dt); requestAnimationFrame(loop); };

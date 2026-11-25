@@ -36,6 +36,17 @@ MATERIALS = {
     'rope': dict(color=(0.55, 0.42, 0.25), rough=0.9),
     'ribbon': dict(color=(1, 1, 1), rough=0.45, sheen=0.5),
     'glow': dict(color=(1.0, 0.72, 0.35), rough=0.4, emit=6.0),
+    # vehicles (tools/blender/vehicles.py). `paint` is baked light grey and multiplied by the team colour in the game;
+    # `trim` and `seat` are white here and take their colour from the vertex tint.
+    'paint': dict(color=(1, 1, 1), rough=0.34, coat=1.0),
+    'trim': dict(color=(1, 1, 1), rough=0.5),
+    'rubber': dict(color=(0.022, 0.023, 0.026), rough=0.85),
+    'tread': dict(tex='tread', tile=1.0),
+    'glass': dict(color=(0.55, 0.75, 0.9), rough=0.05, alpha=0.3),
+    'chrome': dict(color=(0.85, 0.87, 0.9), rough=0.12, metal=1.0),
+    'seat': dict(color=(1, 1, 1), rough=0.55, sheen=0.3),
+    'beacon': dict(color=(1.0, 0.45, 0.04), rough=0.3, emit=5.0),
+    'lamp_red': dict(color=(1.0, 0.06, 0.04), rough=0.3, emit=3.0),
 }
 
 
@@ -111,6 +122,10 @@ def material(name):
     if spec.get('emit'):
         bsdf.inputs['Emission Color'].default_value = (*spec['color'], 1)
         bsdf.inputs['Emission Strength'].default_value = spec['emit']
+    if spec.get('alpha') is not None:  # see-through (window glass)
+        bsdf.inputs['Alpha'].default_value = spec['alpha']
+        try: m.surface_render_method = 'BLENDED'
+        except Exception: pass
     _mats[name] = m
     return m
 
