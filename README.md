@@ -4,6 +4,24 @@ A penguin snowball-fight arena that runs in the browser. Built live on stream by
 
 Push and pile real 3D snow, pat it into forts, dig tunnels, pack snowballs (carry 5, stash the rest in your team's stockpile), belly slide down hills, shove big snowballs downhill to flatten forts, and grab shiny snowflakes in no-man's-land to upgrade your mittens. One minute build phase, then team splat-match: 3 hits sends you back to base, first team to 25 splats wins. 5v5 or 10v10, bots fill the empty slots.
 
+## Classes
+
+Pick one on the menu. You can change it from the pause screen while you play, and the change starts with your next life. Bot teams are mostly penguins, with one polar bear and one yeti in every five.
+
+| | Penguin | Polar bear | Yeti |
+| --- | --- | --- | --- |
+| Hits to splat | 3 | 4 | 5 |
+| Speed | fastest | a little slower | slow |
+| Shift | belly slide | charge | nothing |
+| Snowballs | carries 5 | carries 5, packs a little slower | carries 3 giant ones, packs them slowly |
+| A hit does | 1 | 1 | 2, plus 1 to everyone within 2.5 m |
+
+- **Penguin**: the one you know. Small, quick, and the only class that can belly slide.
+- **Polar bear**: Shift starts a charge, a short fast rush that is hard to turn. Anyone on the other team in the way takes 2 hits and goes flying, a snowman turret takes 2 hits, and snow walls burst (one charge gets through a wall or two, a thick fort stops it). Seven seconds between charges. Charging into a giant snowball sends it off at speed.
+- **Yeti**: lobs giant snowballs with both hands. They fly slower and drop sooner, but hurt everyone close to where they land (unless there is snow between them and the blast), and blast a hole in whatever snow they hit, which is how you open up a fort. A yeti also digs two and a half times as fast. One giant snowball counts as two in the stockpile.
+
+The bigger classes are easier to hit, and neither can slide. Every number is in `src/sim/Classes.ts` (the classes) and `src/sim/config.ts` (the charge). `npm run balance` plays bot matches between line-ups of classes and prints who won and how each class did; see `tools/balance/classes.ts`.
+
 ## Game modes
 
 - **Team Deathmatch** on Frostbite Bay: first team to 25 splats. Splat streaks of 3, 5 and 7 earn a Snowball Frenzy, an Insta-Turret and an Avalanche. Each team comes back along a spawn line that runs the whole length of its side of the map (not at the igloo), and has three stockpiles on that line: one by the igloo and one at a camp at each end. The far north (the Drifts) and the far south (the Inlet, a strip of sea ice) are ways round the middle.
@@ -28,7 +46,7 @@ Then open the link Vite prints (usually http://localhost:5173).
 | WASD + mouse | Move and look |
 | Left click | Throw (hold to throw farther) |
 | Right click (hold) | Push snow with your mittens |
-| F (hold) | Pack a snowball (max 5) |
+| F (hold) | Pack a snowball (max 5, a yeti's giant ones max 3) |
 | R (hold) | Build snow where you aim |
 | Q (hold) | Dig snow where you aim (tunnels!) |
 | G (hold) | Pack a giant snowball to roll |
@@ -36,7 +54,7 @@ Then open the link Vite prints (usually http://localhost:5173).
 | 1 / 2 / 3 | Use a splat-streak reward (Team Deathmatch) |
 | E | Grab snowballs from a stockpile (works on the enemy's too) |
 | Hold E | Stash your snowballs in your stockpile, or load a turret beside you |
-| Shift | Belly slide |
+| Shift | Belly slide (penguin), charge (polar bear) |
 | Space | Hop |
 | Tab | Scoreboard |
 
@@ -97,7 +115,8 @@ For the Flynn Arcade hub, add `{ "id": "penguin", "name": "Polar Penguin Fight",
 - `src/render/`, `src/ui/`, `src/game/`: visuals, particles, HUD, menus, procedural sound.
 - `src/world/Maps.ts`: the maps by id (`MapDef.ts` is Frostbite Bay, `ConquestMap.ts` is Glacier Gap, `BreakthroughMap.ts` is Peppermint Pass). `Landmarks.ts` is what you bump into: ice, houses, ruins, candy canes, sleds, ice blocks.
 - `public/models/*.glb`, `public/textures/*.webp`: the houses and props, modelled in Blender. See "Props" below.
-- `src/sim/config.ts`: every gameplay number in one place for tuning.
+- `src/sim/config.ts`: every gameplay number in one place for tuning. `src/sim/Classes.ts`: what makes a penguin, a polar bear and a yeti different.
+- `src/assets/models/`: the three characters and the hats, built in Blender (`tools/blender/README.md`).
 
 ## Props (Blender)
 

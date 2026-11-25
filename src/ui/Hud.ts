@@ -1,5 +1,6 @@
 import { World, Penguin, SplatCause } from '../sim/World';
 import { CFG, MITTEN_NAMES, REWARD_NAMES } from '../sim/config';
+import { CLASSES, ClassId } from '../sim/Classes';
 
 const h = (html: string) => { const d = document.createElement('div'); d.innerHTML = html.trim(); return d.firstElementChild as HTMLElement; };
 const esc = (s: string) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
@@ -18,6 +19,7 @@ export class Hud {
   private bt: boolean;
   private lastStreak = '';
   private lastPoints = '';
+  private cls: ClassId | null = null;
 
   constructor(w: World) {
     const conquest = this.conquest = w.mode === 'conquest';
@@ -46,6 +48,7 @@ export class Hud {
       <div class="status">
         ${flags ? '' : `<div class="card streak"><div class="label">Splat streak <b id="streakN">0</b></div><div class="rewards" id="rewards">${
           REWARD_NAMES.map((n, i) => `<div class="rw" data-i="${i}"><span class="key">${i + 1}</span><span class="nm">${n}</span><span class="at">${CFG.streakAt[i]}</span></div>`).join('')}</div></div>`}
+        <div class="card hidden" id="rushCard"><div class="label">Charge <span class="key">Shift</span></div><div class="rushbar"><div id="rushbar"></div></div><div class="rushtxt" id="rushTxt">READY</div></div>
         <div class="card"><div class="label">Mittens</div><div class="mitten"><span id="mitName">Wool Mittens</span><span class="pip"></span><span class="pip"></span><span class="pip"></span></div></div>
         <div class="card"><div class="label">Health</div><div class="hearts" id="hearts"></div></div>
         <div class="card"><div class="label">Snowballs</div><div class="balls" id="balls"></div><div class="packbar"><div id="packbar"></div></div></div>
@@ -59,16 +62,25 @@ export class Hud {
         <div>hold <span class="key">T</span>build a turret (lots of snow)</div>
         ${flags ? '' : '<div><span class="key">1</span><span class="key">2</span><span class="key">3</span>streak rewards</div>'}
         <div><span class="key">E</span>grab &nbsp;·&nbsp; hold <span class="key">E</span>stash</div>
-        <div><span class="key">Shift</span>belly slide &nbsp; <span class="key">Space</span>hop</div>
+        <div id="shiftKey"></div>
         <div><span class="key">Tab</span>scores</div>
       </div>
       <div class="board hidden" id="board"></div>
     </div>`);
-    const hearts = this.q('#hearts');
-    for (let i = 0; i < CFG.maxHealth; i++) hearts.appendChild(h('<div class="heart"></div>'));
-    const balls = this.q('#balls');
-    for (let i = 0; i < CFG.maxCarry; i++) balls.appendChild(h('<div class="ball off"></div>'));
+    this.setClass(w.player.cls);
     document.body.appendChild(this.el);
+  }
+
+  /** Hearts, snowball slots and the Shift key are different for each class. */
+  private setClass(cls: ClassId) {
+    if (cls === this.cls) return;
+    this.cls = cls;
+    const def = CLASSES[cls];
+    this.q('#hearts').innerHTML = '<div class="heart"></div>'.repeat(def.health);
+    this.q('#balls').innerHTML = `<div class="ball off${def.splash > 0 ? ' big' : ''}"></div>`.repeat(def.maxCarry);
+    this.lastCarried = -1;
+    this.q('#rushCard').classList.toggle('hidden', !def.rush);
+    this.q('#shiftKey').innerHTML = `${def.slide ? '<span class="key">Shift</span>belly slide &nbsp; ' : def.rush ? '<span class="key">Shift</span>charge &nbsp; ' : ''}<span class="key">Space</span>hop`;
   }
 
   banner(big: string, small = '', time = 2.2) {
@@ -96,7 +108,7 @@ export class Hud {
   feed(killer: Penguin | undefined, victim: Penguin, cause: SplatCause) {
     const f = this.q('#feed');
     const k = killer ? `<span class="t${killer.team}">${esc(killer.name)}</span>` : '<span>Gravity</span>';
-    const icon = cause === 'bigball' ? 'flattened' : cause === 'turret' ? 'turret got' : cause === 'avalanche' ? 'buried' : 'splatted';
+    const icon = cause === 'bigball' ? 'flattened' : cause === 'turret' ? 'turret got' : cause === 'avalanche' ? 'buried' : cause === 'charge' ? 'ran over' : 'splatted';
     const row = h(`<div class="row">${k}<span class="ic">${icon}</span><span class="t${victim.team}">${esc(victim.name)}</span></div>`);
     f.prepend(row);
     while (f.children.length > 5) f.lastElementChild!.remove();
@@ -151,6 +163,16 @@ export class Hud {
     }
 
     // hearts / balls / pack progress
+    this.setClass(me.cls);
+    const def = CLASSES[me.cls];
+    if (def.rush) {
+      const cd = Math.max(0, me.rushCd), all = CFG.rushTime + CFG.rushCooldown;
+      (this.q('#rushbar') as HTMLElement).style.width = `${(1 - cd / all) * 100}%`;
+      const txt = me.rushT > 0 ? 'CHARGING!' : cd > 0 ? `${Math.ceil(cd)}s` : 'READY';
+      const t = this.q('#rushTxt');
+      if (t.textContent !== txt) t.textContent = txt;
+      this.q('#rushCard').classList.toggle('ready', cd <= 0);
+    }
     const hearts = this.q('#hearts').children;
     for (let i = 0; i < hearts.length; i++) hearts[i].classList.toggle('off', i >= me.health);
     const balls = this.q('#balls').children;
@@ -175,9 +197,9 @@ export class Hud {
     if (me.alive && pile >= 0) {
       const n = w.piles[pile];
       if (pile === me.team) {
-        if (n > 0 && me.carried < CFG.maxCarry) prompts.push(`<span class="key">E</span>Grab snowballs (${n})`);
+        if (n >= def.ballCost && me.carried < def.maxCarry) prompts.push(`<span class="key">E</span>Grab snowballs (${n})`);
         if (me.carried > 0) prompts.push(`Hold <span class="key">E</span>Stash ${me.carried}`);
-      } else if (n > 0 && me.carried < CFG.maxCarry) prompts.push(`<span class="key">E</span>Steal snowballs (${n})!`);
+      } else if (n >= def.ballCost && me.carried < def.maxCarry) prompts.push(`<span class="key">E</span>Steal snowballs (${n})!`);
     }
     if (me.alive && pile < 0 && me.carried > 0) {
       const t = w.nearTurret(me);
@@ -195,7 +217,7 @@ export class Hud {
     if (!me.alive) {
       const k = w.penguin(me.lastHitBy);
       const out = this.bt && me.team === 0 && w.phase === 'fight' && w.scores[0] <= 0;
-      this.q('#downSmall').textContent = `${k ? `${k.name} got you. ` : ''}${out ? 'No tickets left: you\'re out unless your team takes the section' : `Back in ${Math.max(0, me.downT).toFixed(1)}s`}`;
+      this.q('#downSmall').textContent = `${k ? `${k.name} got you. ` : ''}${out ? 'No tickets left: you\'re out unless your team takes the section' : `Back in ${Math.max(0, me.downT).toFixed(1)}s`}${me.nextCls !== me.cls ? ` as a ${CLASSES[me.nextCls].name}` : ''} · Esc to change class`;
     }
     this.q('.frost').classList.toggle('on', me.alive && me.health === 1);
 

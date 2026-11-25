@@ -10,6 +10,7 @@
 import * as P from './Protocol';
 import { World, Penguin, PenguinInput, GameEvent, RosterEntry, emptyInput, Snowball, BigBall, Flake, Turret } from '../sim/World';
 import type { Mode } from '../world/Maps';
+import type { ClassId } from '../sim/Classes';
 
 const STEP = 1 / P.TICK_HZ;
 const DELAY = 6; // ticks behind the server that other penguins are shown (100 ms): room for a late snapshot
@@ -24,7 +25,7 @@ export interface NetHooks {
   onClose(reason: string): void;
 }
 
-export interface JoinRequest { name: string; hat: string; size: number; mode: Mode; /** Breakthrough: the side you'd like (0 attack, 1 defend) */ team?: number; }
+export interface JoinRequest { name: string; hat: string; size: number; mode: Mode; /** Breakthrough: the side you'd like (0 attack, 1 defend) */ team?: number; cls?: ClassId; }
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 const lerpA = (a: number, b: number, t: number) => { let d = b - a; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; return a + d * t; };
@@ -94,6 +95,9 @@ export class NetClient {
     };
   }
 
+  /** Come back as this class next time you respawn. */
+  setClass(cls: ClassId) { if (this.ws.readyState === 1) this.ws.send(JSON.stringify({ t: 'cls', cls })); }
+
   close() {
     if (this.closed) return;
     this.closed = true;
@@ -145,7 +149,7 @@ export class NetClient {
     if (!w) return;
     for (const r of roster) {
       const p = w.penguin(r.id);
-      if (p) { p.name = r.name; p.hat = r.hat; p.bot = r.bot; }
+      if (p) { p.name = r.name; p.hat = r.hat; p.bot = r.bot; p.cls = r.cls ?? p.cls; }
     }
     this.hooks.onRoster(roster);
   }
@@ -202,7 +206,7 @@ export class NetClient {
     let n = 0;
     while (n < this.events.length && this.events[n].tick <= rt) n++;
     for (const { e } of this.events.splice(0, n)) {
-      if (this.predicting && 'pid' in e && e.pid === me.id && (e.type === 'jump' || e.type === 'slideStart' || e.type === 'launch')) continue; // already played
+      if (this.predicting && 'pid' in e && e.pid === me.id && (e.type === 'jump' || e.type === 'slideStart' || e.type === 'launch' || e.type === 'rush')) continue; // already played
       w.events.push(e);
     }
 
@@ -279,7 +283,7 @@ export class NetClient {
     for (const s of a.balls) {
       const e = bb.get(s.id) ?? s;
       const x = lerp(s.x, e.x, t), y = lerp(s.y, e.y, t), z = lerp(s.z, e.z, t);
-      balls.push({ id: s.id, owner: -1, team: s.team, x, y, z, px: x, py: y, pz: z, vx: s.vx, vy: s.vy, vz: s.vz, age: 0, alive: true, kind: s.kind });
+      balls.push({ id: s.id, owner: -1, team: s.team, x, y, z, px: x, py: y, pz: z, vx: s.vx, vy: s.vy, vz: s.vz, age: 0, alive: true, kind: s.kind, big: s.big });
     }
     w.snowballs = balls;
 

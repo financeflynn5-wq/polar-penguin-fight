@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { loadAssets } from '../../src/render/Assets';
 import { PenguinModel, setPenguinQuality } from '../../src/render/PenguinModel';
 import { Penguin } from '../../src/sim/World';
+import type { ClassId } from '../../src/sim/Classes';
 import { PostFX } from '../../src/render/PostFX';
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
@@ -62,12 +63,12 @@ const api = {
   ready: false,
   clear() { for (const a of actors) a.model.dispose(scene); actors.length = 0; },
   /** Add a penguin. state: fields to set on its sim Penguin; anim: 'walk' | 'run' moves it as if walking. */
-  add(opts: { team?: number; hat?: string; x?: number; z?: number; yaw?: number; name?: string | null; state?: Partial<Penguin>; anim?: string }) {
-    const p = new Penguin(actors.length, opts.name ?? '', opts.team ?? 0, opts.hat ?? 'none', false);
+  add(opts: { team?: number; hat?: string; cls?: ClassId; x?: number; z?: number; yaw?: number; name?: string | null; state?: Partial<Penguin>; anim?: string }) {
+    const p = new Penguin(actors.length, opts.name ?? '', opts.team ?? 0, opts.hat ?? 'none', false, opts.cls ?? 'penguin');
     p.x = p.px = opts.x ?? 0; p.z = p.pz = opts.z ?? 0; p.y = p.py = 0;
     p.yaw = opts.yaw ?? 0; p.grounded = true;
     Object.assign(p, opts.state ?? {});
-    const model = new PenguinModel(p.team, p.hat, opts.name ?? null, !!opts.name);
+    const model = new PenguinModel(p.team, p.hat, opts.name ?? null, !!opts.name, p.cls);
     scene.add(model.root);
     const a: Actor = { model, p };
     if (opts.anim === 'walk' || opts.anim === 'run') {

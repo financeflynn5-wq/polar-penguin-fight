@@ -19,7 +19,7 @@ interface FakeBrowser {
 function browser(name: string): FakeBrowser {
   const got: (Uint8Array | string)[] = [];
   const ws = { readyState: 1, bufferedAmount: 0, send: (b: Uint8Array | string) => got.push(typeof b === 'string' ? b : new Uint8Array(b)), close: () => {} };
-  const c: Client = { ws: ws as any, name, hat: 'tophat', team: -1, penguinId: -1, queue: [], last: emptyInput(), lastSeq: -1, ack: 0, held: null, resync: false };
+  const c: Client = { ws: ws as any, name, hat: 'tophat', cls: name === 'Chat' ? 'yeti' : name === 'Mod' ? 'bear' : 'penguin', team: -1, penguinId: -1, queue: [], last: emptyInput(), lastSeq: -1, ack: 0, held: null, resync: false };
   return { c, got, density: null, hard: null, snaps: 0, bytes: 0, lastTick: -1, lastAck: -1, you: -1, matches: 0, rosters: 0, seq: 0, last: null };
 }
 
@@ -34,6 +34,7 @@ function drain(b: FakeBrowser) {
       b.density = all.slice(0, n); b.hard = all.slice(n);
       b.you = info.you; b.matches++; b.lastTick = info.tick;
       assert.ok(info.roster.some(r => r.id === info.you && !r.bot), 'you are a person in your roster');
+      assert.equal(info.roster.find(r => r.id === info.you)!.cls, b.c.cls, 'you are the class you asked for');
       assert.equal(info.mode, MODE, 'the match is the mode you asked for');
     } else if (m[0] === P.MSG_SNAP) {
       assert.ok(b.density, 'a snapshot never arrives before its snow field');

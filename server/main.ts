@@ -16,6 +16,7 @@ import { Room, Client } from './Room';
 import { PROTOCOL, TICK_HZ, TEAM_SIZES, MODES } from '../src/net/Protocol';
 import type { Mode } from '../src/world/Maps';
 import { HATS, emptyInput } from '../src/sim/World';
+import { asClass } from '../src/sim/Classes';
 import { cleanName } from './names.js';
 import { Bans, createArcade, ipOf } from './arcade.js';
 
@@ -123,6 +124,7 @@ wss.on('connection', (ws: WebSocket, _req: http.IncomingMessage, ip: string) => 
     if (!msg || typeof msg !== 'object') return;
     try {
       if (msg.t === 'in' && client && room) room.onInput(client, msg.s, Array.isArray(msg.i) ? msg.i : []);
+      else if (msg.t === 'cls' && client && room) room.setClass(client, asClass(msg.cls));
       else if (msg.t === 'ping') ws.send(JSON.stringify({ t: 'pong', c: Number(msg.c) || 0 }));
       else if (msg.t === 'join' && !client) {
         if (msg.v !== PROTOCOL) { ws.send(JSON.stringify({ t: 'joinErr', err: 'The game was just updated. Refresh the page to play.' })); return; }
@@ -131,7 +133,7 @@ wss.on('connection', (ws: WebSocket, _req: http.IncomingMessage, ip: string) => 
         const mode: Mode = MODES.includes(msg.mode) ? msg.mode : 'tdm';
         const hat = HATS.includes(msg.hat) ? msg.hat : 'beanie';
         const c: Client = {
-          ws, name: cleanName(msg.name, 'Penguin', { max: 16, prefix: 'Penguin' }), hat,
+          ws, name: cleanName(msg.name, 'Penguin', { max: 16, prefix: 'Penguin' }), hat, cls: asClass(msg.cls),
           // Breakthrough: you can ask to attack or defend, and get it when that side has room
           team: mode === 'breakthrough' && (msg.team === 0 || msg.team === 1) ? msg.team : -1, penguinId: -1,
           queue: [], last: emptyInput(), lastSeq: -1, ack: 0, held: null, resync: false,
