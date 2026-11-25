@@ -108,7 +108,7 @@ export const CFG = {
   btTickets: 8, // attackers' tickets at the start, per penguin on the team (each attacker who goes down costs one)
   btSectorTickets: 5, // tickets the attackers get back for taking a section, per penguin on the team
   btCaptureTime: 5, // an objective goes from all theirs to all yours in twice this long with one penguin on it, faster with more
-  btRetake: 0.5, // how fast the defenders win an objective back, next to how fast the attackers take it
+  btRetake: 0.4, // how fast the defenders win an objective back, next to how fast the attackers take it
   btRegroup: 20, // seconds the attackers wait after a section falls
   btLastStand: 60, // seconds the attackers have once their tickets are gone
   btRespawn: [3.5, 5], // seconds down: attackers, defenders

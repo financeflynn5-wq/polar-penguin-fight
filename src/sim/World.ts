@@ -1641,7 +1641,8 @@ export class World {
         const from = pt.owner;
         pt.owner = side;
         this.emit({ type: 'capture', point: pt.id, team: side, from });
-      } else if ((pt.owner === 0 && pt.cap >= 0) || (pt.owner === 1 && pt.cap <= 0)) {
+      } else if (!bt && ((pt.owner === 0 && pt.cap >= 0) || (pt.owner === 1 && pt.cap <= 0))) {
+        // (in Breakthrough an objective stays with whoever holds it until the other side has taken it all the way)
         this.emit({ type: 'neutral', point: pt.id, team: pt.owner });
         pt.owner = -1;
       }
