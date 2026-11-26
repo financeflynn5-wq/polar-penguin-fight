@@ -13,7 +13,7 @@ import { Decals } from '../render/Decals';
 import { World, Penguin, GameEvent, solveThrow, lookVelocity, MatchOptions } from '../sim/World';
 import { BotBrain } from '../sim/Bot';
 import { CFG, MITTEN_NAMES, REWARD_NAMES, GUN_NAMES } from '../sim/config';
-import { GUN_COCOA } from '../sim/Guns';
+import { GUN_COCOA, GUN_BLADE } from '../sim/Guns';
 import { GunsView } from '../render/GunsView';
 import { LandmarksView } from '../render/Landmarks';
 import { TurretsView } from '../render/Turrets';
@@ -777,7 +777,7 @@ export class Game {
         const victim = w.penguin(e.pid)!;
         const killer = w.penguin(e.by);
         H.feed(killer, victim, e.cause);
-        if (e.by === me.id && e.pid !== me.id) H.banner('SPLAT!', e.cause === 'turret' ? `Your turret got ${victim.name}` : e.cause === 'cocoa' ? `You melted ${victim.name}` : `You got ${victim.name}`, 1.3);
+        if (e.by === me.id && e.pid !== me.id) H.banner('SPLAT!', e.cause === 'turret' ? `Your turret got ${victim.name}` : e.cause === 'cocoa' ? `You melted ${victim.name}` : e.cause === 'blade' ? `You whacked ${victim.name}` : `You got ${victim.name}`, 1.3);
         break;
       }
       case 'turretBuilt': {
@@ -901,17 +901,19 @@ export class Game {
         break;
       }
       case 'gunSpawn': {
-        P.sparkle(e.x, e.y, e.z, 40, e.gun === GUN_COCOA ? 1 : 0.5, e.gun === GUN_COCOA ? 0.7 : 0.9, e.gun === GUN_COCOA ? 0.4 : 1);
-        if (e.team === me.team) { A.flake(e.x, e.y, e.z); H.toast(`A ${GUN_NAMES[e.gun]} is up on your team's ${e.gun === GUN_COCOA ? 'north' : 'south'} gun pad!`, 2.4); }
+        P.sparkle(e.x, e.y, e.z, 40, e.gun === GUN_COCOA || e.gun === GUN_BLADE ? 1 : 0.5, e.gun === GUN_COCOA ? 0.7 : e.gun === GUN_BLADE ? 0.5 : 0.9, e.gun === GUN_COCOA ? 0.4 : e.gun === GUN_BLADE ? 0.6 : 1);
+        if (e.team === me.team) { A.flake(e.x, e.y, e.z); H.toast(`A ${GUN_NAMES[e.gun]} is up on your team's ${e.gun === GUN_COCOA ? 'north' : e.gun === GUN_BLADE ? 'middle' : 'south'} gun pad!`, 2.4); }
         break;
       }
       case 'gunGrab': {
-        P.sparkle(e.x, e.y, e.z, 36, e.gun === GUN_COCOA ? 1 : 0.5, e.gun === GUN_COCOA ? 0.7 : 0.9, e.gun === GUN_COCOA ? 0.4 : 1);
+        P.sparkle(e.x, e.y, e.z, 36, e.gun === GUN_COCOA || e.gun === GUN_BLADE ? 1 : 0.5, e.gun === GUN_COCOA ? 0.7 : e.gun === GUN_BLADE ? 0.5 : 0.9, e.gun === GUN_COCOA ? 0.4 : e.gun === GUN_BLADE ? 0.6 : 1);
         A.packDone(e.x, e.y, e.z);
         if (e.pid === me.id) {
           this.gunWanted = true;
           A.grab();
-          const what = e.gun === GUN_COCOA ? 'Hold the mouse to melt their walls and snowmen' : 'Soak them to slow them down. A miss leaves a slippery ice patch';
+          const what = e.gun === GUN_COCOA ? 'Hold the mouse to melt their walls and snowmen'
+            : e.gun === GUN_BLADE ? 'Get close and click to swing. Two whacks splat a penguin, and a swing smashes snowballs out of the air'
+            : 'Soak them to slow them down. A miss leaves a slippery ice patch';
           if (!this.taughtGun) { this.taughtGun = true; H.banner(GUN_NAMES[e.gun].toUpperCase() + '!', `${what}. X swaps back to snowballs`, 3.6); }
           else H.banner(GUN_NAMES[e.gun].toUpperCase() + '!', what, 2.2);
         }
@@ -923,7 +925,29 @@ export class Game {
         if (e.gun === GUN_COCOA) { if (Math.random() < 0.6) A.cocoaSpray(e.x, e.y, e.z); } else A.waterShot(e.x, e.y, e.z);
         break;
       }
-      case 'gunEmpty': if (e.pid === me.id) { A.gunEmpty(); H.toast(`${GUN_NAMES[e.gun]} is empty: back to snowballs`, 2); } break;
+      case 'gunEmpty': {
+        if (e.gun === GUN_BLADE) {
+          // the candy cane snaps: red and white bits everywhere
+          const p = w.penguin(e.pid);
+          if (p) for (let k = 0; k < 16; k++) { const a = Math.random() * Math.PI * 2, sp = 1 + Math.random() * 3; P.spawn(PKind.Grain, p.x, p.y + 0.9, p.z, Math.cos(a) * sp, 2 + Math.random() * 3, Math.sin(a) * sp, 0.05 + Math.random() * 0.04, 1, 1, k % 2 ? 0.25 : 0.95, k % 2 ? 0.3 : 0.95); }
+          if (e.pid === me.id) { A.bladeSnap(); H.toast('Your Candy Cane Blade snapped: back to snowballs', 2); }
+        } else if (e.pid === me.id) { A.gunEmpty(); H.toast(`${GUN_NAMES[e.gun]} is empty: back to snowballs`, 2); }
+        break;
+      }
+      case 'bladeSwing': { const p = w.penguin(e.pid); if (p) A.bladeSwing(p.x, p.y + 0.8, p.z); break; }
+      case 'bladeHit': {
+        A.bladeHit(e.x, e.y, e.z);
+        P.sparkle(e.x, e.y, e.z, 14, 1, 0.6, 0.7);
+        for (let k = 0; k < 8; k++) { const a = Math.random() * Math.PI * 2, sp = 1.5 + Math.random() * 3; P.spawn(PKind.Grain, e.x, e.y, e.z, Math.cos(a) * sp, 1.5 + Math.random() * 3, Math.sin(a) * sp, 0.04 + Math.random() * 0.03, 0.8, 1, k % 2 ? 0.25 : 0.95, k % 2 ? 0.3 : 0.95); }
+        break;
+      }
+      case 'bladeBlock': {
+        A.bladeBlock(e.x, e.y, e.z);
+        P.burst(e.x, e.y, e.z, 18, 3.5, 1);
+        P.sparkle(e.x, e.y, e.z, 10, 1, 0.9, 0.95);
+        if (e.pid === me.id) H.toast('Smashed a snowball!', 0.9);
+        break;
+      }
       case 'soak': {
         A.freeze(e.x, e.y, e.z);
         if (e.by === me.id) { H.hitMarker(e.chill >= 1); A.hitMarker(); }

@@ -66,7 +66,7 @@ const SETS = {
       await shot('hatback_' + h);
     }
   },
-  // the two guns: each alone from four sides, both beside a penguin for scale, and small, as seen from 12 m away
+  // the two guns (the blade has its own set below): each alone from four sides, both beside a penguin for scale, and small, as seen from 12 m away
   guns: async (page, shot) => {
     const views = { side: [1.25, 1.12, -0.19, 0, 1.06, -0.19], front: [0.72, 1.36, -1.25, 0, 1.06, -0.2], back: [-0.62, 1.5, 0.82, 0, 1.06, -0.2], left: [-1.25, 1.12, -0.19, 0, 1.06, -0.19], top: [0.25, 2.2, 0.05, 0, 1.06, -0.2] };
     for (const g of ['cocoa', 'water']) {
@@ -126,6 +126,46 @@ const SETS = {
       v.camera(0, 2.6, 12, 0, 0.7, 0, 55); v.run(40);
     });
     await shot('guns_held_far');
+  },
+  // the Candy Cane Blade: alone from every side, beside a penguin for scale, carried, and small, as seen from 12 m away
+  blade: async (page, shot) => {
+    const views = { side: [1.5, 0.98, -0.34, 0, 0.96, -0.34], left: [-1.5, 0.98, -0.34, 0, 0.96, -0.34], top: [0.02, 2.5, -0.33, 0, 0.96, -0.34], under: [0.02, -0.55, -0.33, 0, 0.96, -0.34],
+      front: [0.85, 1.32, -1.75, 0, 0.96, -0.36, 21], back: [-0.7, 1.4, 0.95, 0, 0.96, -0.32, 23], hilt: [0.62, 1.1, 0.28, 0, 0.95, -0.03], point: [0.5, 1.12, -0.95, 0, 0.98, -0.66] };
+    await page.evaluate(() => { const v = window.viewer; v.clear(); v.gun('blade', { y: 1 }); });
+    for (const [name, cam] of Object.entries(views)) {
+      await page.evaluate(c => { window.viewer.camera(...c.slice(0, 6), c[6] ?? 30); window.viewer.run(3); }, cam);
+      await shot(`blade_${name}`);
+    }
+    await page.evaluate(() => {
+      const v = window.viewer; v.clear();
+      v.add({ team: 0, hat: 'beanie', x: 0.35, yaw: 0.25 });
+      v.gun('blade', { x: -0.55, y: 0.2, z: -0.1, pitch: Math.PI / 2 - 0.12, yaw: Math.PI / 2 });
+      v.gun('cocoa', { x: -1.15, y: 0.5, z: -0.1, yaw: Math.PI / 2 - 0.35 });
+      v.camera(0.0, 1.05, -4.1, -0.25, 0.6, 0, 30); v.run(40);
+    });
+    await shot('blade_scale');
+    const held = { gun: 3, gunOut: true };
+    await page.evaluate(held => {
+      const v = window.viewer; v.clear();
+      v.hold(v.add({ team: 0, hat: 'beanie', x: -0.75, yaw: 0.35, state: held }), 'blade');
+      v.hold(v.add({ team: 1, hat: 'none', x: 0.75, yaw: 0.35, state: held }), 'blade');
+      v.camera(1.6, 1.15, -3.9, 0.1, 0.7, 0, 30); v.run(40);
+    }, held);
+    await shot('blade_held');
+    await page.evaluate(() => { const v = window.viewer; v.camera(1.3, 2.0, 4.6, 0.2, 0.8, -0.6, 32); v.run(2); });
+    await shot('blade_held_behind');
+    await page.evaluate(() => { const v = window.viewer; v.camera(0.2, 1.05, -2.0, 0.05, 0.85, 0, 30); v.run(2); });
+    await shot('blade_held_close');
+    await page.evaluate(held => {
+      const v = window.viewer; v.clear();
+      v.hold(v.add({ team: 0, hat: 'none', x: -1.2, yaw: 2.3, state: held }), 'blade');
+      v.hold(v.add({ team: 1, hat: 'none', x: 1.2, yaw: 2.3, state: held }), 'blade');
+      v.hold(v.add({ team: 1, hat: 'none', x: -3.4, yaw: 0.6, state: held }), 'blade');
+      v.hold(v.add({ team: 0, hat: 'none', x: 3.4, yaw: 0.6, state: held }), 'blade');
+      v.gun('blade', { x: 0, y: 0.9, yaw: Math.PI / 2 }); v.gun('blade', { x: 0, y: 0.25, yaw: 0.6 });
+      v.camera(0, 2.6, 12, 0, 0.7, 0, 55); v.run(40);
+    }, held);
+    await shot('blade_far');
   },
 };
 

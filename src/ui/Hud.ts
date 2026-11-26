@@ -63,7 +63,7 @@ export class Hud {
         <div>hold <span class="key">T</span>build a turret (lots of snow)</div>
         ${flags ? '' : '<div><span class="key">1</span><span class="key">2</span><span class="key">3</span>streak rewards</div>'}
         <div><span class="key">E</span>grab &nbsp;·&nbsp; hold <span class="key">E</span>stash</div>
-        <div><span class="key">X</span>gun / snowballs (guns are on the gun pads)</div>
+        <div><span class="key">X</span>gun or blade / snowballs (find them on the gun pads)</div>
         <div><span class="key">Shift</span>belly slide &nbsp; <span class="key">Space</span>hop</div>
         <div><span class="key">Tab</span>scores</div>
       </div>
@@ -101,7 +101,7 @@ export class Hud {
   feed(killer: Penguin | undefined, victim: Penguin, cause: SplatCause) {
     const f = this.q('#feed');
     const k = killer ? `<span class="t${killer.team}">${esc(killer.name)}</span>` : '<span>Gravity</span>';
-    const icon = cause === 'bigball' ? 'flattened' : cause === 'turret' ? 'turret got' : cause === 'avalanche' ? 'buried' : cause === 'cocoa' ? 'melted' : 'splatted';
+    const icon = cause === 'bigball' ? 'flattened' : cause === 'turret' ? 'turret got' : cause === 'avalanche' ? 'buried' : cause === 'cocoa' ? 'melted' : cause === 'blade' ? 'whacked' : 'splatted';
     const row = h(`<div class="row">${k}<span class="ic">${icon}</span><span class="t${victim.team}">${esc(victim.name)}</span></div>`);
     f.prepend(row);
     while (f.children.length > 5) f.lastElementChild!.remove();
@@ -175,6 +175,7 @@ export class Hud {
       const card = this.q('#gun');
       card.classList.toggle('hidden', !me.gun);
       card.classList.toggle('cocoa', me.gun === 1);
+      card.classList.toggle('blade', me.gun === 3);
       card.classList.toggle('out', me.gunOut);
       this.q('#gunName').textContent = GUN_NAMES[me.gun] ?? '';
       this.q('#gunSwap').textContent = me.gunOut ? 'back to snowballs' : 'take it out';

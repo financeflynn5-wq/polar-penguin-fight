@@ -47,7 +47,7 @@ To add a hat: write a `hat_<name>()` function in `hats.py`, add it to `HATS`, an
 
 ## Guns
 
-    python tools/blender/guns.py                 # → src/assets/models/guns/cocoa.glb and water.glb   (about 2 minutes)
+    python tools/blender/guns.py                 # → src/assets/models/guns/cocoa.glb, water.glb and blade.glb   (about 3 minutes)
     python tools/blender/guns.py water           # just one
     python tools/blender/guns.py cocoa --shapes  # quick Cycles renders for judging shape (no bake, no export)
 
@@ -66,10 +66,32 @@ What the game relies on:
 To change a gun, edit `gun_cocoa()` or `gun_water()` in `guns.py`. The grip, muzzle and foregrip positions are the
 first lines of each. `guns.py` packs its own texture atlas (`pack_even`) so the texels stay square.
 
+### Candy Cane Blade
+
+    python tools/blender/guns.py blade           # → src/assets/models/guns/blade.glb   (about 40 seconds)
+    python tools/blender/guns.py blade --shapes  # quick Cycles renders, no bake or export
+
+`blade` is the melee weapon: one fat candy cane. The straight of the cane is sharpened into the blade (round back,
+ground bevel, a crust of sugar along the edge, the point licked pink), the middle is wrapped in green wool as the grip,
+and the crook turns back under the mitten as a knuckle guard. A peppermint sits where blade meets grip, with a sprig of
+holly on the blade's back. It is built by `gun_blade()` in `guns.py`, the same way as the guns: one mesh, one material
+(`Gun_blade`), 1024 px baked textures, about 3,700 triangles.
+
+What the game relies on:
+
+- In the GLB the blade points along -Z, up is +Y (the blade's back, where the holly is), and the origin is the middle
+  of the grip. The crook hangs on the -Y side, so it faces forward when the blade is carried point up.
+- A child node called `tip` sits at the very point, and one called `mid` halfway along the cutting part.
+- 0.975 m long (0.149 m of it behind the origin: the crook), 0.21 m tall and 0.10 m wide. The grip is 0.067 m thick
+  like the guns' grips, and the crook leaves 0.09 m clear between the grip's centre line and its inside.
+
+The sizes are the first lines of `gun_blade()`. The stripes follow the blade's own texture rectangle, so they keep
+winding evenly if the shape changes.
+
 ## Looking at the result
 
 `npm run dev`, then open `/tools/viewer/`. It shows the real in-game model under the game's lighting.
-`node tools/viewer/shots.mjs <folder> [turn poses teams hats hatclose guns]` saves screenshots (needs Playwright).
+`node tools/viewer/shots.mjs <folder> [turn poses teams hats hatclose guns blade]` saves screenshots (needs Playwright).
 
 ## Map props
 

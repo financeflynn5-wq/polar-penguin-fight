@@ -7,6 +7,12 @@ import { Penguin } from '../../src/sim/World';
 import { PostFX } from '../../src/render/PostFX';
 import { GUN_HOLD, GUN_BACK, GUN_BACK_Q } from '../../src/render/GunsView';
 
+/** How a penguin carries the Candy Cane Blade: grip beside the right hip, blade up and a little forward ('YXZ' angles). */
+const BLADE_CARRY = { at: new THREE.Vector3(0.5, 0.6, -0.12), rx: 1.05, ry: 0.12, rz: -0.18 };
+/** The middle of a mitten, seen from its hand joint (the flipper's rest direction, 0.077 m on from the joint). */
+const MITTEN = new THREE.Vector3(0.0447, -0.0627, 0);
+const _v = new THREE.Vector3();
+
 const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
 renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(1);
@@ -54,7 +60,7 @@ scene.add(ground);
 const post = new PostFX(renderer, scene, camera);
 post.setSize(innerWidth, innerHeight, 1);
 
-interface Actor { model: PenguinModel; p: Penguin; tick?: (p: Penguin, t: number, dt: number) => void }
+interface Actor { model: PenguinModel; p: Penguin; tick?: (p: Penguin, t: number, dt: number) => void; after?: () => void }
 const actors: Actor[] = [];
 const props: THREE.Object3D[] = [];
 let time = 0;
@@ -63,7 +69,7 @@ let usePost = true;
 const api = {
   ready: false,
   clear() { for (const a of actors) a.model.dispose(scene); actors.length = 0; for (const o of props) o.removeFromParent(); props.length = 0; },
-  /** Add a gun ('cocoa' | 'water') on its own. It points along -Z when yaw is 0, like a penguin. Returns where its named nodes (muzzle, foregrip) ended up. */
+  /** Add a gun ('cocoa' | 'water' | 'blade') on its own. It points along -Z when yaw is 0, like a penguin. Returns where its named nodes (muzzle and foregrip, or tip and mid) ended up. */
   gun(name: string, opts: { x?: number; y?: number; z?: number; yaw?: number; pitch?: number; roll?: number; scale?: number } = {}) {
     const src = Assets.guns.get(name);
     if (!src) throw new Error('no gun called ' + name);
@@ -77,10 +83,15 @@ const api = {
     g.traverse(o => { if (!(o as THREE.Mesh).isMesh) out[o.name] = o.getWorldPosition(new THREE.Vector3()).toArray(); });
     return out;
   },
-  /** Put a gun on penguin i where the game does (GUN_HOLD and GUN_BACK in src/render/GunsView.ts; the game also poses the arm): in its mittens, or slung on its back. */
+  /** Put a gun on penguin i where the game does (GUN_HOLD and GUN_BACK in src/render/GunsView.ts; the game also poses the arm): in its mittens, or slung on its back. The blade is carried point up in the right mitten. */
   hold(i: number, name: string, where: 'hand' | 'back' = 'hand') {
     const g = Assets.guns.get(name)!.clone();
-    if (where === 'hand') g.position.copy(GUN_HOLD);
+    if (name === 'blade' && where === 'hand') {
+      // the blade follows the right mitten, wherever the pose puts it, so the grip always sits in the mitten
+      g.position.copy(BLADE_CARRY.at); g.rotation.set(BLADE_CARRY.rx, BLADE_CARRY.ry, BLADE_CARRY.rz, 'YXZ');
+      const a = actors[i], hand = a.model.root.getObjectByName('handR');
+      if (hand) a.after = () => { a.model.root.updateMatrixWorld(true); g.position.copy(a.model.root.worldToLocal(hand.localToWorld(_v.copy(MITTEN)))); };
+    } else if (where === 'hand') g.position.copy(GUN_HOLD);
     else { g.position.copy(GUN_BACK); g.quaternion.copy(GUN_BACK_Q); g.scale.setScalar(0.92); }
     actors[i].model.root.add(g); props.push(g);
   },
@@ -112,7 +123,7 @@ const api = {
   run(n = 1, dt = 1 / 60) {
     for (let i = 0; i < n; i++) {
       time += dt;
-      for (const a of actors) { a.tick?.(a.p, time, dt); a.model.camDist = camera.position.distanceTo(a.model.root.position); a.model.update(a.p, 1, dt, time, false); }
+      for (const a of actors) { a.tick?.(a.p, time, dt); a.model.camDist = camera.position.distanceTo(a.model.root.position); a.model.update(a.p, 1, dt, time, false); a.after?.(); }
     }
     if (usePost) post.render(dt, 0); else renderer.render(scene, camera);
   },

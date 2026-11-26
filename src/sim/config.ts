@@ -113,7 +113,7 @@ export const CFG = {
   btLastStand: 60, // seconds the attackers have once their tickets are gone
   btRespawn: [3.5, 5], // seconds down: attackers, defenders
 
-  // guns: picked up from the gun pads on each team's side (cocoa to the north, water to the south), one at a time
+  // guns: picked up from the gun pads on each team's side (cocoa to the north, the blade in the middle, water to the south), one at a time
   gunRespawn: 40, // seconds before a pad makes another gun (5v5; bigger teams get them faster)
   gunFirst: 6, // seconds into the fight before the first guns show up
   gunDropLife: 20, // a gun dropped by a splatted penguin lies there this long
@@ -148,9 +148,18 @@ export const CFG = {
   slipTime: 0.9, // seconds on your belly after stepping on an ice patch
   slipAgain: 2.2, // seconds before you can slip again
   slipSpeed: 2.2, // slower than this and you keep your feet
+  // the Candy Cane Blade: a sword you swing up close. It turns up on the middle gun pad of each team's side
+  bladeSwings: 14, // swings before the candy cane snaps
+  bladeCooldown: 0.5, // seconds between swings
+  bladeReach: 2.3, // metres from you to the far end of a swing
+  bladeArc: 1.0, // how wide a swing is: radians to either side of where you look
+  bladeDamage: 2, // hearts a hit takes (penguins have 3), so two whacks splat a fresh penguin
+  bladeKnock: 7, // m/s a hit shoves a penguin back (about a metre and a half)
+  bladeBlockTime: 0.3, // seconds after a swing starts in which it smashes enemy snowballs flying at you
+  bladeCut: 600, // snow a swing chops out of a wall in front of you (2040 = one cubic metre)
 };
 
-export const GUN_NAMES = ['', 'Hot Chocolate Blaster', 'Freeze Soaker'];
+export const GUN_NAMES = ['', 'Hot Chocolate Blaster', 'Freeze Soaker', 'Candy Cane Blade'];
 
 export const REWARD_NAMES = ['Snowball Frenzy', 'Insta-Turret', 'Avalanche'];
 

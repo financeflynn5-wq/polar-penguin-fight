@@ -1,5 +1,6 @@
-// The guns: the Hot Chocolate Blaster (melts snow walls) and the Freeze Soaker (slows penguins, freezes slippery
-// patches). They turn up on gun pads on each team's side of the map, and a splatted penguin drops theirs.
+// The guns: the Hot Chocolate Blaster (melts snow walls), the Freeze Soaker (slows penguins, freezes slippery
+// patches) and the Candy Cane Blade (a sword for up close: counted as a gun, so it shares the pads, the X key and
+// the one-at-a-time rule). They turn up on gun pads on each team's side of the map, and a splatted penguin drops theirs.
 // Part of the simulation: no Three.js and no DOM, so the game server runs this too.
 import { V3, mulberry32 } from '../world/MapDef';
 import { ISO } from '../world/SnowField';
@@ -8,7 +9,7 @@ import { CFG } from './config';
 import { solveThrow, lookVelocity } from './World';
 import type { World, Penguin } from './World';
 
-export const GUN_NONE = 0, GUN_COCOA = 1, GUN_WATER = 2;
+export const GUN_NONE = 0, GUN_COCOA = 1, GUN_WATER = 2, GUN_BLADE = 3;
 
 /** A gun waiting to be picked up: floating over its pad, or lying where a splatted penguin dropped it. */
 export interface GunCrate {
@@ -27,7 +28,7 @@ interface Squirt { gun: number; owner: number; team: number; x: number; y: numbe
 
 interface Pad { x: number; z: number; gun: number; team: number; t: number; crate: number; }
 
-export const gunAmmoMax = (gun: number) => (gun === GUN_COCOA ? CFG.cocoaAmmo : gun === GUN_WATER ? CFG.waterAmmo : 0);
+export const gunAmmoMax = (gun: number) => (gun === GUN_COCOA ? CFG.cocoaAmmo : gun === GUN_WATER ? CFG.waterAmmo : gun === GUN_BLADE ? CFG.bladeSwings : 0);
 
 const tmpN = { x: 0, y: 0, z: 0 };
 
@@ -41,6 +42,8 @@ export class Guns {
   private rand = mulberry32(0x51ed);
   private turretHeat = new Map<number, number>();
   private patchCheck = 0;
+  /** blade swings still in the air: for a moment after a swing starts it smashes snowballs coming at its owner */
+  private swings: { pid: number; t: number }[] = [];
 
   constructor(private w: World) {}
 
@@ -61,10 +64,13 @@ export class Guns {
   /** How much of its speed a soaked penguin keeps. */
   speedMult(p: Penguin) { return 1 - CFG.chillSlow * p.chill; }
 
-  /** Holding the trigger with the gun out (it slows your walk, like winding up a throw). */
-  spraying(p: Penguin) {
+  /** Holding the trigger with the gun (or the blade) out. */
+  firing(p: Penguin) {
     return p.gunOut && p.input.fire && !p.input.plow && p.gunAmmo > 0 && this.w.phase === 'fight';
   }
+
+  /** Spraying a gun slows your walk, like winding up a throw. Swinging the blade doesn't. */
+  spraying(p: Penguin) { return p.gun !== GUN_BLADE && this.firing(p); }
 
   /** Is this spot on one of the Freeze Soaker's ice patches? */
   onPatch(x: number, y: number, z: number) {
@@ -104,7 +110,8 @@ export class Guns {
 
   /** Server only: pull the trigger. */
   use(p: Penguin, dt: number) {
-    if (!this.spraying(p) || p.action !== 'idle') return;
+    if (!this.firing(p) || (p.action !== 'idle' && p.action !== 'throw')) return;
+    if (p.gun === GUN_BLADE) { if (p.gunCd <= 0) this.swing(p); return; }
     const every = 1 / (p.gun === GUN_COCOA ? CFG.cocoaRate : CFG.waterRate);
     let n = 0;
     while (p.gunCd <= 0 && p.gunAmmo > 0 && n++ < 3) { this.shoot(p); p.gunCd += every; }
@@ -129,15 +136,89 @@ export class Guns {
     }
   }
 
+  // ───────────────────────── the Candy Cane Blade ─────────────────────────
+  /** Is there snow between a penguin's chest and a point? (You can't whack someone through a wall.) */
+  private walled(p: Penguin, x: number, y: number, z: number) {
+    const oy = p.y + 0.9, dx = x - p.x, dy = y - oy, dz = z - p.z, d = Math.hypot(dx, dy, dz);
+    if (d < 0.8) return false;
+    const hit = this.w.field.raycast(p.x, oy, p.z, dx / d, dy / d, dz / d, d - 0.4, 0.2);
+    return !!hit;
+  }
+
+  /** One swing: everything in an arc in front of you gets it, right away. Server only. */
+  private swing(p: Penguin) {
+    const w = this.w;
+    p.gunCd = CFG.bladeCooldown;
+    p.throwAnim = 0.25; // (the swing borrows the throw's arm animation and timing)
+    w.emit({ type: 'bladeSwing', pid: p.id });
+    this.swings.push({ pid: p.id, t: CFG.bladeBlockTime });
+    const fx = -Math.sin(p.lookYaw), fz = -Math.cos(p.lookYaw);
+    const cosArc = Math.cos(CFG.bladeArc);
+    const reach = (x: number, y: number, z: number, extra: number) => {
+      const dx = x - p.x, dz = z - p.z, d = Math.hypot(dx, dz);
+      if (d > CFG.bladeReach + extra || Math.abs(y - (p.y + 0.6)) > 1.5) return false;
+      return d < 0.6 || (dx * fx + dz * fz) / d >= cosArc;
+    };
+    for (const q of w.penguins) {
+      if (!q.alive || q.team === p.team || q.invuln > 0 || !reach(q.x, q.y + 0.6, q.z, CFG.radius) || this.walled(p, q.x, q.y + 0.6, q.z)) continue;
+      const dx = q.x - p.x, dz = q.z - p.z, d = Math.hypot(dx, dz) || 1;
+      q.health = Math.max(0, q.health - CFG.bladeDamage);
+      q.sinceHit = 0;
+      q.lastHitBy = p.id;
+      // a good whack sends them flying back
+      q.vx += dx / d * CFG.bladeKnock; q.vz += dz / d * CFG.bladeKnock;
+      if (q.grounded && !q.sliding) { q.vy = 3.8; q.grounded = false; }
+      w.emit({ type: 'hit', pid: q.id, by: p.id, x: q.x, y: q.y + 0.7, z: q.z, health: q.health });
+      w.emit({ type: 'bladeHit', pid: q.id, by: p.id, x: q.x, y: q.y + 0.7, z: q.z });
+      if (q.health <= 0) w.splat(q, p.id, 'blade');
+    }
+    for (const t of w.turrets) {
+      if (!t.alive || t.team === p.team || !reach(t.x, t.y + 0.8, t.z, CFG.turretRadius) || this.walled(p, t.x, t.y + 1, t.z)) continue;
+      w.emit({ type: 'bladeHit', pid: -1, by: p.id, x: t.x, y: t.y + 1.1, z: t.z });
+      w.hitTurret(t, p.id, t.x, t.y + 1.1, t.z);
+    }
+    // it chops snow too: a few swings make a hole in a wall
+    w.field.removeMass(p.x + fx * 1.25, p.y + 0.95, p.z + fz * 1.25, 0.7, CFG.bladeCut, 0);
+    p.gunAmmo--;
+    if (p.gunAmmo <= 0) {
+      // candy canes only take so much
+      w.emit({ type: 'gunEmpty', pid: p.id, gun: p.gun });
+      p.gun = GUN_NONE; p.gunOut = false;
+    }
+  }
+
+  /** While a swing is in the air, enemy snowballs that fly into it shatter. */
+  private stepSwings(dt: number) {
+    if (!this.swings.length) return;
+    const w = this.w, cosArc = Math.cos(Math.min(Math.PI, CFG.bladeArc + 0.35));
+    for (const s of this.swings) {
+      s.t -= dt;
+      const p = w.penguin(s.pid);
+      if (!p || !p.alive) { s.t = 0; continue; }
+      const fx = -Math.sin(p.lookYaw), fz = -Math.cos(p.lookYaw);
+      for (const b of w.snowballs) {
+        if (!b.alive || b.team === p.team) continue;
+        const dx = b.x - p.x, dy = b.y - (p.y + 0.7), dz = b.z - p.z;
+        if (dx * dx + dy * dy + dz * dz > 1.7 * 1.7) continue;
+        const d = Math.hypot(dx, dz);
+        if (d > 0.5 && (dx * fx + dz * fz) / d < cosArc) continue;
+        b.alive = false;
+        w.emit({ type: 'bladeBlock', pid: p.id, x: b.x, y: b.y, z: b.z });
+      }
+    }
+    this.swings = this.swings.filter(s => s.t > 0);
+  }
+
   // ───────────────────────── the world's share ─────────────────────────
   step(dt: number) {
     this.stepPads(dt);
     this.stepCrates(dt);
     this.stepSquirts(dt);
+    this.stepSwings(dt);
     this.stepPatches(dt);
   }
 
-  /** Two pads on each team's side: cocoa to the north, water to the south. In Breakthrough they move up with the camps. */
+  /** Three pads on each team's side: cocoa to the north, the blade in the middle, water to the south. In Breakthrough they move up with the camps. */
   private buildPads() {
     const w = this.w, m = w.map, bd = m.bounds, bt = w.mode === 'breakthrough';
     const midZ = (bd.minZ + bd.maxZ) / 2, halfZ = (bd.maxZ - bd.minZ) / 2;
@@ -145,7 +226,7 @@ export class Guns {
     for (let team = 0; team < 2; team++) {
       const f = w.front(team);
       const x = bt ? f.center.x + (team === 0 ? 10 : -10) : m.midLineX + (f.center.x - m.midLineX) * 0.4;
-      for (const [gun, side] of [[GUN_COCOA, -1], [GUN_WATER, 1]]) {
+      for (const [gun, side] of [[GUN_COCOA, -1], [GUN_BLADE, 0], [GUN_WATER, 1]]) {
         const s = this.clearSpot(x, midZ + side * halfZ * (bt ? 0.5 : 0.42));
         this.pads.push({ x: s.x, z: s.z, gun, team, t: CFG.gunFirst, crate: -1 });
       }

@@ -1,14 +1,16 @@
-"""The two toy guns, exported as src/assets/models/guns/<name>.glb.
+"""The two toy guns and the Candy Cane Blade, exported as src/assets/models/guns/<name>.glb.
 
-    python tools/blender/guns.py                 # both guns
+    python tools/blender/guns.py                 # all three
     python tools/blender/guns.py cocoa           # just the Hot Chocolate Blaster
     python tools/blender/guns.py water           # just the Freeze Soaker
+    python tools/blender/guns.py blade           # just the Candy Cane Blade
     options: --size=1024 (texture size)  --ao=48 (occlusion samples)  --shapes (quick Cycles renders, no bake / export)
 
 Each gun is modelled in Blender space with its barrel along +Y, up +Z and its right side at +X, and then moved so its
 origin is the middle of the grip (where the right mitten holds it). In the exported GLB that makes the barrel point
 along -Z with +Y up. Two empties ride along: `muzzle` at the tip of the nozzle (the spray starts there) and `foregrip`
-at the middle of the pump under the barrel (where the left mitten rests).
+at the middle of the pump under the barrel (where the left mitten rests). The blade is laid out the same way (it points
+along +Y here, -Z in the GLB) and carries `tip` and `mid` instead.
 """
 import math
 import os
@@ -22,19 +24,20 @@ from lib import bake as B  # noqa: E402
 from lib import export as EX  # noqa: E402
 from lib.nodes import (rgb, Vec, V, sin, cos, absv, frac, floor, vmin, vmax, clamp01, atan2, smooth, lerp, noise, voronoi,  # noqa: E402
                        bump_band, sqrt)
-from lib.looks import TAU  # noqa: E402
+from lib.looks import TAU, knit as looks_knit  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, '..', '..'))
 
 
 class Gun:
-    def __init__(self, name, node, grip, muzzle, foregrip, coat=0.0, coat_rough=0.06):
+    def __init__(self, name, node, grip, muzzle=None, foregrip=None, coat=0.0, coat_rough=0.06, marks=None, view=((0, 0.14, 0.09), 1.0)):
         self.name = name; self.node = node
         self.grip = np.array(grip, dtype=float)          # becomes the origin
-        self.muzzle = np.array(muzzle, dtype=float)
-        self.foregrip = np.array(foregrip, dtype=float)
+        marks = marks if marks is not None else dict(muzzle=muzzle, foregrip=foregrip)
+        self.marks = {k: np.array(v, dtype=float) for k, v in marks.items()}     # the named child nodes, in model space
         self.coat = coat; self.coat_rough = coat_rough
+        self.view = view                                 # for --shapes: what the camera looks at, and how far back it stands (1 = the guns)
         self.parts = []; self.density = {}
 
     def add(self, ob, look, density=1.0):
@@ -696,7 +699,210 @@ def gun_water():
     return gun
 
 
-GUNS = {'cocoa': gun_cocoa, 'water': gun_water}
+# ───────────────────────── Candy Cane Blade ─────────────────────────
+
+def cane_stripes(k, soft=0.012):
+    """Candy-cane stripes across one turn of the spiral (k: 0..1): a broad red band and a thin red line. 1 = red."""
+    wide = smooth(0.26 + soft, 0.26 - soft, absv(k - 0.28))
+    thin = smooth(0.045 + soft, 0.045 - soft, absv(k - 0.77))
+    return clamp01(wide + thin)
+
+
+def hard_candy(p, red, pink=0.0):
+    """Glossy boiled sugar: red (0..1) picks the stripe colour, pink warms the white toward a licked pink."""
+    n = noise(p, 20.0, 2.0)
+    white = lerp(lerp(rgb('#efe3d6'), rgb('#fffdf8'), smooth(0.2, 0.8, n)), rgb('#ff8fa2'), pink)
+    col = lerp(white, lerp(rgb('#cb1029'), rgb('#e51834'), smooth(0.25, 0.75, n)), red)
+    return col, 0.11 + (n - 0.5) * 0.05, red * 0.0003
+
+
+def gold(g):
+    p = g.P()
+    d, _c, _p = voronoi(p, 95.0, 'SMOOTH_F1', 1.0, 0.4)
+    n = noise(p, 30.0, 3.0, 0.6)
+    col = lerp(rgb('#d9961e'), rgb('#ffdc6a'), smooth(0.25, 0.75, n))
+    return dict(color=col, rough=0.22 + d * 0.14 + (n - 0.5) * 0.08, metal=V(0.62), height=d * 0.0008 + (noise(p, 240.0) - 0.5) * 0.0002)
+
+
+def gun_blade():
+    """A fat candy cane sharpened into a cutlass. The straight of the cane is the blade, the wool-wrapped middle is the
+    grip, and the crook turns back under the mitten as a knuckle guard. A peppermint sits where blade meets grip, with
+    a sprig of holly on it."""
+    GRIP_R, GRIP_H = 0.0335, 0.054                 # the grip's radius and half its length
+    HUB_Y, HUB_R, HUB_W = 0.112, 0.057, 0.040       # the peppermint: where it sits, its radius, half its thickness
+    Y0, TIP_Y = HUB_Y + 0.012, 0.826                # the blade's root (buried in the peppermint) and its tip
+    T_TIP = 0.77                                    # where the blade starts to close into its point (0..1 along it)
+    CROOK_Y, CROOK_R, ROD = -0.066, 0.058, 0.025    # where the crook starts to turn, how tightly, and how thick the cane is
+    TAIL_Y = 0.074                                  # the crook's free end
+    PITCH = 0.135                                   # blade stripes: metres along the blade per stripe
+
+    def hz(t):                                      # half the blade's height: a little belly, like a cutlass
+        return 0.048 + 0.005 * G.sstep(0.0, 0.55, t) - 0.004 * G.sstep(0.55, T_TIP, t)
+
+    def hx(t):                                      # half its thickness
+        return 0.030 - 0.007 * G.sstep(0.0, T_TIP, t)
+
+    def point(t):                                   # how far the tip has closed (1 = full section, 0 = the point)
+        s = max(0.0, (t - T_TIP) / (1.0 - T_TIP))
+        return (1.0 - s ** 1.85) ** 0.80
+
+    def blade_c(y):                                 # the centre line lifts toward the tip, and the edge sweeps up to the point
+        t = (y - Y0) / (TIP_Y - Y0)
+        s = max(0.0, (t - T_TIP) / (1.0 - T_TIP))
+        return 0.006 * t * t + hz(t) * 0.46 * s ** 1.6
+
+    VIS_Y = HUB_Y + HUB_R * 0.93                    # where the blade comes out of the peppermint
+    mid_y = (VIS_Y + TIP_Y) / 2
+    gun = Gun('blade', 'CandyCaneBlade', grip=(0, 0, 0), coat=0.45, coat_rough=0.05,
+              marks=dict(tip=(0, TIP_Y, blade_c(TIP_Y)), mid=(0, mid_y, blade_c(mid_y))), view=((0, 0.34, -0.03), 1.0))
+
+    # ── the blade: a round back, flat flanks, and a ground bevel down to the edge. Round each ring the points are
+    #    spaced evenly (9 steps from the back to the bevel's ridge, 3 down the bevel) so the stripes wind evenly ──
+    BACK_N, BEVEL_N = 9, 3
+    NU = 2 * (BACK_N + BEVEL_N)
+    BEVEL = BEVEL_N / (BACK_N + BEVEL_N) * 0.5       # the bevel's share of the way round, each side of the edge
+
+    def even(P, n):
+        d = np.linalg.norm(np.diff(P, axis=0), axis=1)
+        acc = np.concatenate([[0.0], np.cumsum(d)])
+        want = np.linspace(0, acc[-1], n + 1)
+        return np.stack([np.interp(want, acc, P[:, k]) for k in range(2)], axis=1)
+
+    def ring(t):
+        a, b, k = hx(t), hz(t), point(t)
+        a, b = a * k ** 0.85, b * k
+        zw, zr, xr = -0.10 * b, -0.58 * b, 0.93 * a       # the widest line, and the bevel's ridge
+        th = np.linspace(0, math.pi / 2, 60)
+        back = np.stack([a * np.sin(th) ** 0.9, zw + (b - zw) * np.cos(th)], axis=1)
+        s = np.linspace(0, 1, 12)[1:, None]
+        back = np.concatenate([back, np.array([a, zw]) + (np.array([xr, zr]) - np.array([a, zw])) * s])
+        s = np.linspace(0, 1, 24)
+        bevel = np.stack([xr * (1 - s) ** 0.88, zr + (-b - zr) * s], axis=1)
+        half = np.concatenate([even(back, BACK_N), even(bevel, BEVEL_N)[1:]])        # the back … the edge, on +x
+        full = np.concatenate([half, half[-2:0:-1] * np.array([-1.0, 1.0])])
+        y = Y0 + (TIP_Y - Y0) * t
+        return np.stack([full[:, 0], np.full(NU, y), full[:, 1] + blade_c(y)], axis=1)
+    ts = list(np.linspace(0, T_TIP, 17)) + [T_TIP + (1 - T_TIP) * (1 - (1 - k / 13) ** 1.7) for k in range(1, 14)]
+    blade = G.build_mesh('Blade', G.Grid(np.array([ring(t) for t in ts]), closed_u=True, pole1=True))
+    BLADE_W = blade['islands'][0][0]
+
+    def blade_look(g):
+        p = g.P()
+        uv = g.uv('param')
+        f = uv.x / BLADE_W                                               # round the blade: 0 on the back, 0.5 on the edge
+        red = cane_stripes(frac(f * 2.0 + (p.y - Y0) / PITCH))
+        licked = smooth(TIP_Y - 0.15, TIP_Y - 0.005, p.y)                # the point has been licked: the white runs pink
+        col, rough, h = hard_candy(p, red, licked * 0.75)
+        # the bevel is ground matt and pale, and a crust of sugar crystals runs along the very edge
+        e = absv(f - 0.5)
+        ground = smooth(BEVEL + 0.004, BEVEL - 0.004, e)
+        d, _c, _p = voronoi(p, 235.0, 'F1', 1.0)
+        crust = smooth(0.060, 0.030, e + (noise(p, 95.0, 2.0) - 0.5) * 0.034 + (d - 0.3) * 0.030)
+        sparkle = smooth(0.34, 0.08, d)
+        col = lerp(col, lerp(col, rgb('#ffdfe6'), 0.45), ground)
+        col = lerp(col, lerp(rgb('#f6c9d3'), rgb('#ffffff'), sparkle), crust)
+        rough = lerp(lerp(rough, 0.36, ground), 0.66 - sparkle * 0.40, crust)
+        h = h * (1.0 - ground) + crust * (0.0007 + (0.42 - d) * 0.0022)
+        return dict(color=col, rough=rough, height=h)
+    gun.add(blade, blade_look, density=1.0)
+
+    # ── the crook: the same cane carries on out of the back of the grip and turns under the knuckles ──
+    path = [(0, -0.030, 0), (0, CROOK_Y * 0.75, 0)]
+    for k in range(17):
+        a = math.pi * k / 16
+        path.append((0, CROOK_Y - CROOK_R * math.sin(a), -CROOK_R + CROOK_R * math.cos(a)))
+    path += [(0, CROOK_Y + (TAIL_Y - CROOK_Y) * k / 4, -2 * CROOK_R) for k in range(1, 5)]
+    crook = G.build_mesh('Crook', G.sweep(np.array(path, dtype=float), lambda t, th: (ROD * np.cos(th), ROD * np.sin(th)), nu=12, ref=(1, 0, 0), cap=True, cap_rows=3))
+    CROOK_W = crook['islands'][0][0]
+
+    def crook_look(g):
+        p = g.P()
+        uv = g.uv('param')
+        red = cane_stripes(frac(uv.x / CROOK_W * 2.0 + uv.y / (CROOK_W * 0.55)))
+        col, rough, h = hard_candy(p, red)
+        return dict(color=col, rough=rough, height=h)
+    gun.add(crook, crook_look, density=1.0)
+
+    # ── the grip: a knitted wool sleeve with a gold ring at each end ──
+    gprof = [(GRIP_R - 0.002, -GRIP_H - 0.004), (GRIP_R - 0.0005, -GRIP_H * 0.6), (GRIP_R, 0.0), (GRIP_R - 0.0005, GRIP_H * 0.6), (GRIP_R - 0.002, GRIP_H + 0.004)]
+    grip = lathe_y('Grip', gprof, 0.0, nu=14)
+    GRIP_W = grip['islands'][0][0]
+
+    def grip_look(g):
+        p = g.P()
+        uv = g.uv('param')
+        h, shade = looks_knit(uv.x, uv.y, GRIP_W / 14.0, 0.0098, 0.0024)
+        n = noise(p, 26.0, 2.0)
+        col = lerp(rgb('#0b4a22'), rgb('#1f9a48'), smooth(0.1, 0.9, shade) * (0.8 + 0.2 * n))
+        band = bump_band(0.031, 0.0065, absv(p.y))
+        cream = lerp(rgb('#d9cbb0'), rgb('#fff6e2'), shade)
+        col = lerp(col, cream, smooth(0.35, 0.65, band))
+        return dict(color=col, rough=V(0.92), height=h + (noise(p, 190.0, 2.0, 0.6) - 0.5) * 0.0006)
+    gun.add(grip, grip_look, density=1.0)
+    for k, y in enumerate((-GRIP_H - 0.002, GRIP_H + 0.001)):
+        ringo = ring_about(f'Ferrule{k}', (0, y, 0), (0, 1, 0), GRIP_R + 0.0005, 0.0075, 0.0060, n=18, nu=6, power=2.2)
+        gun.add(ringo, gold, density=0.8)
+
+    # ── the peppermint between grip and blade ──
+    hprof = [(0.0, -HUB_W), (HUB_R * 0.36, -HUB_W * 0.985), (HUB_R * 0.66, -HUB_W * 0.90), (HUB_R * 0.87, -HUB_W * 0.68), (HUB_R * 0.975, -HUB_W * 0.36), (HUB_R, 0.0)]
+    hprof = hprof + [(r, -h) for r, h in hprof[-2::-1]]
+    hub = lathe_on('Peppermint', hprof, (0, HUB_Y, 0), (1, 0, 0), nu=24, ends=(True, True), ref=(0, 0, 1))
+
+    def hub_look(g):
+        p = g.P()
+        dy = p.y - HUB_Y
+        r = sqrt(dy * dy + p.z * p.z)
+        ang = atan2(p.z, dy) / TAU
+        k = frac(ang * 7.0 + r * 8.0)
+        red = smooth(0.40, 0.52, absv(k - 0.5) * 2.0) * smooth(0.0055, 0.0085, r)
+        col, rough, h = hard_candy(p, red)
+        return dict(color=col, rough=rough, height=h)
+    gun.add(hub, hub_look, density=1.1)
+
+    # ── holly: two leaves laid forward over the blade's shoulders, three berries where it meets the peppermint ──
+    SPRIG = np.array([0.0, HUB_Y + HUB_R * 0.80, hz(0.0) + 0.001])
+    LEAF = 1.22
+    half = [(0.046, 0.0), (0.031, 0.0085), (0.025, 0.0190), (0.011, 0.0115), (0.003, 0.0220), (-0.011, 0.0120), (-0.021, 0.0180), (-0.031, 0.0075), (-0.040, 0.0)]
+    half = [(u * LEAF, v * LEAF) for u, v in half]
+    outline = half + [(u, -v) for u, v in half[-2:0:-1]]
+    for sd in (-1, 1):
+        ex = np.array([sd * 0.52, 0.85, 0.05]); ex /= np.linalg.norm(ex)
+        nrm = np.array([sd * 0.58, -0.10, 0.80])
+        ey = np.cross(nrm, ex); ey /= np.linalg.norm(ey)
+        ez = np.cross(ex, ey)
+        centre = SPRIG + ex * 0.040 * LEAF + ez * 0.002
+        gr = G.slab(outline, 0.0056, bevel=0.3, n_inset=1)
+        P = gr.P
+        u, v = P[..., 0] + 0.040 * LEAF, P[..., 1]
+        P[..., 2] += -3.4 * u * u + 0.22 * np.abs(v) + 0.0040 * np.sin(u * 125.0) * (np.abs(v) / 0.024)     # droop, fold along the midrib, wavy rim
+        gr.P = centre + P[..., :1] * ex + P[..., 1:2] * ey + P[..., 2:3] * ez
+        leaf = G.build_mesh(f'Holly{sd}', gr)
+
+        def leaf_look(g, centre=centre, ex=ex, ey=ey):
+            p = g.P()
+            q = p - Vec(tuple(centre))
+            u = q.dot(Vec(tuple(ex))); v = q.dot(Vec(tuple(ey)))
+            n = noise(p, 60.0, 2.0)
+            rib = bump_band(0.0, 0.0022, v)
+            vein = bump_band(0.5, 0.16, frac((u - absv(v) * 1.1) / 0.0175)) * smooth(0.002, 0.005, absv(v))
+            col = lerp(rgb('#0a4f20'), rgb('#1d8f3e'), smooth(0.2, 0.8, n))
+            col = lerp(col, rgb('#6cc46a'), clamp01(rib + vein * 0.45) * 0.55)
+            return dict(color=col, rough=0.26 + (n - 0.5) * 0.08, height=rib * 0.0006 - vein * 0.0005)
+        gun.add(leaf, leaf_look, density=1.0)
+    bprof = [(0.0, -1.0), (0.59, -0.81), (0.95, -0.31), (0.95, 0.31), (0.59, 0.81), (0.0, 1.0)]
+
+    def berry_look(g):
+        p = g.P()
+        n = noise(p, 70.0, 2.0)
+        return dict(color=lerp(rgb('#b00a22'), rgb('#f02a40'), smooth(0.2, 0.8, n)), rough=V(0.14), height=V(0.0))
+    for k, (dx, dy, dz, r) in enumerate(((0.0105, -0.011, 0.0075, 0.0118), (-0.0105, -0.011, 0.0075, 0.0118), (0.0, 0.006, 0.0065, 0.0125))):
+        c = SPRIG + (dx, dy, dz)
+        berry = lathe_on(f'Berry{k}', [(a * r, b * r) for a, b in bprof], tuple(c), (0.2 * (k - 1), -0.2, 1), nu=8, ends=(True, True), ref=(1, 0, 0))
+        gun.add(berry, berry_look, density=0.8)
+    return gun
+
+
+GUNS = {'cocoa': gun_cocoa, 'water': gun_water, 'blade': gun_blade}
 
 
 # ───────────────────────── build ─────────────────────────
@@ -707,8 +913,7 @@ def report(gun, objs):
     print(f'[{gun.name}] ' + '  '.join(f'{o.name} {G.tri_count([o])}' for o in objs))
     print(f'[{gun.name}] triangles: {G.tri_count(objs)}  parts: {len(objs)}  length {hi[1] - lo[1]:.3f}  height {hi[2] - lo[2]:.3f}  width {hi[0] - lo[0]:.3f} m')
     print(f'[{gun.name}] box (Blender, origin at the grip): x {lo[0]:.3f}..{hi[0]:.3f}  y {lo[1]:.3f}..{hi[1]:.3f}  z {lo[2]:.3f}..{hi[2]:.3f}')
-    m, fg = gun.muzzle - gun.grip, gun.foregrip - gun.grip
-    print(f'[{gun.name}] muzzle in the GLB: ({m[0]:.3f}, {m[2]:.3f}, {-m[1]:.3f})  foregrip: ({fg[0]:.3f}, {fg[2]:.3f}, {-fg[1]:.3f})')
+    print(f'[{gun.name}] in the GLB: ' + '  '.join(f'{k} ({m[0]:.3f}, {m[2]:.3f}, {-m[1]:.3f})' for k, m in ((k, v - gun.grip) for k, v in gun.marks.items())))
 
 
 def pack_even(objs, size, pad_px=10, density=None):
@@ -804,9 +1009,9 @@ def shapes(name, out_dir):
     made[-1].location = (0, 0, -0.16)
     os.makedirs(out_dir, exist_ok=True)
     shots = []
-    tgt = (0, 0.14, 0.09)
+    tgt, far = gun.view
     for k, (az, el, dist) in enumerate(((90, 6, 2.0), (38, 18, 2.0), (-145, 24, 2.0), (-90, 4, 2.0), (180, 12, 1.6), (60, 62, 2.0))):
-        shots.append(RD.shot(os.path.join(out_dir, f'gun_{name}_{k}.png'), target=tgt, dist=dist, az=az, el=el, fov=24, res=(760, 560), samples=24))
+        shots.append(RD.shot(os.path.join(out_dir, f'gun_{name}_{k}.png'), target=tgt, dist=dist * far, az=az, el=el, fov=24, res=(760, 560), samples=24))
     RD.sheet(shots, os.path.join(out_dir, f'gun_{name}_shapes.png'), cols=3)
 
 
@@ -828,7 +1033,7 @@ def build(name, size, ao, out_dir):
     shift = np.eye(4); shift[:3, 3] = -gun.grip
     G.transform(main, shift)
     extras = []
-    for nm, pos in (('muzzle', gun.muzzle), ('foregrip', gun.foregrip)):
+    for nm, pos in gun.marks.items():
         e = bpy.data.objects.new(nm, None)
         bpy.context.scene.collection.objects.link(e)
         e.empty_display_size = 0.02

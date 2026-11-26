@@ -5,14 +5,14 @@ import penguinUrl from '../assets/models/penguin.glb?url';
 // Every hat is its own small file, built in Blender by tools/blender/hats.py.
 const hatUrls = import.meta.glob('../assets/models/hats/*.glb', { query: '?url', import: 'default', eager: true }) as Record<string, string>;
 
-// The guns (hot chocolate blaster, water soaker) are built by tools/blender/guns.py.
+// The guns (hot chocolate blaster, freeze soaker) and the candy cane blade are built by tools/blender/guns.py.
 const gunUrls = import.meta.glob('../assets/models/guns/*.glb', { query: '?url', import: 'default', eager: true }) as Record<string, string>;
 
 /** The Blender-built models, loaded once before the game starts. */
 export const Assets = {
   penguin: null as THREE.Group | null,
   hats: new Map<string, THREE.Group>(),
-  /** by gun name: 'cocoa', 'water' */
+  /** by gun name: 'cocoa', 'water', 'blade' */
   guns: new Map<string, THREE.Group>(),
 };
 

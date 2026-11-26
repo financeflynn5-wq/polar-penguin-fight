@@ -63,12 +63,12 @@ const menu = el(`<div class="menu">
     <div><b>Build phase first:</b> hold R and sweep the crosshair to draw snow walls, hold still to stack them higher. Dig trenches and tunnels, pack snowballs and stash them in your stockpile.</div>
     <div id="howMode"></div>
     <div><b>Hold T to build a snowman turret.</b> It takes a lot of snow, throws at any enemy it can see, and you reload it with your own snowballs.</div>
-    <div><b>Guns pop up on your team's gun pads</b> once the fight starts. The <b>Hot Chocolate Blaster</b> melts walls and turrets. The <b>Freeze Soaker</b> slows enemies down, and its misses freeze into ice patches that anyone slips on. X swaps back to snowballs.</div>
+    <div><b>Guns pop up on your team's gun pads</b> once the fight starts. The <b>Hot Chocolate Blaster</b> melts walls and turrets. The <b>Freeze Soaker</b> slows enemies down, and its misses freeze into ice patches that anyone slips on. The <b>Candy Cane Blade</b> is for up close: two whacks splat a penguin, and a swing smashes snowballs out of the air. X swaps back to snowballs.</div>
     <div><b>Grab shiny snowflakes</b> to upgrade your mittens. <b>Roll your own giant snowball</b> with G, grow it in fresh snow and send it downhill to flatten forts and turrets.</div>
   </div>
   <div class="howto">
     <span class="key">WASD</span>move <span class="key">Mouse</span>look <span class="key">LMB</span>throw <span class="key">RMB</span>push snow
-    <span class="key">F</span>pack <span class="key">R</span>build <span class="key">Q</span>dig <span class="key">T</span>turret <span class="key">G</span>giant snowball <span class="key">E</span>stockpile <span class="key">X</span>gun <span class="key">Shift</span>slide <span class="key">Space</span>hop
+    <span class="key">F</span>pack <span class="key">R</span>build <span class="key">Q</span>dig <span class="key">T</span>turret <span class="key">G</span>giant snowball <span class="key">E</span>stockpile <span class="key">X</span>gun / blade <span class="key">Shift</span>slide <span class="key">Space</span>hop
   </div>
   <div class="foot">Best on a computer with a mouse.</div>
 </div>`);

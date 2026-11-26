@@ -125,6 +125,11 @@ export class Audio {
   /** feet out from under you on an ice patch */
   slip(x: number, y: number, z: number) { this.tone(880, 0.3, 0.12, 'sine', 300, 0, x, y, z); this.noiseBurst(0.3, 3400, 1, 0.14, 'highpass', 1500, x, y, z); }
   gunEmpty() { this.tone(330, 0.09, 0.1, 'square', 220); this.tone(220, 0.12, 0.08, 'square', 160, 0.08); }
+  /** the Candy Cane Blade: a swish, a crunchy bonk, a ting off a snowball, and the snap when it breaks */
+  bladeSwing(x: number, y: number, z: number) { this.noiseBurst(0.17, 1200, 1.1, 0.22, 'bandpass', 4200, x, y, z); }
+  bladeHit(x: number, y: number, z: number) { this.tone(190, 0.13, 0.22, 'triangle', 85, 0, x, y, z); this.noiseBurst(0.09, 3200, 1, 0.26, 'highpass', 1300, x, y, z); this.tone(1750, 0.07, 0.07, 'triangle', 2300, 0.01, x, y, z); }
+  bladeBlock(x: number, y: number, z: number) { this.tone(2200, 0.11, 0.1, 'triangle', 3100, 0, x, y, z); this.noiseBurst(0.07, 4800, 2, 0.14, 'bandpass', 2600, x, y, z); }
+  bladeSnap() { this.noiseBurst(0.06, 2400, 1, 0.3, 'highpass', 900); this.tone(760, 0.14, 0.12, 'triangle', 190, 0.02); }
   noSnow() { this.tone(240, 0.12, 0.08, 'square', 200); }
   whistle() {
     if (!this.ctx || this.muted) return;

@@ -1,16 +1,17 @@
-// Everything you see of the guns: the gun in a penguin's mittens (or slung on its back), guns floating over their
+// Everything you see of the guns and the Candy Cane Blade: the gun in a penguin's mittens (or slung on its back), guns floating over their
 // pads, the streams of hot chocolate and freezing water, steam and splashes, the ice patches, and the ice that
 // creeps up a soaked penguin. The gun models are Blender assets (tools/blender/guns.py → src/assets/models/guns).
 import * as THREE from 'three';
 import { SnowField, ISO } from '../world/SnowField';
 import { World, Penguin, GameEvent } from '../sim/World';
-import { GUN_COCOA, GUN_WATER, IcePatch } from '../sim/Guns';
+import { GUN_COCOA, GUN_WATER, GUN_BLADE, IcePatch } from '../sim/Guns';
 import { CFG } from '../sim/config';
 import { Assets } from './Assets';
 import { Particles, PKind } from './Particles';
+import { bladePose, BladeAt } from './BladePose';
 
-export const GUN_COLORS = [0xffffff, 0xff9d4d, 0x62d6ff];
-const GUN_FILES = ['', 'cocoa', 'water'];
+export const GUN_COLORS = [0xffffff, 0xff9d4d, 0x62d6ff, 0xff5c7a];
+const GUN_FILES = ['', 'cocoa', 'water', 'blade'];
 
 /** Where the gun sits when a penguin holds it, in the penguin's own frame (x right, y up, -z ahead), and on its back. */
 export const GUN_HOLD = new THREE.Vector3(0.48, 0.58, -0.12);
@@ -20,6 +21,17 @@ export const GUN_BACK_Q = new THREE.Quaternion().setFromEuler(new THREE.Euler(Ma
 /** A stand-in built from plain shapes, used only if the Blender model is missing. Same layout: grip at the origin, barrel along -z. */
 function standIn(gun: number) {
   const g = new THREE.Group();
+  if (gun === GUN_BLADE) {
+    const red = new THREE.MeshStandardMaterial({ color: 0xe0263c, roughness: 0.25 }), white = new THREE.MeshStandardMaterial({ color: 0xfff4f0, roughness: 0.25 });
+    for (let k = 0; k < 8; k++) {
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(0.035 - k * 0.002, 0.037 - k * 0.002, 0.1, 10), k % 2 ? white : red);
+      m.rotation.x = Math.PI / 2; m.position.set(0, 0, -0.1 - k * 0.1); m.castShadow = true; g.add(m);
+    }
+    const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.033, 0.033, 0.16, 8), new THREE.MeshStandardMaterial({ color: 0x5b2f17, roughness: 0.7 }));
+    grip.rotation.x = Math.PI / 2; g.add(grip);
+    const tip = new THREE.Object3D(); tip.name = 'tip'; tip.position.set(0, 0, -0.87); g.add(tip);
+    return g;
+  }
   const cocoa = gun === GUN_COCOA;
   const body = new THREE.MeshStandardMaterial({ color: cocoa ? 0xb5482f : 0x2aa7e8, roughness: 0.45 });
   const trim = new THREE.MeshStandardMaterial({ color: cocoa ? 0xf4ead8 : 0xffd23e, roughness: 0.5 });
@@ -179,7 +191,7 @@ class PatchMesh {
 }
 
 // ───────────────────────── the view ─────────────────────────
-interface Held { gun: number; obj: THREE.Object3D; root: THREE.Object3D; muzzle: THREE.Object3D | null; kick: number; out: boolean; }
+interface Held { gun: number; obj: THREE.Object3D; root: THREE.Object3D; muzzle: THREE.Object3D | null; tip: THREE.Object3D | null; hand: THREE.Object3D | null; kick: number; out: boolean; at: BladeAt | null; }
 interface Floating { gun: number; group: THREE.Group; model: THREE.Object3D; ring: THREE.Mesh; beam: THREE.Mesh | null; phase: number; }
 interface Frost { group: THREE.Group; root: THREE.Object3D; now: number; }
 
@@ -207,8 +219,8 @@ export class GunsView {
   private patches = new Map<number, PatchMesh>();
   private frost = new Map<number, Frost>();
   private streams: Stream[];
-  private beamMats = [null, beamMaterial(GUN_COLORS[GUN_COCOA]), beamMaterial(GUN_COLORS[GUN_WATER])];
-  private ringMats = [null, GUN_COLORS[GUN_COCOA], GUN_COLORS[GUN_WATER]].map(c => c === null ? null
+  private beamMats = [null, beamMaterial(GUN_COLORS[GUN_COCOA]), beamMaterial(GUN_COLORS[GUN_WATER]), beamMaterial(GUN_COLORS[GUN_BLADE])];
+  private ringMats = [null, GUN_COLORS[GUN_COCOA], GUN_COLORS[GUN_WATER], GUN_COLORS[GUN_BLADE]].map(c => c === null ? null
     : new THREE.MeshBasicMaterial({ color: c, transparent: true, opacity: 0.85, depthWrite: false, side: THREE.DoubleSide }));
 
   constructor(private field: SnowField, private particles: Particles) {
@@ -280,7 +292,7 @@ export class GunsView {
       if (!p.gun || !root) continue;
       if (!h) {
         const obj = makeGun(p.gun);
-        h = { gun: p.gun, obj, root, muzzle: obj.getObjectByName('muzzle') ?? null, kick: 0, out: false };
+        h = { gun: p.gun, obj, root, muzzle: obj.getObjectByName('muzzle') ?? null, tip: obj.getObjectByName('tip') ?? null, hand: root.getObjectByName('handR') ?? null, kick: 0, out: false, at: null };
         root.add(obj);
         this.held.set(p.id, h);
       }
@@ -289,7 +301,27 @@ export class GunsView {
       h.kick = Math.max(0, h.kick - dt * 9);
       const out = p.gunOut && (p.action === 'idle' || p.action === 'throw');
       h.out = out;
-      if (out) {
+      if (out && h.gun === GUN_BLADE) {
+        // the blade: carried upright in the right mitten, and swung over the shoulder and down (the sim borrows the throw timer for it)
+        const pitch = Math.max(-0.6, Math.min(0.6, p.lookPitch));
+        const to = bladePose(p.throwAnim > 0 ? 1 - p.throwAnim / 0.25 : -1, pitch, _bt);
+        if (!h.at) h.at = { ...to };
+        // swings snap to the pose; afterwards the blade settles back to the carry
+        const k = p.throwAnim > 0 ? 1 : Math.min(1, dt * 12);
+        const at = h.at;
+        at.x += (to.x - at.x) * k; at.y += (to.y - at.y) * k; at.z += (to.z - at.z) * k;
+        at.rx += (to.rx - at.rx) * k; at.ry += (to.ry - at.ry) * k; at.rz += (to.rz - at.rz) * k;
+        o.position.set(at.x, at.y + Math.sin(time * 2.1 + p.id) * 0.006, at.z);
+        // the grip goes wherever the right mitten really is (the arm is posed to reach for the same spot, see PenguinModel)
+        if (h.hand) { root.updateMatrixWorld(true); o.position.copy(root.worldToLocal(h.hand.localToWorld(_p2.copy(MITTEN)))); }
+        o.rotation.set(at.rx, at.ry, at.rz, 'YXZ');
+        o.scale.setScalar(1);
+        if (p.throwAnim > 0.04 && h.tip && o.visible) {
+          // a sugary streak off the tip
+          h.tip.getWorldPosition(_p2);
+          for (let n = 0; n < 2; n++) this.particles.spawn(PKind.Spark, _p2.x, _p2.y, _p2.z, (Math.random() - 0.5) * 0.6, 0.3, (Math.random() - 0.5) * 0.6, 0.07, 0.28, 1, n ? 0.45 : 0.95, n ? 0.55 : 0.95);
+        }
+      } else if (out) {
         // in the mittens, pointing where the penguin looks (the body turns to follow, a moment behind)
         let rel = p.lookYaw - p.yaw;
         while (rel > Math.PI) rel -= Math.PI * 2;
@@ -306,6 +338,7 @@ export class GunsView {
         if (p.sliding) { o.position.set(-0.04, 0.5, 0.2); o.quaternion.setFromEuler(_e.set(0.1, 0, Math.PI / 2 + 0.3)); }
         else o.quaternion.copy(GUN_BACK_Q);
         o.scale.setScalar(0.92);
+        h.at = null;
       }
     }
   }
@@ -318,8 +351,10 @@ export class GunsView {
       if (!f) {
         const group = new THREE.Group();
         const model = makeGun(c.gun);
-        model.scale.setScalar(1.9);
+        model.scale.setScalar(c.gun === GUN_BLADE ? 1.5 : 1.9);
         model.rotation.z = 0.28;
+        // the blade hangs point up, like a sword waiting for its hero
+        if (c.gun === GUN_BLADE) { model.rotation.set(Math.PI / 2 - 0.2, 0, 0); model.position.y = -0.55; }
         const tilt = new THREE.Group(); tilt.add(model); group.add(tilt);
         const ring = new THREE.Mesh(RING_GEO, this.ringMats[c.gun]!);
         ring.renderOrder = 3;
@@ -339,7 +374,7 @@ export class GunsView {
       f.ring.position.y = -0.9; f.ring.scale.set(pulse, 1, pulse);
       if (f.beam) f.beam.position.y = -0.9;
       if (Math.random() < dt * 5) {
-        const col = c.gun === GUN_COCOA ? [1, 0.75, 0.45] : [0.6, 0.9, 1];
+        const col = c.gun === GUN_COCOA ? [1, 0.75, 0.45] : c.gun === GUN_BLADE ? [1, 0.55, 0.65] : [0.6, 0.9, 1];
         this.particles.spawn(PKind.Spark, c.x + (Math.random() - 0.5) * 0.9, c.y - 0.6 + Math.random() * 1.2, c.z + (Math.random() - 0.5) * 0.9, 0, 1.2, 0, 0.05, 0.7, col[0], col[1], col[2]);
       }
     }
@@ -407,3 +442,6 @@ export class GunsView {
 }
 
 const _e = new THREE.Euler(), _p2 = new THREE.Vector3();
+const _bt: BladeAt = { x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0 };
+/** the middle of the right mitten's palm, in the hand joint's own frame */
+const MITTEN = new THREE.Vector3(0.0447, -0.0627, 0);

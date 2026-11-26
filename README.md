@@ -12,14 +12,15 @@ Push and pile real 3D snow, pat it into forts, dig tunnels, pack snowballs (carr
 
 Snowman turrets work in every mode: hold T to scoop a lot of snow into one. It throws at any enemy it can see, runs out of snowballs unless you hand it more (hold E beside it), and four hits knock it down.
 
-## Guns
+## Guns and the Candy Cane Blade
 
-Two guns pop up on **gun pads** a few seconds into the fight, in every mode. Each team has two pads on its own side of the map: the Hot Chocolate Blaster to the north and the Freeze Soaker to the south (in Breakthrough they sit just in front of each team's camp and move up with it). Walk into a gun to take it, and a pad makes a new one 40 seconds after its gun is taken. You carry one gun at a time, X swaps between the gun and your snowballs, and if you get splatted your gun drops where you fell for anyone to grab.
+Two guns and a sword pop up on **gun pads** a few seconds into the fight, in every mode. Each team has three pads on its own side of the map: the Hot Chocolate Blaster to the north, the Candy Cane Blade in the middle and the Freeze Soaker to the south (in Breakthrough they sit just in front of each team's camp and move up with it). Walk into one to take it, and a pad makes a new one 40 seconds after its last one is taken. You carry one at a time, X swaps between it and your snowballs, and if you get splatted it drops where you fell for anyone to grab.
 
 - **Hot Chocolate Blaster**: a short, hot stream (about 15 m) that melts snow. A full tank cuts a door through a fort wall. It also melts snowman turrets, thaws frozen teammates, clears ice patches, and scalds enemy penguins slowly (nine squirts for one heart).
 - **Freeze Soaker**: long, fast shots of freezing water. Every hit on an enemy slows them down more, and four hits freeze them stiff at half speed for a couple of seconds. It does no damage. A shot that lands on flat snow freezes into an **ice patch**: anyone who runs onto it (either team) slips onto their belly and slides for a moment with almost no steering.
+- **Candy Cane Blade**: a sword for up close. Click to swing at whatever is in front of you, within about two metres. A hit takes two hearts and knocks the penguin back, so two whacks splat a fresh one. A swing also smashes enemy snowballs that fly into it, knocks a point off a snowman turret, and chops a chunk out of a snow wall. You walk at full speed with it, and it snaps after 14 swings.
 
-All of the gun numbers are first guesses that haven't been tuned on stream yet. They sit together at the bottom of `src/sim/config.ts`.
+All of the gun and blade numbers are first guesses that haven't been tuned on stream yet. They sit together at the bottom of `src/sim/config.ts`.
 
 ## Play locally
 
@@ -45,7 +46,7 @@ Then open the link Vite prints (usually http://localhost:5173).
 | 1 / 2 / 3 | Use a splat-streak reward (Team Deathmatch) |
 | E | Grab snowballs from a stockpile (works on the enemy's too) |
 | Hold E | Stash your snowballs in your stockpile, or load a turret beside you |
-| X | Swap between your gun and your snowballs (guns come from the gun pads) |
+| X | Swap between your gun or blade and your snowballs (they come from the gun pads) |
 | Shift | Belly slide |
 | Space | Hop |
 | Tab | Scoreboard |
@@ -107,7 +108,7 @@ For the Flynn Arcade hub, add `{ "id": "penguin", "name": "Polar Penguin Fight",
 - `src/render/`, `src/ui/`, `src/game/`: visuals, particles, HUD, menus, procedural sound.
 - `src/world/Maps.ts`: the maps by id (`MapDef.ts` is Frostbite Bay, `ConquestMap.ts` is Glacier Gap, `BreakthroughMap.ts` is Peppermint Pass). `Landmarks.ts` is what you bump into: ice, houses, ruins, candy canes, sleds, ice blocks.
 - `public/models/*.glb`, `public/textures/*.webp`: the houses and props, modelled in Blender. See "Props" below.
-- `src/sim/Guns.ts`, `src/render/GunsView.ts`: the two guns, the gun pads and the ice patches (rules, then looks). The gun models are in `src/assets/models/guns/`, built by `tools/blender/guns.py`.
+- `src/sim/Guns.ts`, `src/render/GunsView.ts`: the two guns, the Candy Cane Blade, the gun pads and the ice patches (rules, then looks). The gun models are in `src/assets/models/guns/`, built by `tools/blender/guns.py`.
 - `src/sim/config.ts`: every gameplay number in one place for tuning.
 
 ## Props (Blender)

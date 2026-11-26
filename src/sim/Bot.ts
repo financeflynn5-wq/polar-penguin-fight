@@ -7,7 +7,7 @@ import { V3 } from '../world/MapDef';
 import { houseLocal, turned } from '../world/Landmarks';
 import { World, Penguin, solveThrow } from './World';
 import { CFG } from './config';
-import { GUN_WATER, GUN_COCOA } from './Guns';
+import { GUN_WATER, GUN_COCOA, GUN_BLADE } from './Guns';
 
 type Goal = 'build' | 'pack' | 'stash' | 'grab' | 'fight' | 'flake' | 'roll' | 'retreat' | 'advance' | 'board' | 'turret' | 'capture' | 'gun';
 
@@ -109,7 +109,7 @@ export class BotBrain {
       const onFlag = !!pt && Math.hypot(p.x - pt.x, p.z - pt.z) < pt.r;
       const pileDist = Math.hypot(p.x - base.stockpile.x, p.z - base.stockpile.z);
       const crate = p.gun ? null : this.nearestGun(w, p);
-      if (p.gun && marked && this.targetDist(w, p) < (p.gun === GUN_WATER ? 22 : 15) && (this.targetVisible || p.gun === GUN_COCOA)) {
+      if (p.gun && marked && this.targetDist(w, p) < (p.gun === GUN_WATER ? 22 : p.gun === GUN_BLADE ? 10 : 15) && (this.targetVisible || p.gun === GUN_COCOA)) {
         // a gun with something in the tank and someone to use it on: that comes before stocking up on snowballs
         this.goal = 'fight';
       } else if (p.carried === 0) {
@@ -404,6 +404,7 @@ export class BotBrain {
    * Use the gun on this bot's mark, if it's the right tool right now. Returns true when it has the trigger this tick.
    * Water: soak a penguin in sight until it's frozen stiff, then go back to snowballs to finish it.
    * Hot chocolate: up close, melt turrets, scald penguins, and melt the wall a hidden one is behind.
+   * Candy cane blade: run at a penguin or turret that is close and swing.
    */
   private gunCombat(w: World, p: Penguin) {
     if (!p.gun || w.phase !== 'fight' || p.charging || p.sliding) return false;
@@ -412,6 +413,15 @@ export class BotBrain {
     const d = Math.hypot(t.x - p.x, t.z - p.z);
     const foe = this.targetId >= 0 ? w.penguin(this.targetId) : undefined;
     let aim: V3;
+    if (p.gun === GUN_BLADE) {
+      // the blade is for someone right there; anyone further off gets snowballs (unless this bot is already charging them)
+      if (!this.targetVisible || (foe && foe.invuln > 0) || d > (this.goal === 'fight' ? 9 : 4.5)) return false;
+      p.input.gun = true;
+      p.input.yaw = this.yawTo(p, t.x, t.z);
+      p.input.aim = { x: t.x, y: t.y + t.h, z: t.z };
+      p.input.fire = d < CFG.bladeReach + 0.25;
+      return true;
+    }
     if (p.gun === GUN_WATER) {
       if (!foe || !this.targetVisible || d > 22 || foe.invuln > 0 || (foe.chill > 0.9 && p.carried > 0)) return false;
       const flight = d / CFG.waterSpeed, lead = this.skill * 0.9;
@@ -581,6 +591,7 @@ export class BotBrain {
     if (!t) return;
     const dx = t.x - p.x, dz = t.z - p.z, d = Math.hypot(dx, dz) || 1;
     const want = p.gun === GUN_COCOA ? 7 : 11 + this.skill * 5; // hot chocolate doesn't reach far
+    const charge = p.gun === GUN_BLADE && this.targetVisible && d < 12; // blade in hand and someone close: run straight at them
     this.strafeT -= dt;
     if (this.strafeT <= 0) { this.strafeT = 0.8 + Math.random() * 1.6; this.strafeDir = Math.random() < 0.5 ? -1 : 1; }
     // face the target
@@ -590,6 +601,7 @@ export class BotBrain {
     else if (d > want + 4) { mx = dx / d * 0.8; mz = dz / d * 0.8; }
     else if (d < want - 4) { mx = -dx / d * 0.7; mz = -dz / d * 0.7; }
     mx += (-dz / d) * this.strafeDir * 0.7; mz += (dx / d) * this.strafeDir * 0.7;
+    if (charge) { mx = dx / d; mz = dz / d; }
     // Conquest: don't get drawn off the flag you're holding or taking
     const pt = w.mode !== 'tdm' ? w.points[this.objective] : undefined;
     if (pt) {

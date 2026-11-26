@@ -36,7 +36,7 @@ export const emptyInput = (): PenguinInput => ({
 
 export type Action = 'idle' | 'plow' | 'pack' | 'dig' | 'build' | 'charge' | 'throw' | 'slide' | 'down';
 export type Phase = 'build' | 'fight' | 'end';
-export type SplatCause = 'snowball' | 'bigball' | 'turret' | 'avalanche' | 'cocoa';
+export type SplatCause = 'snowball' | 'bigball' | 'turret' | 'avalanche' | 'cocoa' | 'blade';
 
 export type GameEvent =
   | { type: 'plow'; pid: number; x: number; y: number; z: number; fx: number; fz: number; mass: number }
@@ -80,6 +80,9 @@ export type GameEvent =
   | { type: 'gunDrop'; pid: number; gun: number; x: number; y: number; z: number }
   | { type: 'gunShot'; pid: number; gun: number; x: number; y: number; z: number; vx: number; vy: number; vz: number }
   | { type: 'gunEmpty'; pid: number; gun: number }
+  | { type: 'bladeSwing'; pid: number }
+  | { type: 'bladeHit'; pid: number; by: number; x: number; y: number; z: number } // pid -1: it hit a snowman turret
+  | { type: 'bladeBlock'; pid: number; x: number; y: number; z: number } // a swing smashed a snowball out of the air
   | { type: 'soak'; pid: number; by: number; x: number; y: number; z: number; chill: number } // the Freeze Soaker hit `pid`
   | { type: 'thaw'; pid: number; by: number } // hot chocolate warmed `pid` out of a chill
   | { type: 'icePatch'; x: number; y: number; z: number }
@@ -140,7 +143,7 @@ export class Penguin {
   turretBlock = 0;
   /** where this penguin last went down (Conquest brings you back at the nearest flag you hold) */
   downX = 0; downZ = 0;
-  /** the gun this penguin picked up (see Guns.ts: 0 none, 1 Hot Chocolate Blaster, 2 Freeze Soaker) and what's left in its tank */
+  /** the gun this penguin picked up (see Guns.ts: 0 none, 1 Hot Chocolate Blaster, 2 Freeze Soaker, 3 Candy Cane Blade) and what's left in its tank */
   gun = GUN_NONE; gunAmmo = 0;
   /** the gun is in its mittens right now (rather than slung on its back) */
   gunOut = false;
@@ -1190,7 +1193,7 @@ export class World {
       if (this.phase === 'fight' && this.mode === 'tdm') {
         this.scores[killer.team]++;
         // only splats you land yourself build a streak: turrets and Avalanches don't feed it
-        if (cause === 'snowball' || cause === 'bigball' || cause === 'cocoa') this.addStreak(killer);
+        if (cause === 'snowball' || cause === 'bigball' || cause === 'cocoa' || cause === 'blade') this.addStreak(killer);
       }
     }
     p.streak = 0;
