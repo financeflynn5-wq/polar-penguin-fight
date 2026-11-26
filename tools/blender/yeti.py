@@ -48,7 +48,7 @@ HIP = np.array([0.215, -0.01, 0.50]); ANKLE = np.array([0.235, 0.02, 0.13])
 FOOT = np.array([0.235, 0.02, 0.0]); FOOT_YAW = 0.26
 JK_ZB, JK_ZT = 0.735, 1.215
 BAFFLE = (JK_ZT - JK_ZB) / 4
-SCARF_Z, SCARF_K, SCARF_DIP = 1.275, 1.10, 0.095
+SCARF_Z, SCARF_K, SCARF_DIP = 1.275, 0.95, 0.095
 
 
 def gap_half_angle(z):
@@ -84,8 +84,8 @@ TRUNK = G.union(0.03, TORSO, HEAD)
 
 def _eye():
     # big glossy eyes like the penguin's and the bear's. The face is flat, so the ball is big and only its front shows
-    x, z, rx, r = 0.126, 1.563 + FZ, 0.090, 0.114
-    return C.Eye(x, FACE_Y - 0.012 - r + 0.024, z, rx, r, 0.20)
+    x, z, rx, r = 0.128, 1.566 + FZ, 0.096, 0.120
+    return C.Eye(x, FACE_Y - 0.012 - r + 0.026, z, rx, r, 0.20)
 
 
 EYE = _eye()
@@ -211,7 +211,7 @@ def make_tufts():
         return 1.0 + (rng.random() - 0.5) * 2 * a
     LK = dict(nu=6, n=4, point=1.15, fat=0.03)
     hd = lambda P: {'head': np.ones(len(P))}  # noqa: E731
-    # round the face: sideburns and jowls hanging down past the jaw, a wispy fringe over the brow
+    # round the face: sideburns and jowls hanging down past the jaw
     o = HEAD_C + np.array([0, 0.02, -0.03 + FZ])
     for s in (-1, 1):
         for dr, fl, ln, wd in (((1.0, 0.64, 0.22), (0.55, 0.20, -0.80), 0.170, 0.052),
@@ -223,17 +223,13 @@ def make_tufts():
                                ((1.0, -0.62, -0.30), (0.40, -0.55, -0.85), 0.210, 0.060)):
             d = np.array(dr) * (s, 1, 1); f = np.array(fl) * (s, 1, 1)
             out.append((C.tuft(nm('Face'), HEAD, o, d, f, ln * jit(), wd, thick=wd * 0.85, lift=0.22, embed=0.035, bend=0.20, **LK), hd))
-    for dx, ln in ((-0.20, 0.090), (-0.105, 0.115), (0.0, 0.100), (0.105, 0.115), (0.20, 0.090)):
-        root = np.array([dx, FACE_Y - 0.085, BROW_Z + 0.105])
-        tip = np.array([dx * 1.10 + 0.012, FACE_Y + 0.030, BROW_Z + 0.105 - ln * 0.60])
-        out.append((C.lock(nm('Fringe'), root, tip, 0.036, 0.026, (0, 0.75, 0.65), bend=0.22, **LK), hd))
     # eyebrows: thick tufts sweeping out along the brow ridge and flicking up past the corner of the eye
     for s in (-1, 1):
         ax = (BROW_OUT - BROW_IN) / np.linalg.norm(BROW_OUT - BROW_IN)
-        for t0, ln, dz, wd in ((0.02, 0.105, -0.012, 0.050), (0.36, 0.110, 0.004, 0.054), (0.70, 0.115, 0.034, 0.050)):
+        for t0, ln, dz, wd in ((0.04, 0.100, -0.010, 0.058), (0.50, 0.110, 0.016, 0.058)):
             root = BROW_IN + (BROW_OUT - BROW_IN) * t0 + np.array([0, 0.018, 0.012])
             tip = root + ax * ln + np.array([0.0, 0.034, dz])
-            out.append((C.lock(nm('Brow'), root * (s, 1, 1), tip * (s, 1, 1), wd, wd * 0.75, (0, 0.8, 0.6), bend=0.16, **LK), hd))
+            out.append((C.lock(nm('Brow'), root * (s, 1, 1), tip * (s, 1, 1), wd, wd * 0.9, (0, 0.8, 0.6), bend=0.14, **LK), hd))
     # the nape: a mane down the back of the head, over the scarf
     for a in (-1.0, -0.5, 0.0, 0.5, 1.0):
         d = np.array([math.sin(a) * 0.9, -1.0, -0.40])
@@ -326,6 +322,8 @@ class Yeti(C.Build):
     face_z = 1.48
     face_zoom = 1.0
     eyes = EYE
+    webp_quality = 85  # the shag makes busy textures; this keeps the file near the penguin's size
+    lod_ratio = 0.25
     material_of = {'fur_head': 'Yeti', 'fur_body': 'Yeti', 'fur_arm': 'Yeti', 'fur_leg': 'Yeti', 'foot': 'Yeti', 'ear': 'Yeti', 'nose': 'Yeti',
                    'jaw': 'Yeti', 'lid': 'Yeti', 'tuft': 'Yeti', 'tooth': 'Yeti', 'eye': 'Eye', 'fleece': 'Yeti', 'piping': 'Yeti',
                    'mittencuff': 'Yeti', 'jacket': 'TeamJacket', 'scarf': 'TeamScarf', 'scarftail0': 'TeamScarf',
@@ -414,7 +412,7 @@ class Yeti(C.Build):
         sc = self.make_scarf()
         d = dict(fur_head=look_head, fur_body=look_body, fur_arm=look_arm, fur_leg=look_body, foot=look_foot, ear=look_ear, nose=look_nose,
                  jaw=look_jaw, lid=look_lid, tuft=look_tuft, tooth=look_tooth,
-                 eye=C.eye_look(EYE, iris_in='#3a1c06', iris_out='#d08a22', iris_r=0.50, pupil_r=0.30, sclera=('#fbfcff', '#c3cada')),
+                 eye=C.eye_look(EYE, iris_in='#3a1c06', iris_out='#d08a22', iris_r=0.50, pupil_r=0.33, sclera=('#fbfcff', '#c3cada')),
                  fleece=L.fleece, piping=L.piping, mittencuff=L.mittencuff,
                  jacket=C.tinted(C.quilt_look(JK_ZB, BAFFLE, 0.46), tint),
                  scarf=C.tinted(C.scarf_look, tint), mitten=C.tinted(L.mitten, tint, 0.9))
@@ -496,7 +494,7 @@ def look_head(g):
     # lighter on the muzzle and the brow, darker in the eye hollows
     mz = smooth(1.25, 0.70, ell(p, tuple(MUZ_C), tuple(MUZ_R)))
     skin = lerp(skin, rgb(SKIN_LIGHT), mz * 0.75)
-    hollow = smooth(1.25, 0.95, ell(pm, (EYE.x, FACE_Y, EYE.z), (0.074, 0.09, 0.086)))  # a thin soft liner round each eye
+    hollow = smooth(1.25, 0.95, ell(pm, (EYE.x, FACE_Y, EYE.z), (0.080, 0.09, 0.092)))  # a thin soft liner round each eye
     skin = lerp(skin, rgb(SKIN_DARK), hollow * 0.45)
     blush = 1.0 - smooth(0.0, 1.0, ell(pm, (0.205, FACE_Y + 0.01, 1.452 + FZ), (0.050, 0.08, 0.030)))
     skin = lerp(skin, rgb('#b48fc0'), blush * 0.55)

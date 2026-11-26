@@ -585,6 +585,7 @@ class Build:
     face_zoom = 1.0
     eyes = None             # Eye
     lod_ratio = 0.27
+    webp_quality = 90
     density = {}
     material_of = {}
     ao = dict(ao_samples=64, ao_dist=0.30, ao_in_color=0.30)
@@ -689,7 +690,7 @@ def run(build, here, argv=None):
     R.bind(lod, arm)
     from . import export as EX
     glb = os.path.join(repo, 'src', 'assets', 'models', build.name + '.glb')
-    EX.export_glb(glb, [arm, mesh, lod])
+    EX.export_glb(glb, [arm, mesh, lod], webp_quality=build.webp_quality)
     dg = bpy.context.evaluated_depsgraph_get()
     tris_lod = sum(len(p.vertices) - 2 for p in lod.evaluated_get(dg).to_mesh().polygons)
     facts = build.facts()

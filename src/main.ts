@@ -44,7 +44,7 @@ const el = (html: string) => { const d = document.createElement('div'); d.innerH
 const menu = el(`<div class="menu">
   <div class="logo">Polar<span>Penguin Fight</span><small>Snowball arena · built live on stream</small></div>
   <div class="field"><label>Penguin name</label><input type="text" id="name" maxlength="16" /></div>
-  <div class="field"><label>Class</label><div class="classes" id="classes"></div></div>
+  <div class="field"><label>Class</label><div class="classes" id="classes"></div><div class="classblurb" id="classBlurb"></div></div>
   <div class="field"><label>Hat</label><div class="hats" id="hats"></div></div>
   <div class="field"><label>Game mode</label><div class="modes">
     <button class="mode gm" data-mode="tdm"><b>Team Deathmatch</b><span>First to ${CFG.scoreToWin} splats · Frostbite Bay</span></button>
@@ -99,14 +99,14 @@ const CLASS_STATS: Record<ClassId, string> = {
   bear: `${CLASSES.bear.health} hearts · charge`,
   yeti: `${CLASSES.yeti.health} hearts · slow · giant snowballs`,
 };
-const classButtons = (where: Element, small: boolean, pick: (c: ClassId) => void) => {
+const classButtons = (where: Element, pick: (c: ClassId) => void) => {
   for (const c of CLASS_IDS) {
-    const b = el(`<button class="mode cls${small ? ' sm' : ''}" data-cls="${c}"><b>${CLASSES[c].name}</b><span>${small ? CLASS_STATS[c] : `${CLASS_STATS[c]}<br>${CLASSES[c].blurb}`}</span></button>`);
+    const b = el(`<button class="mode cls" data-cls="${c}"><b>${CLASSES[c].name}</b><span>${CLASS_STATS[c]}</span></button>`);
     b.addEventListener('click', () => { cls = c; store.set('cls', c); game.audio.unlock(); game.audio.click(); pick(c); syncMenu(); });
     where.appendChild(b);
   }
 };
-classButtons(menu.querySelector('#classes')!, false, c => game.setMenuClass(c));
+classButtons(menu.querySelector('#classes')!, c => game.setMenuClass(c));
 menu.querySelectorAll<HTMLButtonElement>('.mode[data-size]').forEach(b => b.addEventListener('click', () => {
   teamSize = +b.dataset.size!; store.set('teamSize', String(teamSize)); game.audio.unlock(); game.audio.click(); syncMenu();
 }));
@@ -129,6 +129,7 @@ function syncMenu() {
   menu.querySelectorAll<HTMLElement>('.mode[data-side]').forEach(b => b.classList.toggle('sel', +b.dataset.side! === side));
   menu.querySelector('#sides')!.classList.toggle('hidden', mode !== 'breakthrough');
   menu.querySelector('#howMode')!.innerHTML = HOW_MODE[mode];
+  menu.querySelector('#classBlurb')!.textContent = CLASSES[cls].blurb;
 }
 function start() {
   menu.classList.add('hidden');
@@ -194,7 +195,7 @@ const pause = el(`<div class="overlay dim hidden"><div class="panel">
   <div class="row"><button class="btn" id="resume">Resume</button><button class="btn blue" id="quit">Quit to menu</button></div>
 </div></div>`);
 document.body.appendChild(pause);
-classButtons(pause.querySelector('#pauseClasses')!, true, c => game.setNextClass(c));
+classButtons(pause.querySelector('#pauseClasses')!, c => game.setNextClass(c));
 syncMenu();
 const sens = pause.querySelector('#sens') as HTMLInputElement;
 sens.value = String(game.input.sensitivity);

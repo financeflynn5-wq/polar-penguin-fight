@@ -216,7 +216,7 @@ def make_tufts():
                            ((0.55, -0.9, -0.39), 0.110, 0.062)):
             d = np.array(dr) * (s, 1, 1)
             fl = np.array([d[0] * 0.45, d[1] * 0.45, -1.0])
-            out.append((C.tuft(f'Haunch{k}', TORSO, o, d, fl, ln, wd, thick=wd * 0.6, lift=0.30, embed=0.04, bend=0.14, point=1.4, fat=0.05), w_trunk)); k += 1
+            out.append((C.tuft(f'Haunch{k}', TORSO, o, d, fl, ln, wd, thick=wd * 0.6, lift=0.24, embed=0.045, bend=0.14, point=2.0, fat=0.22), w_trunk)); k += 1
     # the ruff of the chest, showing where the zip falls open
     o = np.array([0, 0, 0.64])
     for dx, dz, ln, wd in ((0.0, 0.0, 0.130, 0.062), (-0.075, 0.03, 0.110, 0.056), (0.075, 0.03, 0.110, 0.056)):
@@ -231,11 +231,6 @@ def make_tufts():
             tip = root + ax * ln * 0.75 + np.array([s * 0.035, -0.07, 0.0]) * (ln / 0.1)
             ob = C.lock(f'Elbow{sd}{j}', root, tip, wd, wd * 0.7, (s * 0.5, -0.85, 0.2), bend=0.16, point=1.4, fat=0.05)
             out.append((ob, lambda P, s=s: w_arm(P, s))); k += 1
-    # a tuft on the tail
-    for j, (dx, ln) in enumerate(((0.0, 0.11), (-0.05, 0.085), (0.05, 0.085))):
-        root = TAIL_C + np.array([dx, 0.0, 0.02])
-        tip = TAIL_C + np.array([dx * 1.5, -0.095 - ln * 0.5, -0.03 - ln * 0.4])
-        out.append((C.lock(f'TailTuft{j}', root, tip, 0.050, 0.040, (0, -0.6, 0.8), bend=0.15), lambda P: {'tail': np.ones(len(P))}))
     return out
 
 

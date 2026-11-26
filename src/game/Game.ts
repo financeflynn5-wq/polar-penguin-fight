@@ -204,6 +204,7 @@ export class Game {
     if (!this.menuPenguin || !this.menuFake) return;
     this.menuPenguin.dispose(this.scene);
     this.menuFake.cls = cls;
+    this.menuFake.health = CLASSES[cls].health;
     this.menuPenguin = new PenguinModel(0, this.menuHat, null, false, cls);
     this.scene.add(this.menuPenguin.root);
   }

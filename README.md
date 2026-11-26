@@ -6,6 +6,8 @@ Push and pile real 3D snow, pat it into forts, dig tunnels, pack snowballs (carr
 
 ## Classes
 
+![The three classes on both teams](docs/screenshots/classes-lineup.jpg)
+
 Pick one on the menu. You can change it from the pause screen while you play, and the change starts with your next life. Bot teams are mostly penguins, with one polar bear and one yeti in every five.
 
 | | Penguin | Polar bear | Yeti |

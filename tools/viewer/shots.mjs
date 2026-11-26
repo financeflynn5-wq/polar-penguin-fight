@@ -56,16 +56,16 @@ const SETS = {
     await page.evaluate(() => {
       const v = window.viewer; v.clear();
       ['penguin', 'bear', 'yeti'].forEach((c, i) => { v.add({ team: 0, cls: c, x: -3.3 + i * 1.25 + (i === 2 ? 0.2 : 0), yaw: -0.2 }); v.add({ team: 1, cls: c, x: 0.7 + i * 1.25 + (i === 2 ? 0.2 : 0), yaw: 0.2 }); });
-      v.camera(0, 1.5, -8.6, 0, 0.9, 0, 30); v.run(40);
+      v.camera(0.05, 1.5, -11.2, 0.05, 0.85, 0, 30); v.run(40);
     });
     await shot('classes_front');
-    await page.evaluate(() => { const v = window.viewer; v.camera(0, 2.6, 8.8, 0, 0.8, 0, 30); v.run(2); });
+    await page.evaluate(() => { const v = window.viewer; v.camera(0.05, 3.0, 11.2, 0.05, 0.75, 0, 30); v.run(2); });
     await shot('classes_back');
     await page.evaluate(() => {
       const v = window.viewer; v.clear();
       const hats = ['beanie', 'viking', 'crown', 'tophat', 'party', 'chef'];
       ['penguin', 'bear', 'yeti', 'penguin', 'bear', 'yeti'].forEach((c, i) => v.add({ team: i < 3 ? 0 : 1, cls: c, hat: hats[i], x: -3.6 + i * 1.4, yaw: 0.25, name: ['Pebble', 'Flynn', 'Chat', 'Waddles', 'Mod', 'Frosty'][i] }));
-      v.camera(0.6, 1.6, -9.4, 0, 1.0, 0, 30); v.run(40);
+      v.camera(0.4, 1.7, -11.6, -0.1, 1.05, 0, 30); v.run(40);
     });
     await shot('classes_hats');
   },
@@ -92,7 +92,8 @@ const SETS = {
 };
 
 const browser = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
-const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
+const [VW, VH] = (process.env.SIZE || '1280x800').split('x').map(Number); // SIZE=1920x1200 for bigger pictures
+const page = await browser.newPage({ viewport: { width: VW, height: VH }, deviceScaleFactor: 1 });
 page.on('pageerror', e => console.log('PAGE ERROR', e.message));
 page.on('console', m => { if (m.type() === 'error') console.log('console:', m.text()); });
 await page.goto(base);
