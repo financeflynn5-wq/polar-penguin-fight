@@ -22,7 +22,7 @@ import type { TankGear } from '../sim/Tank';
 import type { GunCrate, IcePatch } from '../sim/Guns';
 import { CLASS_IDS, ClassId } from '../sim/Classes';
 
-export const PROTOCOL = 6;
+export const PROTOCOL = 7;
 export const TICK_HZ = 60;
 export const SNAP_EVERY = 2; // ticks per snapshot: 30 snapshots a second
 export const MSG_MATCH = 1;
@@ -167,7 +167,7 @@ export interface VehicleState {
   id: number; kind: VehicleKind; team: number; slot: number;
   x: number; y: number; z: number; yaw: number; pitch: number; roll: number;
   vx: number; vy: number; vz: number; speed: number; steer: number;
-  grounded: boolean; health: number; seats: number[]; hitT: number; load: number;
+  grounded: boolean; plowDown: boolean; health: number; seats: number[]; hitT: number; load: number;
   /** the snow tank's gun and catapult */
   tank?: TankGear;
 }
@@ -265,7 +265,7 @@ function writePenguin(o: Writer, p: Penguin) {
 }
 
 function writeVehicle(o: Writer, v: Vehicle) {
-  o.u32(v.id); o.u8(VEHICLE_KINDS.indexOf(v.kind) | ((v.team & 1) << 4) | (v.grounded ? 32 : 0)); o.u8(v.slot);
+  o.u32(v.id); o.u8(VEHICLE_KINDS.indexOf(v.kind) | ((v.team & 1) << 4) | (v.grounded ? 32 : 0) | (v.plowDown ? 64 : 0)); o.u8(v.slot);
   o.f32(v.x); o.f32(v.y); o.f32(v.z);
   o.i16(clampI16(wrapA(v.yaw) * 10000)); o.i16(clampI16(v.pitch * 10000)); o.i16(clampI16(v.roll * 10000));
   o.i16(clampI16(v.vx * 100)); o.i16(clampI16(v.vy * 100)); o.i16(clampI16(v.vz * 100)); o.i16(clampI16(v.speed * 100));
@@ -296,7 +296,7 @@ function readVehicle(r: Reader): VehicleState {
     const heat = r.u8() / 254, hot = r.u8() === 1, gunT = r.u8() / 100, catT = r.u8() / 50;
     tank = { aimYaw, aimPitch, catYaw, heat, hot, gunT, catT, fireT: 0 };
   }
-  return { id, kind, tank, team: (bits >> 4) & 1, slot, grounded: !!(bits & 32), x, y, z, yaw, pitch, roll, vx, vy, vz, speed, steer, health, seats, hitT, load };
+  return { id, kind, tank, team: (bits >> 4) & 1, slot, grounded: !!(bits & 32), plowDown: !!(bits & 64), x, y, z, yaw, pitch, roll, vx, vy, vz, speed, steer, health, seats, hitT, load };
 }
 
 function readPenguin(r: Reader): PenguinState {

@@ -78,8 +78,9 @@ export type GameEvent =
   | { type: 'sector'; sector: number; tickets: number } // Breakthrough: the attackers took this section (tickets = what they got for it)
   | { type: 'sectorOpen'; sector: number } // Breakthrough: the regroup is over, this section is on
   | { type: 'lastStand' } // Breakthrough: the attackers are out of tickets
-  // vehicles: someone hopped on or off, one turned up at camp ('spawn') or went back there ('home'), or it isn't yours to take ('denied')
-  | { type: 'vehicle'; what: 'enter' | 'exit' | 'spawn' | 'home' | 'denied'; vid: number; kind: VehicleKind; team: number; pid: number; x: number; y: number; z: number }
+  // vehicles: someone hopped on or off, one turned up at camp ('spawn') or went back there ('home'), it isn't yours to take ('denied'),
+  // or the snowplow's driver put the blade down or lifted it
+  | { type: 'vehicle'; what: 'enter' | 'exit' | 'spawn' | 'home' | 'denied' | 'bladeDown' | 'bladeUp'; vid: number; kind: VehicleKind; team: number; pid: number; x: number; y: number; z: number }
   | { type: 'vehicleHit'; vid: number; by: number; x: number; y: number; z: number; health: number }
   | { type: 'vehicleDown'; vid: number; kind: VehicleKind; team: number; by: number; x: number; y: number; z: number }
   | { type: 'vehicleBump'; vid: number; x: number; y: number; z: number; hard: number }

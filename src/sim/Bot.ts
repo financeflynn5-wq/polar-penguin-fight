@@ -266,6 +266,7 @@ export class BotBrain {
         if (w.penguins.some(q => q !== p && q.bot && q.alive && q.team === p.team && q.riding < 0 && Math.hypot(v.x - q.x, v.z - q.z) < d - 0.01)) continue;
       } else if (v.seats[0] >= 0) continue;
       else if (v.kind === 'snowplow') {
+        if (v.team !== p.team) continue; // bots leave stealing the other team's snowplow to people
         if (v.idleT < CFG.plowBotWait || d > 55 || w.holdT > 0) continue;
         if (w.penguins.some(q => q !== p && q.bot && q.alive && q.team === p.team && q.riding < 0 && Math.hypot(v.x - q.x, v.z - q.z) < d - 0.01)) continue;
       } else {

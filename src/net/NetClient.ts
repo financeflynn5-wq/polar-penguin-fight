@@ -329,13 +329,13 @@ export class NetClient {
       const v: Vehicle = old.get(s.id) ?? {
         id: s.id, kind: s.kind, team: s.team, slot: s.slot, x, y, z, px: x, py: y, pz: z, yaw, pyaw: yaw, pitch: 0, roll: 0,
         vx: 0, vy: 0, vz: 0, speed: 0, steer: 0, grounded: true, health: s.health, seats: [], alive: true, idleT: 0, lastDriver: -1,
-        hitT: 9, load: 0, climb: 0, snowAcc: 0, snowT: 0, stuckT: 0,
+        hitT: 9, load: 0, climb: 0, snowAcc: 0, snowT: 0, stuckT: 0, plowDown: false, plowCd: 0,
       };
       v.x = v.px = x; v.y = v.py = y; v.z = v.pz = z; v.yaw = v.pyaw = yaw;
       v.pitch = lerp(s.pitch, e.pitch, u); v.roll = lerp(s.roll, e.roll, u);
       v.vx = lerp(s.vx, e.vx, u); v.vy = lerp(s.vy, e.vy, u); v.vz = lerp(s.vz, e.vz, u);
       v.speed = lerp(s.speed, e.speed, u); v.steer = lerp(s.steer, e.steer, u);
-      v.grounded = s.grounded; v.health = s.health; v.hitT = s.hitT; v.load = s.load; v.team = s.team; v.slot = s.slot;
+      v.grounded = s.grounded; v.plowDown = s.plowDown; v.health = s.health; v.hitT = s.hitT; v.load = s.load; v.team = s.team; v.slot = s.slot;
       v.seats = s.seats.slice();
       if (s.tank) {
         // the snow tank's turret, gun and turntable swing smoothly between snapshots

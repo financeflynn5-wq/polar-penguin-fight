@@ -2,7 +2,8 @@
 // VehicleModel.ts), their moving parts, the snow they throw up and the tracks they leave.
 import * as THREE from 'three';
 import type { World } from '../sim/World';
-import { Vehicle, VehicleKind, VEHICLE_KINDS, VEHICLE_SPECS, BLADE, maxHealth } from '../sim/Vehicles';
+import { Vehicle, VehicleKind, VEHICLE_KINDS, VEHICLE_SPECS, BLADE, maxHealth, vehicleSide } from '../sim/Vehicles';
+import { propMaterial } from './PropMaterials';
 import { Particles, PKind } from './Particles';
 import { Decals } from './Decals';
 import { makeVehicleModel, disposeVehicleModel } from './VehicleModel';
@@ -13,6 +14,7 @@ export const VEHICLE_TINT = [0x2f7ee8, 0xff8a2e];
 
 const lerpA = (a: number, b: number, t: number) => { let d = b - a; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; return a + d * t; };
 const _v = new THREE.Vector3();
+const _c = new THREE.Color();
 
 interface View {
   kind: VehicleKind; team: number;
@@ -96,6 +98,16 @@ export class VehiclesView {
   /** The end of a snow tank's gun barrels (world space), for the flash when it fires. */
   muzzle(vid: number): THREE.Object3D | null { return this.views.get(vid)?.muzzle ?? null; }
 
+  /** Back at its own camp: a stolen one gets its owner's colours back. */
+  wentHome(vid: number, team: number) { const view = this.views.get(vid); if (view) this.paint(view, team); }
+
+  private paint(view: View, side: number) {
+    const paint = view.model?.userData.paint as THREE.MeshStandardMaterial | undefined;
+    if (side === view.team || !paint) return;
+    view.team = side;
+    paint.color.copy((propMaterial('paint') as THREE.MeshStandardMaterial).color).multiply(_c.set(VEHICLE_TINT[side] ?? 0xffffff));
+  }
+
   /** The quaternion of the vehicle's body (heading and lean), for sitting riders on it. */
   body(vid: number): THREE.Object3D | null { return this.views.get(vid)?.tilt ?? null; }
 
@@ -121,6 +133,8 @@ export class VehiclesView {
     const yaw = lerpA(v.pyaw, v.yaw, alpha);
     const plow = v.kind !== 'snowmobile'; // tracked: the snowplow and the snow tank
     const ridden = v.seats.some(s => s >= 0), driven = v.seats[0] >= 0;
+    // it wears the colours of whoever is on it (and keeps them once they hop off: a stolen one stays stolen-looking)
+    if (ridden) this.paint(view, vehicleSide(w, v));
     const speed = v.speed, abs = Math.abs(speed);
 
     // a little suspension: it bobs when it lands, when it's hit, and with the engine when someone's on it
@@ -148,7 +162,8 @@ export class VehiclesView {
     }
     if (view.blade) {
       // down and working when it's pushing forward, lifted clear otherwise
-      const want = driven && speed > 0.3 ? 0 : driven ? 0.14 : 0.24;
+      // (blade down for wall building: flat on the ground the whole time)
+      const want = v.plowDown ? -0.03 : driven && speed > 0.3 ? 0.05 : driven ? 0.14 : 0.24;
       view.bladeNow += (want - view.bladeNow) * Math.min(1, dt * 4);
       view.blade.rotation.z = view.bladeNow + (v.load > 0.05 ? Math.sin(time * 38) * 0.008 * v.load : 0);
     }
@@ -231,8 +246,20 @@ export class VehiclesView {
   /** The blade is cutting snow: a wave of it breaks over the top and pours off both ends. */
   plowSpray(v: Vehicle, mass: number, P: Particles) {
     const fx = -Math.sin(v.yaw), fz = -Math.cos(v.yaw), rx = Math.cos(v.yaw), rz = -Math.sin(v.yaw);
-    const n = Math.min(60, 4 + Math.ceil(mass / 60));
     const sp = Math.max(2, Math.abs(v.speed));
+    if (v.plowDown) {
+      // blade down: the heap rolls and tumbles along in front, with a little powder coming off the top of it
+      const m = Math.min(14, 2 + Math.ceil(mass / 1500));
+      for (let i = 0; i < m; i++) {
+        const u = (Math.random() * 2 - 1) * (BLADE.halfW + 0.3), a = BLADE.far + Math.random() * 2;
+        P.spawn(PKind.Grain, v.x + fx * a + rx * u, v.y + 0.4 + Math.random() * 2.6, v.z + fz * a + rz * u,
+          fx * sp * (0.5 + Math.random() * 0.5) + rx * (Math.random() - 0.5) * 2, 0.5 + Math.random() * 1.8, fz * sp * (0.5 + Math.random() * 0.5) + rz * (Math.random() - 0.5) * 2,
+          0.04 + Math.random() * 0.07, 0.7 + Math.random() * 0.6);
+      }
+      if (Math.random() < 0.35) P.spawn(PKind.Puff, v.x + fx * (BLADE.far + 1) + rx * (Math.random() - 0.5) * 3, v.y + 1.5 + Math.random() * 1.5, v.z + fz * (BLADE.far + 1) + rz * (Math.random() - 0.5) * 3, fx * 1.5, 0.8, fz * 1.5, 0.4 + Math.random() * 0.4, 0.7);
+      return;
+    }
+    const n = Math.min(60, 4 + Math.ceil(mass / 60));
     for (let i = 0; i < n; i++) {
       const u = (Math.random() * 2 - 1) * BLADE.halfW;
       const edge = Math.abs(u) / BLADE.halfW;
