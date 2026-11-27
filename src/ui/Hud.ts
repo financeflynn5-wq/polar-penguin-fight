@@ -70,7 +70,7 @@ export class Hud {
         <div><span class="key">E</span>grab / hop on a vehicle &nbsp;·&nbsp; hold <span class="key">E</span>stash</div>
         <div><span class="key">X</span>gun or blade / snowballs (find them on the gun pads)</div>
         <div id="shiftKey"></div>
-        <div>sliding: <span class="key">A</span><span class="key">D</span>steer &nbsp; <span class="key">S</span>brake</div>
+        <div>slide or board: <span class="key">A</span><span class="key">D</span>steer &nbsp; <span class="key">S</span>brake</div>
         <div><span class="key">Tab</span>scores</div>
       </div>
       <div class="board hidden" id="board"></div>

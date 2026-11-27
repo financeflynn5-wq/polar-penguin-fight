@@ -32,7 +32,7 @@ The bigger classes are easier to hit, and neither can slide. Every number is in 
 
 Snowman turrets work in every mode: hold T to scoop a lot of snow into one. It throws at any enemy it can see, runs out of snowballs unless you hand it more (hold E beside it), and four hits knock it down.
 
-Every map has jump ramps on its hills (icy decks with gold arrows and candy-cane rails): belly slide into one at speed and you fly. Every map also has a surfboard that pops up shortly after the fight starts: grab it to ride faster than a slide until you are splatted. In Breakthrough the board appears in the section being fought over.
+Every map has jump ramps on its hills (icy decks with gold arrows and candy-cane rails): belly slide into one at speed and you fly. Every map also has a surfboard that pops up shortly after the fight starts: grab it to ride faster than walking, and still throw, until you are splatted. The board goes where it points and does not slip sideways: A / D carve left and right as you see it on screen, W bends the ride toward where you look, S brakes, and letting go on a hill lets it find its own way down. In Breakthrough the board appears in the section being fought over.
 
 ## Vehicles
 

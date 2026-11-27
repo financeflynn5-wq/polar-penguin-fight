@@ -714,33 +714,72 @@ export class World {
       if (s3 > slideMax) { p.vx *= slideMax / s3; p.vz *= slideMax / s3; }
       if (s3 < 1.2 && !p.onSlide) { p.slideSlowT += dt; if (p.slideSlowT > 0.5) p.sliding = false; } else p.slideSlowT = 0;
       p.yaw = Math.atan2(-p.vx, -p.vz);
+    } else if (p.surfing) {
+      // The board goes where it points and never slips sideways. Steering swings the whole ride round: A and D are
+      // left and right on screen, forward bends it toward where you look (the same as a belly slide, but tighter),
+      // pushing brings it up to speed and pulling back against the ride brakes. Let go on a hill and it finds its own way down.
+      let cap = CFG.walkSpeed;
+      if (action === 'plow') cap = CFG.plowSpeed / (1 + p.plowLoad * 0.0004);
+      else if (action === 'pack' || action === 'dig' || action === 'build') cap = CFG.busySpeed;
+      else if (action === 'charge') cap = CFG.chargeSpeed;
+      else if (this.guns.spraying(p)) cap = CFG.gunMoveSpeed;
+      cap *= CFG.surfSpeedMult * chilled * def.speed;
+      let sp = Math.hypot(p.vx, p.vz);
+      const moving = sp > 0.05;
+      let dx = moving ? p.vx / sp : -Math.sin(p.yaw), dz = moving ? p.vz / sp : -Math.cos(p.yaw);
+      const wl = Math.hypot(wishX, wishZ);
+      let push = 0, scrub = 0; // how much of the push goes along the board, and how hard a tight turn digs the edge in
+      if (ml > 0.1 && wl > 0.01) {
+        const along = (dx * wishX + dz * wishZ) / wl;
+        if (along < -0.8 && sp > 0.8 && inp.moveZ < -0.3) {
+          if (p.grounded) sp = Math.max(0, sp - (ice ? 0.35 : 1) * CFG.surfBrake * dt);
+        } else {
+          const want = Math.atan2(dx * wishZ - dz * wishX, dx * wishX + dz * wishZ); // from the board round to the push
+          // quick on its feet at walking pace, wide carves at full speed
+          const rate = CFG.surfSteer * (p.grounded ? (ice ? 0.5 : 1) : sp < 1 ? 1 : 0.35) * (1 + 1.5 * Math.max(0, 1 - sp / 4)) * (p.slipT > 0 ? 0.2 : 1);
+          const turn = Math.sign(want) * Math.min(Math.abs(want), rate * Math.min(1, wl) * dt);
+          const c = Math.cos(turn), sn = Math.sin(turn);
+          const ndx = dx * c - dz * sn, ndz = dx * sn + dz * c;
+          dx = ndx; dz = ndz;
+          const off = Math.cos(want - turn);
+          push = Math.max(0, off) * Math.min(1, wl);
+          scrub = (1 - off) * CFG.surfScrub; // nothing in a gentle carve, a lot when you haul it right round
+        }
+      }
+      if (p.grounded) {
+        if (push > 0 && sp < cap) sp = Math.min(cap, sp + (ice ? 3 : CFG.surfAccel) * push * dt);
+        else sp = Math.max(0, sp - (ice ? 0.3 : push > 0 ? 0.5 : CFG.surfFriction) * dt);
+        sp = Math.max(0, sp - (ice ? 0.3 : 1) * scrub * dt);
+      } else if (push > 0 && sp < cap) sp = Math.min(cap, sp + 5 * push * dt); // a little push in the air too, so a board perched on an edge can get off it
+      p.vx = dx * sp; p.vz = dz * sp;
+      if (p.grounded && !p.onProp) {
+        // downhill pull. While you steer, the board's edge holds its line across a slope instead of being dragged off it
+        const n = this.groundNormal(p.x, p.y, p.z);
+        const gx = CFG.gravity * n.y * n.x * 0.8, gz = CFG.gravity * n.y * n.z * 0.8;
+        const along = gx * dx + gz * dz, edge = ml > 0.1 ? CFG.surfEdge : 1;
+        p.vx += (along * dx + (gx - along * dx) * edge) * dt;
+        p.vz += (along * dz + (gz - along * dz) * edge) * dt;
+      }
+      const s2 = Math.hypot(p.vx, p.vz), surfMax = CFG.surfMaxSpeed * chilled;
+      if (s2 > surfMax) { p.vx *= surfMax / s2; p.vz *= surfMax / s2; }
+      // the penguin faces the way the board is going (the camera is free to look anywhere)
+      if (s2 > 0.05) {
+        let dyaw = Math.atan2(-p.vx, -p.vz) - p.yaw;
+        while (dyaw > Math.PI) dyaw -= Math.PI * 2;
+        while (dyaw < -Math.PI) dyaw += Math.PI * 2;
+        p.yaw += dyaw * Math.min(1, dt * 14);
+        if (p.yaw > Math.PI) p.yaw -= Math.PI * 2; else if (p.yaw < -Math.PI) p.yaw += Math.PI * 2;
+      } else p.yaw = Math.atan2(-dx, -dz);
     } else {
       let speed = CFG.walkSpeed;
       if (action === 'plow') speed = CFG.plowSpeed / (1 + p.plowLoad * 0.0004);
       else if (action === 'pack' || action === 'dig' || action === 'build') speed = CFG.busySpeed;
       else if (action === 'charge') speed = CFG.chargeSpeed;
       else if (this.guns.spraying(p)) speed = CFG.gunMoveSpeed;
-      if (p.surfing) speed *= CFG.surfSpeedMult;
       speed *= chilled * def.speed;
       const tx = wishX * speed, tz = wishZ * speed;
-      let accel = p.grounded ? (ice ? 2.2 : 12) : 3;
-      if (p.surfing) accel = p.grounded ? (ice ? 4 : CFG.surfAccel) : 2.5;
-      const k = Math.min(1, accel * dt);
-      if (p.surfing && ml < 0.1) {
-        // no input: keep gliding
-        const fr = (ice ? 0.3 : 2.2) * dt, sp = Math.hypot(p.vx, p.vz);
-        if (sp > 0) { const kk = Math.max(0, sp - fr) / sp; p.vx *= kk; p.vz *= kk; }
-      } else {
-        p.vx += (tx - p.vx) * k; p.vz += (tz - p.vz) * k;
-      }
-      if (p.surfing && p.grounded && !p.onProp) {
-        // surf down hills
-        const n = this.groundNormal(p.x, p.y, p.z);
-        p.vx += CFG.gravity * n.y * n.x * dt * 0.7;
-        p.vz += CFG.gravity * n.y * n.z * dt * 0.7;
-        const sp = Math.hypot(p.vx, p.vz);
-        if (sp > CFG.surfMaxSpeed) { p.vx *= CFG.surfMaxSpeed / sp; p.vz *= CFG.surfMaxSpeed / sp; }
-      }
+      const k = Math.min(1, (p.grounded ? (ice ? 2.2 : 12) : 3) * dt);
+      p.vx += (tx - p.vx) * k; p.vz += (tz - p.vz) * k;
       // body turns toward where we look
       let dyaw = p.lookYaw - p.yaw;
       while (dyaw > Math.PI) dyaw -= Math.PI * 2;

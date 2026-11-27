@@ -47,8 +47,13 @@ export const CFG = {
   rateBonusPerLevel: 0.25,
 
   surfSpeedMult: 1.55,
-  surfAccel: 9,
+  surfAccel: 8, // m/s² of push along the board
   surfMaxSpeed: 13,
+  surfSteer: 2.6, // rad/s the board swings round at speed (2.5x that from a standstill)
+  surfBrake: 10, // m/s² when you pull straight back
+  surfFriction: 1.6, // m/s² coasting with no keys held
+  surfScrub: 5, // m/s² lost while the board is side-on to where you are steering (twice that for a full U-turn)
+  surfEdge: 0.3, // how much of a slope's sideways pull gets through while you are steering
   boardSpawnDelay: 20, // seconds into the fight before the surfboard pops up
 
   stockRadius: 2.6,
