@@ -1,8 +1,9 @@
 // The online wire format, shared by the game server and the browser. No Three.js and no DOM.
 //
 // Browser → server: small JSON text messages.
-//   { t: 'join', v, name, hat, size, mode, team?, cls? } join a 5v5 or 10v10 match of Team Deathmatch, Conquest or Breakthrough
+//   { t: 'join', v, name, hat, skin?, size, mode, team?, cls? } join a 5v5 or 10v10 match of Team Deathmatch, Conquest or Breakthrough
 //                                                 (team: the side you'd like in Breakthrough, 0 attack / 1 defend;
+//                                                  skin: 'new' or 'classic' penguin, looks only, sent back in the roster;
 //                                                  cls: 'penguin' | 'bear' | 'yeti')
 //   { t: 'cls', cls }                             come back as this class next time you respawn
 //   { t: 'in', s, i: InputRow[] }                 one row per 60 Hz tick, s = sequence number of the first row

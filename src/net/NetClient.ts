@@ -8,7 +8,7 @@
 //  - turrets, flags and everyone's streak rewards are copied over as the server has them;
 //  - hits, splats, throws and the rest come through as the same GameEvents the offline game uses.
 import * as P from './Protocol';
-import { World, Penguin, PenguinInput, GameEvent, RosterEntry, emptyInput, Snowball, BigBall, Flake, Turret } from '../sim/World';
+import { World, Penguin, PenguinInput, GameEvent, RosterEntry, emptyInput, asSkin, type Skin, Snowball, BigBall, Flake, Turret } from '../sim/World';
 import type { Mode } from '../world/Maps';
 import type { Vehicle } from '../sim/Vehicles';
 import type { ClassId } from '../sim/Classes';
@@ -26,7 +26,7 @@ export interface NetHooks {
   onClose(reason: string): void;
 }
 
-export interface JoinRequest { name: string; hat: string; size: number; mode: Mode; /** Breakthrough: the side you'd like (0 attack, 1 defend) */ team?: number; cls?: ClassId; }
+export interface JoinRequest { name: string; hat: string; skin?: Skin; size: number; mode: Mode; /** Breakthrough: the side you'd like (0 attack, 1 defend) */ team?: number; cls?: ClassId; }
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 const lerpA = (a: number, b: number, t: number) => { let d = b - a; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; return a + d * t; };
@@ -150,7 +150,7 @@ export class NetClient {
     if (!w) return;
     for (const r of roster) {
       const p = w.penguin(r.id);
-      if (p) { p.name = r.name; p.hat = r.hat; p.bot = r.bot; p.cls = r.cls ?? p.cls; }
+      if (p) { p.name = r.name; p.hat = r.hat; p.bot = r.bot; p.cls = r.cls ?? p.cls; p.skin = asSkin(r.skin); }
     }
     this.hooks.onRoster(roster);
   }

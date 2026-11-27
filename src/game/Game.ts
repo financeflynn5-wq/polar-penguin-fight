@@ -6,11 +6,12 @@ import { ISO } from '../world/SnowField';
 import { SnowRenderer } from '../render/SnowRenderer';
 import { Environment } from '../render/Environment';
 import { Particles, PKind } from '../render/Particles';
-import { PenguinModel, setPenguinQuality } from '../render/PenguinModel';
+import { setPenguinQuality } from '../render/PenguinModel';
+import { makePenguinModel, PenguinView } from '../render/Skins';
 import { Props } from '../render/Props';
 import { PlaygroundView } from '../render/PlaygroundView';
 import { Decals } from '../render/Decals';
-import { World, Penguin, GameEvent, solveThrow, lookVelocity, MatchOptions } from '../sim/World';
+import { World, Penguin, GameEvent, solveThrow, lookVelocity, MatchOptions, Skin, DEFAULT_SKIN } from '../sim/World';
 import { BotBrain } from '../sim/Bot';
 import { CFG, MITTEN_NAMES, REWARD_NAMES, GUN_NAMES } from '../sim/config';
 import { GUN_COCOA, GUN_BLADE } from '../sim/Guns';
@@ -71,7 +72,7 @@ export class Game {
   private menuClass: ClassId = 'penguin';
   private menuHat = 'beanie';
   private trails = new Map<number, { dist: number; side: number; x: number; z: number }>();
-  private models = new Map<number, PenguinModel>();
+  private models = new Map<number, PenguinView>();
   private modelKeys = new Map<number, string>();
   /** online play: the connection to the game server (null offline) */
   net: NetClient | null = null;
@@ -81,7 +82,8 @@ export class Game {
   private last = performance.now();
   private time = 0;
   private mode: 'menu' | 'play' = 'menu';
-  private menuPenguin: PenguinModel | null = null;
+  private menuPenguin: PenguinView | null = null;
+  private menuSkin: Skin = DEFAULT_SKIN;
   private menuFake: Penguin | null = null;
   private plowSound = 0;
   private stepT = 0;
@@ -211,7 +213,7 @@ export class Game {
     p.yaw = -Math.PI / 2 + 0.5;
     p.grounded = true;
     this.menuFake = p;
-    this.menuPenguin = new PenguinModel(0, this.menuHat, null, false, this.menuClass);
+    this.menuPenguin = makePenguinModel(this.menuSkin, 0, this.menuHat, null, false, this.menuClass);
     this.scene.add(this.menuPenguin.root);
   }
 
@@ -225,7 +227,7 @@ export class Game {
     this.menuPenguin.dispose(this.scene);
     this.menuFake.cls = cls;
     this.menuFake.health = CLASSES[cls].health;
-    this.menuPenguin = new PenguinModel(0, this.menuHat, null, false, cls);
+    this.menuPenguin = makePenguinModel(this.menuSkin, 0, this.menuHat, null, false, cls);
     this.scene.add(this.menuPenguin.root);
   }
 
@@ -235,6 +237,16 @@ export class Game {
     if (!me) return;
     me.nextCls = cls;
     this.net?.setClass(cls);
+  }
+
+  /** Swap the menu penguin to another skin (keeps its hat). */
+  setMenuSkin(skin: Skin) {
+    if (skin === this.menuSkin && this.menuPenguin) return;
+    this.menuSkin = skin;
+    if (!this.menuPenguin) return;
+    this.menuPenguin.dispose(this.scene);
+    this.menuPenguin = makePenguinModel(skin, 0, this.menuHat, null, false, this.menuClass);
+    this.scene.add(this.menuPenguin.root);
   }
 
   // ───────────────────────── match ─────────────────────────
@@ -312,10 +324,10 @@ export class Game {
     const w = this.world;
     if (!w) return;
     for (const p of w.penguins) {
-      const key = `${p.team}|${p.hat}|${p.name}|${p.cls}`;
+      const key = `${p.team}|${p.hat}|${p.name}|${p.cls}|${p.skin}`;
       if (this.modelKeys.get(p.id) === key) continue;
       this.models.get(p.id)?.dispose(this.scene);
-      const m = new PenguinModel(p.team, p.hat, p.name, true, p.cls);
+      const m = makePenguinModel(p.skin, p.team, p.hat, p.name, true, p.cls);
       this.scene.add(m.root);
       this.models.set(p.id, m);
       this.modelKeys.set(p.id, key);

@@ -15,7 +15,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { Room, Client } from './Room';
 import { PROTOCOL, TICK_HZ, TEAM_SIZES, MODES } from '../src/net/Protocol';
 import type { Mode } from '../src/world/Maps';
-import { HATS, emptyInput } from '../src/sim/World';
+import { HATS, emptyInput, asSkin } from '../src/sim/World';
 import { asClass } from '../src/sim/Classes';
 import { cleanName } from './names.js';
 import { Bans, createArcade, ipOf } from './arcade.js';
@@ -133,7 +133,7 @@ wss.on('connection', (ws: WebSocket, _req: http.IncomingMessage, ip: string) => 
         const mode: Mode = MODES.includes(msg.mode) ? msg.mode : 'tdm';
         const hat = HATS.includes(msg.hat) ? msg.hat : 'beanie';
         const c: Client = {
-          ws, name: cleanName(msg.name, 'Penguin', { max: 16, prefix: 'Penguin' }), hat, cls: asClass(msg.cls),
+          ws, name: cleanName(msg.name, 'Penguin', { max: 16, prefix: 'Penguin' }), hat, cls: asClass(msg.cls), skin: asSkin(msg.skin),
           // Breakthrough: you can ask to attack or defend, and get it when that side has room
           team: mode === 'breakthrough' && (msg.team === 0 || msg.team === 1) ? msg.team : -1, penguinId: -1,
           queue: [], last: emptyInput(), lastSeq: -1, ack: 0, held: null, resync: false,
