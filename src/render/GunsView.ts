@@ -76,6 +76,7 @@ class Stream {
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.mesh.frustumCulled = false;
     this.mesh.castShadow = false;
+    this.mesh.visible = false; // nothing to draw until someone squirts (saves drawing CAP empty drops every frame)
     for (let i = 0; i < CAP; i++) this.mesh.setMatrixAt(i, ZERO);
   }
 
@@ -88,6 +89,7 @@ class Stream {
   }
 
   update(dt: number, w: World, field: SnowField, splash: (gun: number, x: number, y: number, z: number, onPenguin: boolean) => void) {
+    this.mesh.visible = this.live > 0;
     if (this.live <= 0) return;
     for (let i = 0; i < CAP; i++) {
       if (this.life[i] <= 0) continue;
@@ -208,7 +210,9 @@ function beamMaterial(color: number) {
     transparent: true, depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending,
     uniforms: { uColor: { value: new THREE.Color(color) } },
     vertexShader: 'varying float vH; void main(){ vH = position.y / 7.0; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
-    fragmentShader: 'uniform vec3 uColor; varying float vH; void main(){ float a = pow(1.0 - vH, 1.8) * 0.7; gl_FragColor = vec4(uColor * a, a); }',
+    fragmentShader: // clamp: vH reaches a hair over 1.0 at the beam's top edge, and pow() of a negative number is NaN, which the
+    // bloom pass used to smear into big black squares across the screen
+    'uniform vec3 uColor; varying float vH; void main(){ float a = pow(clamp(1.0 - vH, 0.0, 1.0), 1.8) * 0.7; gl_FragColor = vec4(uColor * a, a); }',
   });
 }
 

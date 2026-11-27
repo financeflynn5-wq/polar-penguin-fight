@@ -103,6 +103,7 @@ export class Game {
   hooks: GameHooks | null = null;
   fps = 0;
   private fpsAcc = 0; private fpsN = 0;
+  private frameN = 0;
 
   constructor(container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -112,6 +113,9 @@ export class Game {
     this.renderer.setPixelRatio(this.pixelRatio());
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    // the sun's shadow map covers the whole arena and is the single biggest cost of a frame (every snow chunk is
+    // drawn into it): refresh it every other frame, which nobody can see but saves a big slice of each frame
+    this.renderer.shadowMap.autoUpdate = false;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.02;
     this.post = new PostFX(this.renderer, this.scene, this.camera);
@@ -366,6 +370,7 @@ export class Game {
     this.decals.update(this.time);
     this.snow.update(this.camera.position, this.mode === 'menu' ? 8 : 4, this.time);
     this.particles.update(dt, window.innerHeight * this.pixelRatio(), this.camera.fov);
+    if ((this.frameN++ & 1) === 0) this.renderer.shadowMap.needsUpdate = true;
     const me = this.world?.player;
     if (this.post && this.quality === 'high') this.post.render(dt, me && me.sliding ? Math.hypot(me.vx, me.vz) : me && me.riding >= 0 ? Math.hypot(me.vx, me.vz) * 0.7 : 0);
     else this.renderer.render(this.scene, this.camera);
