@@ -4,7 +4,7 @@ import { SnowField, ISO } from '../world/SnowField';
 // Thousands of little snow grains that fly, tumble, land on the snow and settle. This is what sells the pushing.
 const CAP = 24000;
 
-export const enum PKind { Grain = 0, Puff = 1, Spark = 2 }
+export const enum PKind { Grain = 0, Puff = 1, Spark = 2, Smoke = 3 }
 
 export class Particles {
   readonly points: THREE.Points;
@@ -81,7 +81,7 @@ export class Particles {
     this.vel[i * 3] = vx; this.vel[i * 3 + 1] = vy; this.vel[i * 3 + 2] = vz;
     this.life[i] = life; this.maxLife[i] = life;
     this.baseSize[i] = size; this.size[i] = size;
-    this.alpha[i] = kind === PKind.Puff ? 0.55 : 1;
+    this.alpha[i] = kind === PKind.Puff ? 0.55 : kind === PKind.Smoke ? 0 : 1;
     this.color[i * 3] = r; this.color[i * 3 + 1] = g; this.color[i * 3 + 2] = b;
   }
 
@@ -98,6 +98,26 @@ export class Particles {
     for (let k = 0; k < Math.ceil(n / 5); k++) {
       this.spawn(PKind.Puff, x + (Math.random() - 0.5) * 0.3, y + Math.random() * 0.2, z + (Math.random() - 0.5) * 0.3,
         (Math.random() - 0.5) * speed * 0.4 + nx, Math.random() * 1.2 + ny * 0.6, (Math.random() - 0.5) * speed * 0.4 + nz, 0.25 + Math.random() * 0.35, 0.5 + Math.random() * 0.5);
+    }
+  }
+
+  /**
+   * A splat poof: a cloud of snow smoke that bursts out, hangs in the air and drifts away, like a smoke bomb.
+   * h = how tall the one who got splatted was (a yeti's cloud is bigger than a penguin's).
+   */
+  poof(x: number, y: number, z: number, h = 1) {
+    const s = Math.max(0.8, h);
+    // the cloud: big soft puffs pushed outward, piled up the body's height
+    for (let k = 0; k < Math.round(40 * s); k++) {
+      const a = Math.random() * Math.PI * 2, out = (1.5 + Math.random() * 3) * s, py = Math.random() * h * 1.1;
+      const c = 0.9 + Math.random() * 0.1;
+      this.spawn(PKind.Smoke, x + Math.cos(a) * 0.25 * s, y + 0.15 + py, z + Math.sin(a) * 0.25 * s,
+        Math.cos(a) * out, 0.3 + Math.random() * 1.6, Math.sin(a) * out, (0.7 + Math.random() * 0.6) * s, 1.8 + Math.random() * 1.2, c, c + 0.03, 1);
+    }
+    // a little powder sprayed through it
+    for (let k = 0; k < 40; k++) {
+      const a = Math.random() * Math.PI * 2, u = Math.random(), sp = (2 + Math.random() * 4) * s;
+      this.spawn(PKind.Grain, x, y + 0.2 + Math.random() * h, z, Math.cos(a) * sp * (1 - u * 0.5), 1 + u * 3, Math.sin(a) * sp * (1 - u * 0.5), 0.03 + Math.random() * 0.05, 1 + Math.random());
     }
   }
 
@@ -157,6 +177,14 @@ export class Particles {
         const t = this.life[i] / this.maxLife[i];
         this.size[i] = this.baseSize[i] * (1.8 - t * 0.8);
         this.alpha[i] = 0.5 * t;
+      } else if (k === PKind.Smoke) {
+        // the splat poof: bursts out fast, stops, then hangs and slowly rises, swelling and thinning out
+        const drag = Math.max(0, 1 - 3.2 * dt);
+        this.vel[i3] *= drag; this.vel[i3 + 1] = this.vel[i3 + 1] * drag + 0.25 * dt; this.vel[i3 + 2] *= drag;
+        this.pos[i3] += this.vel[i3] * dt; this.pos[i3 + 1] += this.vel[i3 + 1] * dt; this.pos[i3 + 2] += this.vel[i3 + 2] * dt;
+        const t = this.life[i] / this.maxLife[i], age = this.maxLife[i] - this.life[i];
+        this.size[i] = this.baseSize[i] * (2.4 - t * 1.4);
+        this.alpha[i] = 0.85 * Math.min(1, age * 12) * Math.min(1, t * 1.6);
       } else {
         const drag = 1 - 1.5 * dt;
         this.vel[i3] *= drag; this.vel[i3 + 1] = this.vel[i3 + 1] * drag - 3 * dt; this.vel[i3 + 2] *= drag;

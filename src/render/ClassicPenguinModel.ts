@@ -47,7 +47,6 @@ const G = {
   scarf: new THREE.TorusGeometry(0.235, 0.055, 10, 24),
   scarfTail: new THREE.BoxGeometry(0.11, 0.3, 0.04).translate(0, -0.12, 0),
   splat: sph(1, 10, 8),
-  lump: sph(1, 18, 12),
 };
 
 /** A flat webbed foot with three toes, pointing forward (-z), heel at the origin. */
@@ -214,7 +213,6 @@ export class ClassicPenguinModel {
   private hatName: string;
   private headGroup = new THREE.Group();
   private splats: THREE.Mesh[] = [];
-  private lump: THREE.Mesh;
   private tag: THREE.Sprite | null = null;
   private scarfTail: THREE.Mesh;
   private walkPhase = Math.random() * 10;
@@ -349,13 +347,6 @@ export class ClassicPenguinModel {
     this.splats[1].position.set(-0.14, 0.9, -0.22); this.splats[1].scale.set(0.1, 0.08, 0.06);
     this.splats[2].position.set(-0.2, 0.3, -0.25); this.splats[2].scale.set(0.12, 0.1, 0.06);
 
-    // the snow lump you become when splatted
-    this.lump = new THREE.Mesh(G.lump, M.snow);
-    this.lump.scale.set(0.55, 0.42, 0.55);
-    this.lump.position.y = 0.2;
-    this.lump.visible = false;
-    this.lump.castShadow = true;
-    this.root.add(this.lump);
 
     // carried snowballs on a little belt
     const ballGeo = sph(0.07, 10, 8);
@@ -415,7 +406,6 @@ export class ClassicPenguinModel {
     this.flipperL.rotation.set(0, 0, 0.18); this.flipperR.rotation.set(0, 0, -0.18);
     this.headGroup.rotation.set(0, 0, 0);
     for (const f of this.feet) { f.visible = true; f.position.set(f.userData.side * 0.135, 0.0, -0.04); f.rotation.set(0, 0, 0); }
-    this.lump.visible = false;
     b.visible = true;
 
     // riding the surfboard
@@ -435,10 +425,8 @@ export class ClassicPenguinModel {
     } else if (this.board) this.board.visible = false;
 
     if (!p.alive) {
+      // splatted: you vanish in a poof of snow (the 'splat' event draws the cloud), nothing is left behind
       b.visible = false;
-      this.lump.visible = true;
-      const t = Math.min(1, (3.5 - p.downT) * 4);
-      this.lump.scale.set(0.55 * t + 0.1, 0.45 * t + 0.05, 0.55 * t + 0.1);
       if (this.tag) this.tag.visible = false;
       return;
     }
