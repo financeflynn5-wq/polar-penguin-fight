@@ -3,7 +3,7 @@
 import { deflateRaw, deflateRawSync } from 'node:zlib';
 import type { WebSocket } from 'ws';
 import { buildMap, mapForMode, Mode, MapId } from '../src/world/Maps';
-import { World, PenguinInput, GameEvent, emptyInput } from '../src/sim/World';
+import { World, PenguinInput, GameEvent, emptyInput, Skin } from '../src/sim/World';
 import { BotBrain } from '../src/sim/Bot';
 import * as P from '../src/net/Protocol';
 
@@ -17,6 +17,7 @@ export interface Client {
   ws: WebSocket;
   name: string;
   hat: string;
+  skin: Skin;
   team: number;
   penguinId: number;
   queue: { seq: number; input: PenguinInput }[];
@@ -82,7 +83,7 @@ export class Room {
     };
     this.endT = 0;
     for (const c of this.clients) {
-      const p = this.world.addHuman(c.name, c.hat, c.team)!;
+      const p = this.world.addHuman(c.name, c.hat, c.team, c.skin)!;
       this.seat(c, p.id, p.team);
     }
     for (const c of this.clients) this.sendMatch(c, packed, true);
@@ -96,7 +97,7 @@ export class Room {
 
   /** Someone joins: they take a bot's place. Returns false if every slot is taken. */
   join(c: Client) {
-    const p = this.world.addHuman(c.name, c.hat, c.team);
+    const p = this.world.addHuman(c.name, c.hat, c.team, c.skin);
     if (!p) return false;
     this.clients.add(c);
     this.seat(c, p.id, p.team);

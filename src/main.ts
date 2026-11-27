@@ -1,6 +1,6 @@
 import './style.css';
 import { Game } from './game/Game';
-import { HATS, World, Mode } from './sim/World';
+import { HATS, World, Mode, asSkin } from './sim/World';
 import { CFG } from './sim/config';
 import { TEAM_NAMES } from './render/Environment';
 import { NetClient, serverStatus, serverUrl } from './net/NetClient';
@@ -27,6 +27,7 @@ const game = new Game(app);
 const params = new URLSearchParams(location.search);
 
 let hat = store.get('hat', 'beanie');
+let skin = asSkin(params.get('skin') ?? store.get('skin', ''));
 let teamSize = +store.get('teamSize', '5');
 const asMode = (m: string | null): Mode => (m === 'conquest' || m === 'breakthrough' ? m : 'tdm');
 let mode: Mode = asMode(store.get('mode', 'tdm'));
@@ -34,6 +35,7 @@ let mode: Mode = asMode(store.get('mode', 'tdm'));
 let side = store.get('side', '0') === '1' ? 1 : 0;
 let name = store.get('name', 'Flynn');
 game.setMenuHat(hat);
+game.setMenuSkin(skin);
 game.input.sensitivity = +store.get('sens', '1');
 
 const el = (html: string) => { const d = document.createElement('div'); d.innerHTML = html.trim(); return d.firstElementChild as HTMLElement; };
@@ -41,6 +43,10 @@ const el = (html: string) => { const d = document.createElement('div'); d.innerH
 const menu = el(`<div class="menu">
   <div class="logo">Polar<span>Penguin Fight</span><small>Snowball arena · built live on stream</small></div>
   <div class="field"><label>Penguin name</label><input type="text" id="name" maxlength="16" /></div>
+  <div class="field"><label>Penguin</label><div class="modes">
+    <button class="mode sm" data-skin="new"><b>New penguin</b><span>Quilted jacket, knitted scarf</span></button>
+    <button class="mode sm" data-skin="classic"><b>Classic penguin</b><span>The original look and hats</span></button>
+  </div></div>
   <div class="field"><label>Hat</label><div class="hats" id="hats"></div></div>
   <div class="field"><label>Game mode</label><div class="modes">
     <button class="mode gm" data-mode="tdm"><b>Team Deathmatch</b><span>First to ${CFG.scoreToWin} splats · Frostbite Bay</span></button>
@@ -88,6 +94,9 @@ for (const h of HATS) {
   b.addEventListener('click', () => { hat = h; store.set('hat', h); game.setMenuHat(h); game.audio.unlock(); game.audio.click(); syncMenu(); });
   hatsEl.appendChild(b);
 }
+menu.querySelectorAll<HTMLButtonElement>('.mode[data-skin]').forEach(b => b.addEventListener('click', () => {
+  skin = asSkin(b.dataset.skin); store.set('skin', skin); game.setMenuSkin(skin); game.audio.unlock(); game.audio.click(); syncMenu();
+}));
 menu.querySelectorAll<HTMLButtonElement>('.mode[data-size]').forEach(b => b.addEventListener('click', () => {
   teamSize = +b.dataset.size!; store.set('teamSize', String(teamSize)); game.audio.unlock(); game.audio.click(); syncMenu();
 }));
@@ -104,6 +113,7 @@ const HOW_MODE: Record<Mode, string> = {
 };
 function syncMenu() {
   menu.querySelectorAll<HTMLElement>('.hat').forEach(b => b.classList.toggle('sel', b.dataset.hat === hat));
+  menu.querySelectorAll<HTMLElement>('.mode[data-skin]').forEach(b => b.classList.toggle('sel', b.dataset.skin === skin));
   menu.querySelectorAll<HTMLElement>('.mode[data-size]').forEach(b => b.classList.toggle('sel', +b.dataset.size! === teamSize));
   menu.querySelectorAll<HTMLElement>('.mode[data-mode]').forEach(b => b.classList.toggle('sel', b.dataset.mode === mode));
   menu.querySelectorAll<HTMLElement>('.mode[data-side]').forEach(b => b.classList.toggle('sel', +b.dataset.side! === side));
@@ -117,7 +127,7 @@ function start() {
   pause.classList.add('hidden');
   end.classList.add('hidden');
   online = false;
-  game.startMatch({ teamSize, playerName: name || 'Penguin', playerHat: hat, mode, playerTeam: mode === 'breakthrough' ? side : 0 });
+  game.startMatch({ teamSize, playerName: name || 'Penguin', playerHat: hat, playerSkin: skin, mode, playerTeam: mode === 'breakthrough' ? side : 0 });
 }
 playBtn.addEventListener('click', start);
 practiceBtn.addEventListener('click', start);
@@ -148,7 +158,7 @@ function playOnline() {
   onlineEl.textContent = 'Joining a match…';
   playOnlineBtn.disabled = true;
   let started = false;
-  const net = new NetClient(serverUrl(), { name: name || 'Penguin', hat, size: teamSize, mode, ...(mode === 'breakthrough' ? { team: side } : {}) }, {
+  const net = new NetClient(serverUrl(), { name: name || 'Penguin', hat, skin, size: teamSize, mode, ...(mode === 'breakthrough' ? { team: side } : {}) }, {
     onMatch: (info, density, hard) => {
       started = true; joining = false; playOnlineBtn.disabled = false;
       menu.classList.add('hidden');
@@ -207,6 +217,7 @@ function toMenu() {
   pause.classList.add('hidden');
   end.classList.add('hidden');
   game.enterMenu();
+  game.setMenuSkin(skin);
   game.setMenuHat(hat);
   menu.classList.remove('hidden');
   checkServer();

@@ -129,6 +129,8 @@ export class Penguin {
   turretBlock = 0;
   /** where this penguin last went down (Conquest brings you back at the nearest flag you hold) */
   downX = 0; downZ = 0;
+  /** looks only: which penguin model this player picked (bots wear the default) */
+  skin: Skin = DEFAULT_SKIN;
 
   constructor(public id: number, public name: string, public team: number, public hat: string, public bot: boolean) {}
 }
@@ -181,10 +183,12 @@ export interface CapturePoint {
 export interface Barrage { owner: number; team: number; x: number; y: number; z: number; wait: number; left: number; acc: number; }
 
 /** Who is in the match, as the server tells an online client. */
-export interface RosterEntry { id: number; name: string; team: number; hat: string; bot: boolean; }
+export interface RosterEntry { id: number; name: string; team: number; hat: string; bot: boolean; skin?: Skin; }
 
 export interface MatchOptions {
   teamSize: number; playerName: string; playerHat: string; mode?: Mode;
+  /** which penguin model the player wears (looks only) */
+  playerSkin?: Skin;
   /** server: every slot starts as a bot, and humans take bots' places as they join */
   allBots?: boolean;
   /** online client: build the penguins from the server's roster (the server runs the match, this world only mirrors it) */
@@ -201,6 +205,14 @@ export const ATTACK = 0, DEFEND = 1;
 const BOT_NAMES = ['Waddles', 'Sir Flaps', 'Pebble', 'Captain Ice', 'Nugget', 'Biscuit', 'Frosty', 'Wobbles', 'Sleet', 'Mittens',
   'Slushie', 'Tux', 'Puddles', 'Blizzard Bob', 'Chilly Willy Jr', 'Flipper', 'Snowcone', 'Sprinkles', 'Popsicle', 'Gizmo',
   'Noot', 'Pickle', 'Muffin', 'Dumpling', 'Squawk', 'Iceberg', 'Kevin', 'Frostbite', 'Bubbles', 'Toast'];
+/**
+ * Penguin skins, looks only. 'new' is the Blender-built penguin and hats (PenguinModel.ts); 'classic' is the original
+ * hand-built penguin and hats from before the remake (ClassicPenguinModel.ts).
+ */
+export const SKINS = ['new', 'classic'] as const;
+export type Skin = typeof SKINS[number];
+export const DEFAULT_SKIN: Skin = 'new';
+export const asSkin = (v: unknown): Skin => (SKINS as readonly unknown[]).includes(v) ? v as Skin : DEFAULT_SKIN;
 export const HATS = ['none', 'beanie', 'tophat', 'propeller', 'viking', 'crown', 'fish', 'party', 'chef', 'cone'];
 
 const tmpN = { x: 0, y: 0, z: 0 };
@@ -257,7 +269,11 @@ export class World {
     if (opts.roster) {
       // an online client's mirror of the server's match: you first, then everyone else
       const me = opts.roster.find(r => r.id === opts.meId) ?? opts.roster[0];
-      for (const r of [me, ...opts.roster.filter(r => r !== me)]) this.penguins.push(new Penguin(r.id, r.name, r.team, r.hat, r.bot));
+      for (const r of [me, ...opts.roster.filter(r => r !== me)]) {
+        const p = new Penguin(r.id, r.name, r.team, r.hat, r.bot);
+        p.skin = asSkin(r.skin);
+        this.penguins.push(p);
+      }
       this.playerId = me.id;
       this.nextId = Math.max(0, ...opts.roster.map(r => r.id)) + 1;
       return;
@@ -269,6 +285,7 @@ export class World {
     const player = opts.allBots
       ? new Penguin(this.nextId++, names[names.length - 1], mine, HATS[1 + Math.floor(this.rand() * (HATS.length - 1))], true)
       : new Penguin(this.nextId++, opts.playerName || 'You', mine, opts.playerHat, false);
+    if (!opts.allBots) player.skin = asSkin(opts.playerSkin);
     this.penguins.push(player);
     this.playerId = player.id;
     let n = 0;
@@ -288,13 +305,13 @@ export class World {
   penguin(id: number) { return this.penguins.find(p => p.id === id); }
   emit(e: GameEvent) { this.events.push(e); }
 
-  roster(): RosterEntry[] { return this.penguins.map(p => ({ id: p.id, name: p.name, team: p.team, hat: p.hat, bot: p.bot })); }
+  roster(): RosterEntry[] { return this.penguins.map(p => ({ id: p.id, name: p.name, team: p.team, hat: p.hat, bot: p.bot, skin: p.skin })); }
 
   /**
    * Server: a person joins and takes a bot's place on the team with fewer people (or the team they ask for, if it has room).
    * Returns null when every slot already has a person in it.
    */
-  addHuman(name: string, hat: string, wantTeam = -1): Penguin | null {
+  addHuman(name: string, hat: string, wantTeam = -1, skin: Skin = DEFAULT_SKIN): Penguin | null {
     const humans = [0, 0];
     for (const p of this.penguins) if (!p.bot) humans[p.team]++;
     const open = (t: number) => this.penguins.some(p => p.bot && p.team === t);
@@ -307,7 +324,7 @@ export class World {
     bots.sort((a, b) => (a.alive ? 1 : 0) - (b.alive ? 1 : 0) || Math.hypot(a.x - home.x, a.z - home.z) - Math.hypot(b.x - home.x, b.z - home.z));
     const p = bots[0];
     if (this.board.holder === p.id) { this.board.holder = -1; this.board.x = p.x; this.board.y = p.y + 0.6; this.board.z = p.z; this.board.vy = 4; p.surfing = false; }
-    p.bot = false; p.name = name; p.hat = hat;
+    p.bot = false; p.name = name; p.hat = hat; p.skin = asSkin(skin);
     p.splats = 0; p.downs = 0; p.mitten = 0;
     p.streak = 0; p.rewards = [0, 0, 0]; p.frenzyT = 0; p.turretSnow = 0; p.turretAt = null; p.turretBlock = 0;
     p.input = emptyInput();
@@ -321,6 +338,7 @@ export class World {
     if (!p || p.bot) return;
     const used = new Set(this.penguins.map(q => q.name));
     p.bot = true;
+    p.skin = DEFAULT_SKIN;
     p.name = this.botNames.find(n => !used.has(n)) ?? BOT_NAMES[Math.floor(this.rand() * BOT_NAMES.length)];
     p.input = emptyInput();
   }

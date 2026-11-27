@@ -5,7 +5,7 @@
 import { spawn } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { buildMap, mapForMode, Mode } from '../src/world/Maps';
-import { World, Penguin } from '../src/sim/World';
+import { World, Penguin, type Skin } from '../src/sim/World';
 import { NetClient } from '../src/net/NetClient';
 
 const PORT = 8000 + Math.floor(Math.random() * 900);
@@ -19,9 +19,9 @@ await new Promise<void>(res => server.stdout!.on('data', d => { if (String(d).in
 
 interface Bot { name: string; net: NetClient; world: World | null; me: Penguin | null; corrections: number[]; starved: number; frames: number; matches: number; events: number; }
 
-function connect(name: string, size: number): Bot {
+function connect(name: string, size: number, skin?: Skin): Bot {
   const b: Bot = { name, net: null as any, world: null, me: null, corrections: [], starved: 0, frames: 0, matches: 0, events: 0 };
-  b.net = new NetClient(`ws://localhost:${PORT}/ws`, { name, hat: 'viking', size, mode: MODE }, {
+  b.net = new NetClient(`ws://localhost:${PORT}/ws`, { name, hat: 'viking', skin, size, mode: MODE }, {
     onMatch: (info, density, hard) => {
       assert.equal(info.mode, MODE);
       const map = buildMap(mapForMode(info.mode));
@@ -47,7 +47,7 @@ function connect(name: string, size: number): Bot {
   return b;
 }
 
-const A = connect('Alpha', 5), B = connect('Bravo', 5);
+const A = connect('Alpha', 5, 'classic'), B = connect('Bravo', 5);
 const bots = [A, B];
 const t0 = performance.now();
 let last = performance.now(), acc = 0, tick = 0;
@@ -98,6 +98,10 @@ const aInB = B.world!.penguin(A.me!.id)!;
 const d = Math.hypot(aInB.x - A.me!.x, aInB.z - A.me!.z);
 console.log(`Bravo sees Alpha ${d.toFixed(2)} m from where Alpha is (Alpha is moving ~5 m/s)`);
 assert.ok(d < 3, 'others are shown close to where they are');
+// skins are looks only, but everyone sees the one you picked
+assert.equal(A.me!.skin, 'classic', 'Alpha wears the classic penguin');
+assert.equal(aInB.skin, 'classic', 'Bravo sees Alpha in the classic penguin');
+assert.equal(A.world!.penguin(B.me!.id)!.skin, 'new', 'Alpha sees Bravo in the new penguin');
 for (const b of bots) b.net.close();
 server.kill();
 console.log('ok');
