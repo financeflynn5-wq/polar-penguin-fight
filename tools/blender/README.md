@@ -165,3 +165,46 @@ Things worth knowing:
 - The models are written to a temporary name and renamed, so a running game never loads half a file.
 
 To look at them under the game's lighting: `node tools/viewer/shots.mjs <folder> vehicles`.
+
+### Snow tank
+
+`snowtank.py` builds `public/models/snowtank.glb` the same way, borrowing `vehicles.py`'s helpers (it is a file of
+its own, with its own `main()`):
+
+    python tools/blender/snowtank.py --stats --check       # build, count triangles, test what the moving parts touch
+    python tools/blender/snowtank.py --render --riders --views=hero,front,rear,side,top --team=blue --team=orange
+    python tools/blender/snowtank.py --render --riders --arm=-1.95 --noammo   # a render-only pose: the catapult thrown
+
+A tracked hull 4.2 m by 2.4 m with a deck at 1.08 m, a snowball gatling on a small turret at the front (the driver
+stands in an open tub behind it and holds its spade grips) and a catapult on a turntable on the lower rear deck (a
+second rider stands on a step on its right). Pivots are in the vehicle's frame, at rest:
+
+| node | pivot (x, y, z) | what it is | the game sets |
+| --- | --- | --- | --- |
+| `body` | 0, 0, 0 | hull, cockpit tub, running-gear frames, deck fittings | |
+| `trackL`, `trackR` | 0, 0, 0 | the belts (`tread`), centred on z = ∓0.94 | texture `offset.y` |
+| `wheelL0…6`, `wheelR0…6` | | sprocket (0, rear, radius 0.28), five road wheels (0.21), idler (6, 0.28) | `rotation.z` |
+| `turret` | 1.05, 1.15, 0 | the gun's turret | `rotation.y` |
+| `gun` (in `turret`) | 1.05, 1.5, 0 | cradle, hopper, spade grips, on the trunnions | `rotation.z` (+ = muzzle up) |
+| `barrels` (in `gun`) | 1.3, 1.5, 0 | the six barrels | `rotation.x` |
+| `muzzle` (in `barrels`) | 1.9, 1.5, 0 | empty at the barrel tips | |
+| `gripL`, `gripR` (in `gun`) | 0.75, 1.5, ∓0.22 | empties on the spade grips | |
+| `catapult` | -0.95, 1.15, 0 | turntable, frame, winch, the gunner's step and rail | `rotation.y` |
+| `arm` (in `catapult`) | -0.7, 1.7, 0 | throwing arm and cup | `rotation.z`: 0 cocked, -1.95 against the padded crossbar |
+| `bucket`, `ammo` (in `arm`) | -2.15, 1.45, 0 | empty at the centre of the cup; the snowball in it (radius 0.28) | `ammo.visible` |
+| `seat0` | 0.2, 0.7, 0 | empty: the driver's feet, on the tub's floor | |
+| `seat1` (in `catapult`) | -0.85, 1.15, 0.85 | empty: the gunner's feet, on the step | |
+| `exhaust` | -2.06, 1.06, -0.8 | empty at the tail pipe's mouth | |
+
+- The numbers at the top of `snowtank.py` (`TURRET`, `GUN`, `HINGE`, `CUP`, `STOP`, the seats) are what the game is
+  written to. The arm's line, the crossbar that stops it and the cup all follow from them.
+- `--check` swings the arm from cocked to the stop and turns the turntable and the turret right round, and prints
+  what touches. As built: the arm touches nothing until it meets the pad just past -1.95; the turntable clears the
+  hull at every angle (the gunner on the step does walk into the driver for `rotation.y` of about +0.7 to +2.2, and
+  the cocked cup passes through the driver's head from about 2.5 to 3.8); the gun clears everything at any yaw
+  while level or raised, and pointed down only within about 0.8 rad of straight ahead.
+- Materials: `paint` (two shades, the skirts being the darker), `trim`, `tread`, `chrome`, `metal`, `rubber`, `seat`
+  (the cockpit's padded rim), `glow`, `lamp_red`, `wood` (its UVs run the grain along each timber), `rope`,
+  `canvas` (the crossbar's pad), `snow` and `ice` (the icicles; `snowtank.py` adds it to the materials that keep
+  their UVs).
+

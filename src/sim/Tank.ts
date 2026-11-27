@@ -15,6 +15,10 @@ export const TANK = {
   /** the turret can't swing round onto the driver: this far either side of the nose (rad) */
   gunArc: 1.95,
   gunPitchMin: -0.3, gunPitchMax: 0.7,
+  /** the gun only tips down while it points roughly ahead (off to the sides it would hit the deck's lamps and crate) */
+  gunDownArc: 0.9,
+  /** the turntable can't swing the gunner into the driver: its range, relative to the hull (rad, + = left) */
+  catMin: -2.6, catMax: 0.65,
   /** the catapult's turntable on the back deck */
   catF: -0.95, catY: 1.15,
   /** where the ball leaves the bucket, from the turntable's pivot, at the top of the swing */
@@ -110,8 +114,9 @@ export function stepTankDriver(w: World, v: Vehicle, p: Penguin, dt: number) {
   const m = muzzlePos(v, g);
   const want = solveThrow(m, inp.aim, CFG.tankGunSpeed, CFG.snowballGravity) ?? lookVelocity(p.lookYaw, p.lookPitch + 0.04, CFG.tankGunSpeed);
   const wantYaw = clamp(wrap(Math.atan2(-want.x, -want.z) - v.yaw), -TANK.gunArc, TANK.gunArc);
-  const wantPitch = clamp(Math.atan2(want.y, Math.hypot(want.x, want.z)), TANK.gunPitchMin, TANK.gunPitchMax);
   g.aimYaw = clamp(toward(g.aimYaw, wantYaw, CFG.tankTurretTurn * dt), -TANK.gunArc, TANK.gunArc);
+  const floor = Math.abs(g.aimYaw) < TANK.gunDownArc ? TANK.gunPitchMin : 0;
+  const wantPitch = clamp(Math.atan2(want.y, Math.hypot(want.x, want.z)), floor, TANK.gunPitchMax);
   g.aimPitch += clamp(wantPitch - g.aimPitch, -3 * dt, 3 * dt);
   p.action = 'idle';
   if (!inp.fire || w.phase !== 'fight' || g.fireT > 0) return;
@@ -135,8 +140,10 @@ export function stepTankGunner(w: World, v: Vehicle, p: Penguin, dt: number) {
   const fx = -Math.sin(v.yaw), fz = -Math.cos(v.yaw);
   const px = v.x + fx * TANK.catF, pz = v.z + fz * TANK.catF;
   const wantYaw = inp.aim && Math.hypot(inp.aim.x - px, inp.aim.z - pz) > 2 ? Math.atan2(-(inp.aim.x - px), -(inp.aim.z - pz)) : p.lookYaw;
+  // (the range has a gap behind the driver: going round the long way is fine, it never crosses the gap)
+  const rel = clamp(wrap(wantYaw - v.yaw), TANK.catMin, TANK.catMax);
   const err = wrap(wantYaw - v.yaw - g.catYaw);
-  g.catYaw = wrap(toward(g.catYaw, wantYaw - v.yaw, CFG.catTurn * dt));
+  g.catYaw = clamp(g.catYaw + clamp(rel - g.catYaw, -CFG.catTurn * dt, CFG.catTurn * dt), TANK.catMin, TANK.catMax);
   p.action = 'idle';
   if (!inp.fire || w.phase !== 'fight' || g.catT > 0 || Math.abs(err) > 0.15) return;
   const r = releasePos(v, g);
