@@ -1,15 +1,17 @@
 // Vehicles: the snowmobile (a fast two-seater parked at every camp) and the snowplow (Breakthrough: a heavy tracked
-// machine the attackers get every so often, which tears through snow walls and shoves the snow aside).
+// machine the attackers get every so often, which tears through snow walls and shoves the snow aside) and the snow tank
+// (one per team: the driver works a snowball machine gun, a second rider works the snowball catapult on the back; Tank.ts).
 // Part of the simulation: no Three.js and no DOM, so the game server runs the same code.
 import { ISO } from '../world/SnowField';
 import { boxPush, pointInBoxes } from '../world/Playground';
 import type { V3 } from '../world/MapDef';
 import { CFG } from './config';
 import type { World, Penguin } from './World';
+import { TankGear, makeTankGear, stepTankGear, stepTankDriver, stepTankGunner, gunnerPos } from './Tank';
 
-export type VehicleKind = 'snowmobile' | 'snowplow';
-export const VEHICLE_KINDS: VehicleKind[] = ['snowmobile', 'snowplow'];
-export const VEHICLE_NAMES: Record<VehicleKind, string> = { snowmobile: 'snowmobile', snowplow: 'snowplow' };
+export type VehicleKind = 'snowmobile' | 'snowplow' | 'snowtank';
+export const VEHICLE_KINDS: VehicleKind[] = ['snowmobile', 'snowplow', 'snowtank'];
+export const VEHICLE_NAMES: Record<VehicleKind, string> = { snowmobile: 'snowmobile', snowplow: 'snowplow', snowtank: 'snow tank' };
 
 /** How each kind drives and what it's made of as far as bumping into things goes. Lengths in metres, front = +forward. */
 export interface VehicleSpec {
@@ -64,6 +66,19 @@ export const VEHICLE_SPECS: Record<VehicleKind, VehicleSpec> = {
     grip: 14, iceGrip: 3.5, slope: 0.25,
     blockedBySnow: false, reach: 3.4,
   },
+  // the snow tank: the driver sits in an open tub behind the gun; the gunner stands on the catapult's turntable
+  // (seat 1 is where they stand with the turntable facing forward: it turns with it, see Tank.gunnerPos)
+  snowtank: {
+    seats: [[0.2, 0.7, 0], [-0.85, 1.15, 0.85]],
+    canThrow: [false, false],
+    covered: false,
+    circles: [[1.15, 1.2], [0, 1.25], [-1.15, 1.2]],
+    front: 1.7, rear: 1.7, halfW: 1.0, height: 2.2,
+    maxSpeed: 8, reverseSpeed: 4, accel: 6, brake: 15, drag: 5,
+    turn: 1.35, pivot: true, turnAt: 1,
+    grip: 12, iceGrip: 3, slope: 0.35,
+    blockedBySnow: true, reach: 3.0,
+  },
 };
 
 /** The snowplow's blade, in the vehicle's own frame. */
@@ -99,6 +114,8 @@ export interface Vehicle {
   climb: number;
   snowAcc: number; snowT: number;
   stuckT: number;
+  /** the snow tank's gun and catapult (only on a snow tank) */
+  tank?: TankGear;
 }
 
 interface Pending { kind: VehicleKind; team: number; slot: number; t: number; }
@@ -169,12 +186,17 @@ export function parkingSpot(w: World, kind: VehicleKind, team: number, slot: num
   const f = w.front(team);
   const fx = -Math.sin(f.facing), fz = -Math.cos(f.facing); // toward the enemy
   const sx = -fz, sz = fx; // along the spawn line
-  const r = kind === 'snowplow' ? 2.6 : 1.3;
+  const r = kind === 'snowplow' ? 2.6 : kind === 'snowtank' ? 2.2 : 1.3;
   let tries: [number, number][];
   let ox: number, oz: number;
   if (kind === 'snowplow') {
     ox = f.center.x; oz = f.center.z;
     tries = [[-8, 0], [-8, 6], [-8, -6], [-11, 0], [-5, 8], [-5, -8], [-3, 0], [-11, 9], [-11, -9], [1, 0], [3, 7], [3, -7], [6, 0]];
+  } else if (kind === 'snowtank') {
+    // off to one side of the camp's middle (the snowplow has the middle)
+    ox = f.center.x; oz = f.center.z;
+    const s = slot % 2 ? -1 : 1;
+    tries = [[-6, 13 * s], [-6, -13 * s], [-9, 10 * s], [-9, -10 * s], [-3, 17 * s], [-3, -17 * s], [-11, 15 * s], [-11, -15 * s], [-12, 0], [0, 11 * s], [0, -11 * s], [4, 15 * s], [4, -15 * s]];
   } else {
     const pile = f.stockpiles[slot % f.stockpiles.length];
     ox = pile.x; oz = pile.z;
@@ -192,7 +214,7 @@ export function parkingSpot(w: World, kind: VehicleKind, team: number, slot: num
 
 /** What a vehicle starts with: the snowplow is tougher the more penguins there are to throw at it. */
 export function maxHealth(w: World, kind: VehicleKind) {
-  return kind === 'snowplow' ? Math.round(CFG.plowHealth * w.opts.teamSize) : CFG.snowmobileHealth;
+  return kind === 'snowplow' ? Math.round(CFG.plowHealth * w.opts.teamSize) : kind === 'snowtank' ? CFG.tankHealth : CFG.snowmobileHealth;
 }
 
 function makeVehicle(w: World, kind: VehicleKind, team: number, slot: number, at: V3 & { yaw: number }): Vehicle {
@@ -203,6 +225,7 @@ function makeVehicle(w: World, kind: VehicleKind, team: number, slot: number, at
     vx: 0, vy: 0, vz: 0, speed: 0, steer: 0, grounded: true,
     health: maxHealth(w, kind),
     seats: spec.seats.map(() => -1), alive: true, idleT: 0, lastDriver: -1, hitT: 9, load: 0, climb: 0, snowAcc: 0, snowT: 0, stuckT: 0,
+    ...(kind === 'snowtank' ? { tank: makeTankGear() } : {}),
   };
 }
 
@@ -220,6 +243,8 @@ function spawnVehicle(w: World, kind: VehicleKind, team: number, slot: number): 
 export function initVehicles(w: World) {
   const n = Math.max(1, Math.round(w.opts.teamSize / 5 * CFG.snowmobilesPer5));
   for (let team = 0; team < 2; team++) for (let slot = 0; slot < n; slot++) w.garage.pending.push({ kind: 'snowmobile', team, slot, t: 0 });
+  // a snow tank at each camp, in every mode
+  for (let team = 0; team < 2; team++) for (let slot = 0; slot < CFG.tanksPerTeam; slot++) w.garage.pending.push({ kind: 'snowtank', team, slot, t: CFG.tankFirst });
   w.garage.plowT = w.mode === 'breakthrough' ? CFG.plowFirst : -1;
 }
 
@@ -305,11 +330,12 @@ function seatRider(w: World, v: Vehicle, p: Penguin) {
   const fx = -Math.sin(v.yaw), fz = -Math.cos(v.yaw), rx = Math.cos(v.yaw), rz = -Math.sin(v.yaw);
   p.x = v.x + fx * s[0] + rx * s[2]; p.z = v.z + fz * s[0] + rz * s[2];
   p.y = v.y + s[1] + Math.sin(v.pitch) * s[0];
+  if (v.tank && p.seat === 1) { const g = gunnerPos(v, v.tank); p.x = g.x; p.y = g.y; p.z = g.z; }
   p.vx = v.vx; p.vy = v.vy; p.vz = v.vz;
   p.grounded = true; p.sliding = false; p.onIce = false; p.onProp = false; p.onSlide = false; p.surfing = false;
   p.covered = spec.covered;
   // the driver faces where the vehicle points; a passenger turns to look where they're aiming
-  p.yaw = spec.canThrow[p.seat] ? p.lookYaw : v.yaw;
+  p.yaw = spec.canThrow[p.seat] ? p.lookYaw : v.tank && p.seat === 1 ? v.yaw + v.tank.catYaw : v.yaw;
 }
 
 /**
@@ -322,7 +348,11 @@ export function stepRider(w: World, p: Penguin, dt: number) {
   const inp = p.input;
   inp.jump = false;
   const spec = VEHICLE_SPECS[v.kind];
-  if (spec.canThrow[p.seat]) {
+  if (v.kind === 'snowtank') {
+    // the driver works the machine gun, the gunner the catapult (neither throws by hand)
+    p.charging = false; p.charge = 0;
+    if (p.seat === 0) stepTankDriver(w, v, p, dt); else stepTankGunner(w, v, p, dt);
+  } else if (spec.canThrow[p.seat]) {
     if (inp.fire && w.phase === 'fight' && p.carried > 0 && p.throwCd <= 0) p.charging = true;
     if (p.charging) {
       if (inp.fire && p.carried > 0) p.charge = Math.min(1, p.charge + dt / CFG.throwChargeTime);
@@ -332,7 +362,7 @@ export function stepRider(w: World, p: Penguin, dt: number) {
       }
     }
   } else { p.charging = false; p.charge = 0; }
-  p.action = p.charging ? 'charge' : p.throwAnim > 0 ? 'throw' : 'idle';
+  if (v.kind !== 'snowtank') p.action = p.charging ? 'charge' : p.throwAnim > 0 ? 'throw' : 'idle';
   p.plowLoad = 0; p.aimOk = false; p.buildBlock = 0; p.slumping = false; p.turretBlock = 0;
   // E: hop off
   if (inp.use) { if (p.useT < 0) p.useT = 0; p.useT += dt; }
@@ -356,11 +386,11 @@ export function wreckVehicle(w: World, v: Vehicle, by: number) {
   for (const id of [...v.seats]) { const p = id >= 0 ? w.penguin(id) : undefined; if (p) leaveVehicle(w, p, true); }
   w.emit({ type: 'vehicleDown', vid: v.id, kind: v.kind, team: v.team, by, x: v.x, y: v.y, z: v.z });
   if (v.kind === 'snowplow') w.garage.plowT = CFG.plowEvery;
-  else w.garage.pending.push({ kind: v.kind, team: v.team, slot: v.slot, t: CFG.snowmobileRespawn });
+  else w.garage.pending.push({ kind: v.kind, team: v.team, slot: v.slot, t: v.kind === 'snowtank' ? CFG.tankRespawn : CFG.snowmobileRespawn });
 }
 
 /** A snowball in flight: did it land on a vehicle? (Your own side's snowballs fly straight past.) */
-export function snowballHitsVehicle(w: World, b: { x: number; y: number; z: number; team: number; owner: number }): boolean {
+export function snowballHitsVehicle(w: World, b: { x: number; y: number; z: number; team: number; owner: number; kind: number; cat?: boolean }): boolean {
   for (const v of w.vehicles) {
     if (!v.alive) continue;
     const spec = VEHICLE_SPECS[v.kind];
@@ -369,7 +399,10 @@ export function snowballHitsVehicle(w: World, b: { x: number; y: number; z: numb
     const fx = -Math.sin(v.yaw), fz = -Math.cos(v.yaw);
     for (const [f, r] of spec.circles) {
       if (Math.hypot(b.x - (v.x + fx * f), b.z - (v.z + fz * f)) > r * 0.92 + CFG.snowballRadius) continue;
-      damageVehicle(w, v, 1, b.owner, b.x, b.y, b.z);
+      // a catapult ball hits hard; the tank gun's little snowballs take two to make one dent
+      const n = b.cat ? CFG.catVehicleDamage : b.kind === 3 ? (w.chip(`v${v.id}`, CFG.tankGunDamage) ? 1 : 0) : 1;
+      if (n > 0) damageVehicle(w, v, n, b.owner, b.x, b.y, b.z);
+      else { v.hitT = 0; w.emit({ type: 'vehicleHit', vid: v.id, by: b.owner, x: b.x, y: b.y, z: b.z, health: Math.max(0, v.health) }); }
       return true;
     }
   }
@@ -392,7 +425,7 @@ export function stepVehicles(w: World, dt: number) {
   }
 
   for (const p of w.penguins) p.ramCd = Math.max(0, p.ramCd - dt);
-  for (const v of w.vehicles) if (v.alive) stepVehicle(w, v, dt);
+  for (const v of w.vehicles) if (v.alive) { stepVehicle(w, v, dt); stepTankGear(v, dt); }
   // vehicles shove each other apart (the snowplow doesn't budge for a snowmobile)
   for (let a = 0; a < w.vehicles.length; a++) for (let b = a + 1; b < w.vehicles.length; b++) bumpVehicles(w, w.vehicles[a], w.vehicles[b]);
   for (const v of w.vehicles) if (v.alive) for (const id of v.seats) { const p = id >= 0 ? w.penguin(id) : undefined; if (p && p.riding === v.id) seatRider(w, v, p); }
@@ -666,7 +699,8 @@ function collideVehicle(w: World, v: Vehicle, spec: VehicleSpec, driver: Penguin
 function bumpVehicles(w: World, a: Vehicle, b: Vehicle) {
   if (!a.alive || !b.alive || Math.abs(a.y - b.y) > 2.5 || Math.hypot(a.x - b.x, a.z - b.z) > 7) return;
   const sa = VEHICLE_SPECS[a.kind], sb = VEHICLE_SPECS[b.kind];
-  const ma = a.kind === 'snowplow' ? 8 : 1, mb = b.kind === 'snowplow' ? 8 : 1;
+  const mass = (k: VehicleKind) => k === 'snowplow' ? 8 : k === 'snowtank' ? 5 : 1;
+  const ma = mass(a.kind), mb = mass(b.kind);
   for (const [fa, ra] of sa.circles) for (const [fb, rb] of sb.circles) {
     const ax = a.x - Math.sin(a.yaw) * fa, az = a.z - Math.cos(a.yaw) * fa;
     const bx = b.x - Math.sin(b.yaw) * fb, bz = b.z - Math.cos(b.yaw) * fb;

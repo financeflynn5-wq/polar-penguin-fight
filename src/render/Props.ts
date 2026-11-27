@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { CFG } from '../sim/config';
 import { World } from '../sim/World';
 import { MapDef } from '../world/MapDef';
 import { TEAM_COLORS } from './Environment';
@@ -219,7 +220,8 @@ export class Props {
       if (n >= 256) break;
       const x = b.px + (b.x - b.px) * alpha, y = b.py + (b.y - b.py) * alpha, z = b.pz + (b.z - b.pz) * alpha;
       this.m4.makeTranslation(x, y, z);
-      if (b.big) { const k = BIG_BALL; const e = this.m4.elements; e[0] = e[5] = e[10] = k; } // a yeti's giant snowball
+      if (b.big || b.cat) { const k = b.cat ? CFG.catBallRadius / 0.16 : BIG_BALL; const e = this.m4.elements; e[0] = e[5] = e[10] = k; } // a yeti's giant snowball, a catapult ball
+      else if (b.kind === 3) { const e = this.m4.elements; e[0] = e[5] = e[10] = 0.75; } // the tank gun's little ones
       this.snowballs.setMatrixAt(n++, this.m4);
     }
     this.snowballs.count = n;

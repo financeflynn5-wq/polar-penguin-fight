@@ -1,4 +1,5 @@
-// The snowmobile and the snowplow (public/models/<kind>.glb, built by tools/blender/vehicles.py).
+// The snowmobile and the snowplow (public/models/<kind>.glb, built by tools/blender/vehicles.py), and the snow tank
+// (public/models/snowtank.glb, built by tools/blender/snowtank.py).
 // Unlike the map props these keep a node hierarchy, because parts of them move. Every moving part is a named node
 // sitting at its own pivot, unrotated at rest, so the game only ever sets a rotation on it:
 //
@@ -8,6 +9,10 @@
 //   track | trackL, trackR  the belts; userData.scroll holds the textures to slide (offset.y, 1 = 1 m of belt)
 //   wheel…                  spin about z; userData.radius is the wheel's radius in metres
 //   beacon                  the lens on the roof; userData.material is this vehicle's own copy to pulse
+//   turret, gun, barrels    snow tank: the gun turret (rotation.y), the gun on it (rotation.z, + = up), its barrels (spin about x)
+//   catapult, arm, ammo     snow tank: the turntable (rotation.y), the throwing arm (rotation.z, 0 = cocked, - = thrown),
+//                           the snowball sitting in the bucket
+//   muzzle, bucket          snow tank: empties at the end of the barrels and in the bucket
 //   seat0, seat1, gripL, gripR, exhaust   empties: where riders sit, where mittens hold on, where smoke comes out
 //
 // The front of a vehicle is +x. Materials come from PropMaterials by name, like the props.
@@ -15,7 +20,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { propMaterial } from './PropMaterials';
 
-export type VehicleKind = 'snowmobile' | 'snowplow';
+import type { VehicleKind } from '../sim/Vehicles';
 
 /** Too small, too bright or too clear for a shadow of their own to show. */
 const NO_SHADOW = new Set(['glass', 'glow', 'beacon', 'lamp_red', 'chrome', 'snow', 'rope']);
