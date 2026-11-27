@@ -1,6 +1,6 @@
 import { World, Penguin, SplatCause } from '../sim/World';
 import { CFG, MITTEN_NAMES, REWARD_NAMES, GUN_NAMES } from '../sim/config';
-import { vehicleOf, nearVehicle, boardingBlock, maxHealth, VEHICLE_NAMES } from '../sim/Vehicles';
+import { vehicleOf, vehicleSide, nearVehicle, boardingBlock, maxHealth, VEHICLE_NAMES } from '../sim/Vehicles';
 import { gunAmmoMax } from '../sim/Guns';
 import { CLASSES, ClassId } from '../sim/Classes';
 
@@ -218,7 +218,7 @@ export class Hud {
     // Breakthrough: when the attackers' snowplow turns up
     if (this.bt) {
       const plow = w.vehicles.find(v => v.kind === 'snowplow');
-      const txt = w.phase !== 'fight' ? '' : plow ? (plow.seats[0] >= 0 ? 'Snowplow on the move' : 'Snowplow waiting at the attackers\' camp') : w.garage.plowT > 0 ? `Snowplow in ${fmt(w.garage.plowT)}` : '';
+      const txt = w.phase !== 'fight' ? '' : plow ? (plow.seats[0] >= 0 ? (vehicleSide(w, plow) !== plow.team ? 'The defenders have the snowplow!' : 'Snowplow on the move') : plow.idleT > 3 && plow.lastDriver >= 0 ? 'Snowplow standing empty' : 'Snowplow waiting at the attackers\' camp') : w.garage.plowT > 0 ? `Snowplow in ${fmt(w.garage.plowT)}` : '';
       const el = this.q('#plowT');
       if (el.textContent !== txt) el.textContent = txt;
     }
@@ -228,7 +228,7 @@ export class Hud {
     this.q('#ride').classList.toggle('hidden', !ride);
     if (ride) {
       const name = VEHICLE_NAMES[ride.kind];
-      const label = name[0].toUpperCase() + name.slice(1);
+      const label = name[0].toUpperCase() + name.slice(1) + (ride.kind === 'snowplow' ? (ride.plowDown ? ' · blade down' : ' · blade up') : '');
       if (this.q('#rideName').textContent !== label) this.q('#rideName').textContent = label;
       const frac = Math.max(0, ride.health / maxHealth(w, ride.kind));
       const bar = this.q('#rideBar');
@@ -240,14 +240,13 @@ export class Hud {
     const prompts: string[] = [];
     const pile = ride ? -1 : w.nearPile(me);
     if (ride) {
-      if (me.seat === 0) prompts.push(`<span class="key">W</span><span class="key">S</span>drive &nbsp; <span class="key">A</span><span class="key">D</span>steer &nbsp; <span class="key">E</span>hop off`);
+      if (me.seat === 0) prompts.push(`<span class="key">W</span><span class="key">S</span>drive &nbsp; <span class="key">A</span><span class="key">D</span>steer &nbsp; ${ride.kind === 'snowplow' ? `<span class="key">Space</span>${ride.plowDown ? 'lift the blade (plow through)' : 'blade down (build a wall)'} &nbsp; ` : ''}<span class="key">E</span>hop off`);
       else prompts.push(`<span class="key">LMB</span>throw &nbsp; <span class="key">E</span>hop off`);
     } else {
       const v = nearVehicle(w, me);
       if (v) {
         const block = boardingBlock(w, v, me);
-        if (block === 1) prompts.push('Only the attackers can drive the snowplow');
-        else if (!block) prompts.push(`<span class="key">E</span>${v.seats[0] < 0 ? `Drive the ${VEHICLE_NAMES[v.kind]}` : 'Hop on the back'}`);
+        if (!block) prompts.push(`<span class="key">E</span>${v.seats[0] < 0 ? (v.team !== me.team ? `Steal their ${VEHICLE_NAMES[v.kind]}!` : `Drive the ${VEHICLE_NAMES[v.kind]}`) : 'Hop on the back'}`);
       }
     }
     if (me.alive && pile >= 0) {

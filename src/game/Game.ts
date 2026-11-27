@@ -1032,19 +1032,23 @@ export class Game {
           P.burst(e.x, e.y + 0.5, e.z, plow ? 60 : 24, 3.5, 1.2);
           if (plow && w.phase === 'fight') {
             if (me.team === e.team) H.banner('SNOWPLOW READY!', 'It\'s at your camp: hop in with E. It drives straight through snow walls', 4);
-            else H.banner('SNOWPLOW INCOMING!', 'Snowballs and giant snowballs wreck it. Stay out from in front of the blade!', 4);
+            else H.banner('SNOWPLOW INCOMING!', 'Snowballs and giant snowballs wreck it, or steal it if they leave it empty. Stay out from in front of the blade!', 4);
             A.whistle();
           }
-        } else if (e.what === 'home') P.burst(e.x, e.y + 0.5, e.z, 30, 3, 1.2);
+        } else if (e.what === 'home') { P.burst(e.x, e.y + 0.5, e.z, 30, 3, 1.2); this.vehiclesView.wentHome(e.vid, e.team); }
         else if (e.what === 'enter') {
           A.engineStart(e.x, e.y, e.z, plow);
           if (e.pid === me.id) {
             const driving = me.seat === 0;
-            if (!this.taughtDrive || plow) H.banner(plow ? 'SNOWPLOW!' : driving ? 'SNOWMOBILE!' : 'ON THE BACK!', plow ? 'W/S drive, A/D steer. Walls, turrets and penguins in front of the blade go flying. E hops out' : driving ? 'W/S drive, A/D steer, E hops off. A friend on the back seat can throw' : 'You can still pack and throw from the back seat. E hops off', 3.2);
+            if (!this.taughtDrive || plow) H.banner(plow ? 'SNOWPLOW!' : driving ? 'SNOWMOBILE!' : 'ON THE BACK!', plow ? 'Blade up, it drives straight through walls. Space puts the blade down to push up a wall of your own. E hops out' : driving ? 'W/S drive, A/D steer, E hops off. A friend on the back seat can throw' : 'You can still pack and throw from the back seat. E hops off', 3.2);
             this.taughtDrive = true;
-          } else if (plow && p && w.phase === 'fight') H.toast(p.team === me.team ? `${p.name} is driving the snowplow: follow it in!` : `${p.name} is driving the snowplow!`, 2.4);
+          } else if (plow && p && w.phase === 'fight') H.toast(p.team !== e.team ? (p.team === me.team ? `${p.name} stole their snowplow!` : `${p.name} stole your snowplow! Wreck it or take it back`) : p.team === me.team ? `${p.name} is driving the snowplow: follow it in!` : `${p.name} is driving the snowplow!`, 2.4);
         } else if (e.what === 'exit') { if (e.pid === me.id) A.click(); }
-        else if (e.what === 'denied' && e.pid === me.id) { A.noSnow(); H.toast(plow ? 'Only the attackers can drive the snowplow' : `The other team is on that ${name}`, 2); }
+        else if (e.what === 'denied' && e.pid === me.id) { A.noSnow(); H.toast(`The other team is on that ${name}`, 2); }
+        else if (e.what === 'bladeDown' || e.what === 'bladeUp') {
+          A.clank(e.x, e.y, e.z, 0.8);
+          if (e.pid === me.id) H.toast(e.what === 'bladeDown' ? 'Blade down: drive forward to push up a wall' : 'Blade up: straight through anything', 2);
+        }
         break;
       }
       case 'vehicleHit': {
@@ -1068,6 +1072,7 @@ export class Game {
       case 'plowSnow': {
         const v = w.vehicles.find(q => q.id === e.vid) as Vehicle | undefined;
         if (v) this.vehiclesView.plowSpray(v, e.mass, P);
+        if (v?.plowDown) { if (Math.random() < 0.25) A.crunch(e.x, e.y, e.z, 0.3); break; } // a steady rumble, not a crash every tick
         if (e.mass > 500) A.crush(e.x, e.y, e.z, Math.min(0.7, e.mass / 5000));
         else if (Math.random() < 0.3) A.crunch(e.x, e.y, e.z, 0.2);
         break;
