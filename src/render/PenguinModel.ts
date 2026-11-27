@@ -130,7 +130,7 @@ function lumpy(r: number, detail: number, seed: number, amount = 0.12) {
   g.computeVertexNormals();
   return g;
 }
-const G = { ball: lumpy(0.07, 2, 1.3), giant: lumpy(1, 3, 3.3, 0.05), splat: lumpy(1, 2, 4.1, 0.2), lump: lumpy(1, 3, 2.2, 0.1) };
+const G = { ball: lumpy(0.07, 2, 1.3), giant: lumpy(1, 3, 3.3, 0.05), splat: lumpy(1, 2, 4.1, 0.2) };
 
 /** A copy of a Blender-built hat, ready to sit on the head's hat joint. Null for 'none' (or a hat that isn't built). */
 export function makeHat(name: string): THREE.Object3D | null {
@@ -201,7 +201,6 @@ export class PenguinModel {
   private spinner: THREE.Object3D | null = null;
   private jiggles: { o: THREE.Object3D; rest: THREE.Quaternion; a: THREE.Vector2; v: THREE.Vector2 }[] = [];
   private splats: THREE.Mesh[] = [];
-  private lump: THREE.Mesh;
   private tag: THREE.Sprite | null = null;
   private walkPhase = Math.random() * 10;
   private seed = Math.random() * 100;
@@ -283,12 +282,6 @@ export class PenguinModel {
       this.splats.push(s);
     }
 
-    // the snow lump you become when splatted
-    this.lump = new THREE.Mesh(G.lump, SNOW);
-    this.lump.position.y = 0.2 * S;
-    this.lump.visible = false;
-    this.lump.castShadow = true;
-    this.root.add(this.lump);
 
     // carried snowballs: tucked round the back of the jacket hem, so you can count them from behind
     const ballSize = def.ballRadius / CLASSES.penguin.ballRadius, belt = facts.belt;
@@ -371,7 +364,6 @@ export class PenguinModel {
     this.lastHealth = p.health;
     this.hitT += dt;
 
-    this.lump.visible = false;
 
     // riding the surfboard
     if (p.surfing && p.alive) {
@@ -389,10 +381,8 @@ export class PenguinModel {
     } else if (this.board) this.board.visible = false;
 
     if (!p.alive) {
+      // splatted: you vanish in a poof of snow (the 'splat' event draws the cloud), nothing is left behind
       this.model.visible = false;
-      this.lump.visible = true;
-      const t = Math.min(1, (3.5 - p.downT) * 4);
-      this.lump.scale.set(0.55 * t + 0.1, 0.45 * t + 0.05, 0.55 * t + 0.1).multiplyScalar(this.S);
       if (this.tag) this.tag.visible = false;
       this.snapPose = true;
       return;
