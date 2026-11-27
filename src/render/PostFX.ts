@@ -36,6 +36,12 @@ export class PostFX {
     this.composer = new EffectComposer(renderer, target);
     this.composer.addPass(new RenderPass(scene, camera));
     this.bloom = new UnrealBloomPass(new THREE.Vector2(size.x / 2, size.y / 2), 0.2, 0.6, 2.0);
+    // Safety net: a single NaN or infinite pixel from any shader gets blurred by bloom into big black blocks.
+    // Drop such pixels before they reach the blur, so the worst a bad shader can do is one dark pixel.
+    const hp = (this.bloom as unknown as { materialHighPassFilter: THREE.ShaderMaterial }).materialHighPassFilter;
+    hp.fragmentShader = hp.fragmentShader.replace('vec4 texel = texture2D( tDiffuse, vUv );',
+      'vec4 texel = texture2D( tDiffuse, vUv ); if ( any( isnan( texel ) ) || any( isinf( texel ) ) ) texel = vec4( 0.0 );');
+    hp.needsUpdate = true;
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
     this.grade = new ShaderPass(GradeShader);

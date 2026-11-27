@@ -216,7 +216,8 @@ export class PenguinModel {
   private heldBall: THREE.Mesh | null = null;
   private landSquash = 0;
   private wasGrounded = true;
-  private lastHealth = 99;
+  /** -1 until the first update, so a freshly made model (menu class swap, respawn) doesn't flinch as if hit */
+  private lastHealth = -1;
   private hitT = 9;
   private jawNow = 0;
   private hatWobble = new THREE.Vector2(); private hatVel = new THREE.Vector2();
@@ -366,7 +367,7 @@ export class PenguinModel {
     if (p.grounded && !this.wasGrounded) this.landSquash = 0.25;
     this.wasGrounded = p.grounded;
     this.landSquash = Math.max(0, this.landSquash - dt * 1.5);
-    if (p.health < this.lastHealth) this.hitT = 0;
+    if (this.lastHealth >= 0 && p.health < this.lastHealth) this.hitT = 0;
     this.lastHealth = p.health;
     this.hitT += dt;
 
