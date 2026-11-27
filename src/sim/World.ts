@@ -8,7 +8,7 @@ import { CFG } from './config';
 import { CLASSES, ClassId, BOT_CLASS_MIX, asClass } from './Classes';
 import { boxGround, boxPush, pointInBoxes, slideY } from '../world/Playground';
 import { Prop, RAMP, RAMP_LIP, rampGround, rampLocal, rampPush, rampUnder, pointInRamps } from '../world/Landmarks';
-import { Vehicle, VehicleKind, makeGarage, initVehicles, stepVehicles, stepRider, tryEnter, leaveVehicle, reparkVehicles, snowballHitsVehicle } from './Vehicles';
+import { Vehicle, VehicleKind, makeGarage, initVehicles, stepVehicles, stepRider, tryEnter, leaveVehicle, reparkVehicles, snowballHitsVehicle, vehicleSide, damageVehicle } from './Vehicles';
 import { Guns, GUN_NONE } from './Guns';
 
 export type { Mode };
@@ -39,7 +39,7 @@ export const emptyInput = (): PenguinInput => ({
 
 export type Action = 'idle' | 'plow' | 'pack' | 'dig' | 'build' | 'charge' | 'throw' | 'slide' | 'down' | 'rush';
 export type Phase = 'build' | 'fight' | 'end';
-export type SplatCause = 'snowball' | 'bigball' | 'turret' | 'avalanche' | 'vehicle' | 'cocoa' | 'blade' | 'charge';
+export type SplatCause = 'snowball' | 'bigball' | 'turret' | 'avalanche' | 'vehicle' | 'cocoa' | 'blade' | 'charge' | 'tankgun' | 'catapult';
 
 export type GameEvent =
   | { type: 'plow'; pid: number; x: number; y: number; z: number; fx: number; fz: number; mass: number }
@@ -99,7 +99,9 @@ export type GameEvent =
   | { type: 'thaw'; pid: number; by: number } // hot chocolate warmed `pid` out of a chill
   | { type: 'icePatch'; x: number; y: number; z: number }
   | { type: 'slip'; pid: number }
-  | { type: 'boom'; x: number; y: number; z: number; r: number; mass: number } // a yeti's giant snowball landed
+  | { type: 'boom'; x: number; y: number; z: number; r: number; mass: number; cat?: boolean } // a yeti's giant snowball (or a catapult ball) landed
+  // the snow tank fired: its machine gun (gun 0; hot = it just jammed) or its catapult (gun 1)
+  | { type: 'tankFire'; vid: number; gun: number; pid: number; x: number; y: number; z: number; hot: boolean }
   | { type: 'rush'; pid: number; x: number; y: number; z: number } // a polar bear started a charge
   | { type: 'rushHit'; pid: number; by: number; x: number; y: number; z: number } // ... and bowled someone over
   | { type: 'gameOver'; winner: number };
@@ -200,6 +202,8 @@ export interface Snowball {
   kind: number;
   /** a yeti's giant snowball: hits harder, splashes, and blasts a hole in snow */
   big?: boolean;
+  /** a snow tank's catapult ball: bigger still (kind 3 is one of the tank's machine-gun snowballs) */
+  cat?: boolean;
 }
 
 export interface BigBall {
@@ -297,6 +301,8 @@ export class World {
   readonly mode: Mode;
   turrets: Turret[] = [];
   vehicles: Vehicle[] = [];
+  /** fractions of a hit that haven't added up to a whole one yet, per target ('p'/'v'/'t' + id) */
+  chips = new Map<string, number>();
   garage = makeGarage();
   points: CapturePoint[] = [];
   barrages: Barrage[] = [];
@@ -1295,7 +1301,7 @@ export class World {
       b.vy -= g * dt;
       const steps = Math.max(1, Math.ceil(Math.hypot(b.vx, b.vy, b.vz) * dt / 0.2));
       const sdt = dt / steps;
-      const br = b.big ? CLASSES.yeti.ballRadius : CFG.snowballRadius;
+      const br = b.cat ? CFG.catBallRadius : b.big ? CLASSES.yeti.ballRadius : CFG.snowballRadius;
       let direct = -1; // the penguin a giant snowball landed right on (they don't take the splash as well)
       for (let s = 0; s < steps && b.alive; s++) {
         b.x += b.vx * sdt; b.y += b.vy * sdt; b.z += b.vz * sdt;
@@ -1317,7 +1323,8 @@ export class World {
         for (const t of this.turrets) {
           if (!t.alive || t.team === b.team) continue;
           if (b.y > t.y - 0.1 && b.y < t.y + CFG.turretHeight && Math.hypot(b.x - t.x, b.z - t.z) < CFG.turretRadius + br) {
-            this.hitTurret(t, b.owner, b.x, b.y, b.z);
+            if (b.kind !== 3 || this.chip(`t${t.id}`, CFG.tankGunDamage)) this.hitTurret(t, b.owner, b.x, b.y, b.z);
+            else this.emit({ type: 'snowHit', x: b.x, y: b.y, z: b.z, nx: 0, ny: 1, nz: 0 });
             b.alive = false; break;
           }
         }
@@ -1357,7 +1364,7 @@ export class World {
           b.alive = false;
         }
       }
-      if (!b.alive && b.big) this.boom(b, direct);
+      if (!b.alive && (b.big || b.cat)) this.boom(b, direct);
       if (b.age > 6) b.alive = false;
     }
     this.snowballs = this.snowballs.filter(b => b.alive);
@@ -1365,8 +1372,19 @@ export class World {
 
   private hitPenguin(p: Penguin, b: Snowball) {
     const sp = Math.hypot(b.vx, b.vz) || 1;
-    const push = b.big ? 3 : 1.6;
-    this.hurt(p, b.owner, b.big ? CLASSES.yeti.damage : 1, b.kind === 1 ? 'turret' : b.kind === 2 ? 'avalanche' : 'snowball', b.x, b.y, b.z, b.vx / sp * push, b.vz / sp * push);
+    const push = b.cat ? 4.5 : b.big ? 3 : b.kind === 3 ? 0.8 : 1.6;
+    // the tank gun's snowballs are small: two of them take one heart
+    const n = b.cat ? CFG.catDamage : b.big ? CLASSES.yeti.damage : b.kind === 3 ? (this.chip(`p${p.id}`, CFG.tankGunDamage) ? 1 : 0) : 1;
+    const cause: SplatCause = b.cat ? 'catapult' : b.kind === 1 ? 'turret' : b.kind === 2 ? 'avalanche' : b.kind === 3 ? 'tankgun' : 'snowball';
+    this.hurt(p, b.owner, n, cause, b.x, b.y, b.z, b.vx / sp * push, b.vz / sp * push);
+  }
+
+  /** Damage that comes in fractions (the tank gun's half-heart snowballs): true each time a whole one has added up. */
+  chip(key: string, amount: number) {
+    const n = (this.chips.get(key) ?? 0) + amount;
+    if (n >= 1 - 1e-6) { this.chips.set(key, n - 1); return true; }
+    this.chips.set(key, n);
+    return false;
   }
 
   /** Take `amount` hits and a shove. Spawn protection soaks it all up (returns false). */
@@ -1389,7 +1407,7 @@ export class World {
    * and the blast; then the blast takes a bite out of whatever snow it landed on, which is how a yeti opens up a fort.
    */
   private boom(b: Snowball, direct: number) {
-    const def = CLASSES.yeti;
+    const def = b.cat ? { splash: CFG.catSplash, splashDamage: CFG.catSplashDamage, crater: CFG.catCrater, craterMass: CFG.catCraterMass } : CLASSES.yeti;
     const f = this.field;
     // the blast starts a step back along the flight, in the open air in front of whatever it hit
     const sp = Math.hypot(b.vx, b.vy, b.vz) || 1;
@@ -1402,14 +1420,19 @@ export class World {
       if (d > def.splash + pd.radius) continue;
       if (d > 0.6) { const hit = f.raycast(ox, oy, oz, dx / d, dy / d, dz / d, d, 0.2); if (hit && hit.t < d - 0.55) continue; } // snow in the way
       const dh = Math.hypot(dx, dz) || 1;
-      this.hurt(p, b.owner, def.splashDamage, 'snowball', p.x, cy, p.z, dx / dh * 2.2, dz / dh * 2.2);
+      this.hurt(p, b.owner, def.splashDamage, b.cat ? 'catapult' : 'snowball', p.x, cy, p.z, dx / dh * (b.cat ? 3.2 : 2.2), dz / dh * (b.cat ? 3.2 : 2.2));
+    }
+    // a catapult ball dents any enemy vehicle it lands beside (one it lands right on took the direct hit already)
+    if (b.cat) for (const v of this.vehicles) {
+      if (!v.alive || vehicleSide(this, v) === b.team || Math.hypot(v.x - ox, v.y + 1 - oy, v.z - oz) > def.splash + 1.2) continue;
+      damageVehicle(this, v, Math.ceil(CFG.catVehicleDamage / 2), b.owner, ox, oy, oz);
     }
     for (const t of this.turrets) {
       if (t.alive && t.team !== b.team && Math.hypot(t.x - ox, t.y + 0.9 - oy, t.z - oz) < def.splash) this.hitTurret(t, b.owner, t.x, t.y + 1, t.z);
     }
     // walls and forts get a hole knocked in them; open ground gets a crater (never deeper than a metre below how the map started)
     const removed = f.removeMass(b.x, b.y, b.z, def.crater, def.craterMass, 0.3, 1.0);
-    this.emit({ type: 'boom', x: b.x, y: b.y, z: b.z, r: def.splash, mass: removed });
+    this.emit({ type: 'boom', x: b.x, y: b.y, z: b.z, r: def.splash, mass: removed, ...(b.cat ? { cat: true } : {}) });
   }
 
   /**

@@ -287,7 +287,7 @@ export class NetClient {
     for (const s of a.balls) {
       const e = bb.get(s.id) ?? s;
       const x = lerp(s.x, e.x, t), y = lerp(s.y, e.y, t), z = lerp(s.z, e.z, t);
-      balls.push({ id: s.id, owner: -1, team: s.team, x, y, z, px: x, py: y, pz: z, vx: s.vx, vy: s.vy, vz: s.vz, age: 0, alive: true, kind: s.kind, big: s.big });
+      balls.push({ id: s.id, owner: -1, team: s.team, x, y, z, px: x, py: y, pz: z, vx: s.vx, vy: s.vy, vz: s.vz, age: 0, alive: true, kind: s.kind, big: s.big, cat: s.cat });
     }
     w.snowballs = balls;
 
@@ -337,6 +337,11 @@ export class NetClient {
       v.speed = lerp(s.speed, e.speed, u); v.steer = lerp(s.steer, e.steer, u);
       v.grounded = s.grounded; v.plowDown = s.plowDown; v.health = s.health; v.hitT = s.hitT; v.load = s.load; v.team = s.team; v.slot = s.slot;
       v.seats = s.seats.slice();
+      if (s.tank) {
+        // the snow tank's turret, gun and turntable swing smoothly between snapshots
+        const et = e.tank ?? s.tank;
+        v.tank = { ...s.tank, aimYaw: lerpA(s.tank.aimYaw, et.aimYaw, u), aimPitch: lerp(s.tank.aimPitch, et.aimPitch, u), catYaw: lerpA(s.tank.catYaw, et.catYaw, u) };
+      }
       s.seats.forEach((id, seat) => {
         const p = id >= 0 ? w.penguin(id) : undefined;
         if (p && !(p === me && this.predicting)) { p.riding = v.id; p.seat = seat; p.covered = v.kind === 'snowplow'; }

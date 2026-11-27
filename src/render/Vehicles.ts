@@ -7,6 +7,7 @@ import { propMaterial } from './PropMaterials';
 import { Particles, PKind } from './Particles';
 import { Decals } from './Decals';
 import { makeVehicleModel, disposeVehicleModel } from './VehicleModel';
+import { CFG } from '../sim/config';
 
 /** Team paint: Blizzard blue, Sunrise orange. */
 export const VEHICLE_TINT = [0x2f7ee8, 0xff8a2e];
@@ -26,6 +27,10 @@ interface View {
   tracks: { o: THREE.Object3D; tex: THREE.Texture[]; side: number }[];
   blade: THREE.Object3D | null; beacon: THREE.MeshStandardMaterial[]; exhaust: THREE.Object3D | null;
   seats: (THREE.Object3D | null)[];
+  /** the snow tank's moving parts */
+  turret: THREE.Object3D | null; gun: THREE.Object3D | null; barrels: THREE.Object3D | null; muzzle: THREE.Object3D | null;
+  catapult: THREE.Object3D | null; arm: THREE.Object3D | null; ammo: THREE.Object3D | null;
+  spin: number; armNow: number; armV: number;
   bladeNow: number; trail: number; puff: number; seen: number; lastYaw: number; bounce: number; bounceV: number; smoke: number;
 }
 
@@ -45,7 +50,8 @@ export class VehiclesView {
     this.group.add(root);
     const view: View = {
       kind: v.kind, team: v.team, root, tilt, model: null, steer: [], wheels: [], tracks: [], blade: null, beacon: [], exhaust: null,
-      seats: [], bladeNow: 0.25, trail: 0, puff: 0, seen: 0, lastYaw: v.yaw, bounce: 0, bounceV: 0, smoke: 0,
+      seats: [], turret: null, gun: null, barrels: null, muzzle: null, catapult: null, arm: null, ammo: null, spin: 0, armNow: 0, armV: 0,
+      bladeNow: 0.25, trail: 0, puff: 0, seen: 0, lastYaw: v.yaw, bounce: 0, bounceV: 0, smoke: 0,
     };
     makeVehicleModel(v.kind, VEHICLE_TINT[v.team] ?? 0xffffff).then(model => {
       if (!root.parent) return; // gone before it loaded
@@ -58,6 +64,13 @@ export class VehiclesView {
         else if (n === 'track' || n === 'trackL' || n === 'trackR') view.tracks.push({ o, tex: (o.userData.scroll as THREE.Texture[] | undefined) ?? [], side: n === 'trackL' ? -1 : n === 'trackR' ? 1 : 0 });
         else if (n === 'blade') view.blade = o;
         else if (n === 'exhaust') view.exhaust = o;
+        else if (n === 'turret') view.turret = o;
+        else if (n === 'gun') view.gun = o;
+        else if (n === 'barrels') view.barrels = o;
+        else if (n === 'muzzle') view.muzzle = o;
+        else if (n === 'catapult') view.catapult = o;
+        else if (n === 'arm') view.arm = o;
+        else if (n === 'ammo') view.ammo = o;
         else if (n === 'beacon') {
           // each snowplow flashes its own beacon (the loader gives every vehicle its own copy of the material)
           const mat = o.userData.material as THREE.MeshStandardMaterial | undefined;
@@ -81,6 +94,9 @@ export class VehiclesView {
   seat(vid: number, seat: number): THREE.Object3D | null {
     return this.views.get(vid)?.seats[seat] ?? null;
   }
+
+  /** The end of a snow tank's gun barrels (world space), for the flash when it fires. */
+  muzzle(vid: number): THREE.Object3D | null { return this.views.get(vid)?.muzzle ?? null; }
 
   /** Back at its own camp: a stolen one gets its owner's colours back. */
   wentHome(vid: number, team: number) { const view = this.views.get(vid); if (view) this.paint(view, team); }
@@ -115,7 +131,7 @@ export class VehiclesView {
     const spec = VEHICLE_SPECS[v.kind];
     const x = v.px + (v.x - v.px) * alpha, y = v.py + (v.y - v.py) * alpha, z = v.pz + (v.z - v.pz) * alpha;
     const yaw = lerpA(v.pyaw, v.yaw, alpha);
-    const plow = v.kind === 'snowplow';
+    const plow = v.kind !== 'snowmobile'; // tracked: the snowplow and the snow tank
     const ridden = v.seats.some(s => s >= 0), driven = v.seats[0] >= 0;
     // it wears the colours of whoever is on it (and keeps them once they hop off: a stolen one stays stolen-looking)
     if (ridden) this.paint(view, vehicleSide(w, v));
@@ -151,6 +167,7 @@ export class VehiclesView {
       view.bladeNow += (want - view.bladeNow) * Math.min(1, dt * 4);
       view.blade.rotation.z = view.bladeNow + (v.load > 0.05 ? Math.sin(time * 38) * 0.008 * v.load : 0);
     }
+    if (v.tank) this.poseTank(v, view, dt, time, P);
     for (const m of view.beacon) m.emissiveIntensity = driven ? 1.2 + 2.6 * Math.max(0, Math.sin(time * 9)) : 0.25;
 
     // ── snow and smoke ──
@@ -195,6 +212,35 @@ export class VehiclesView {
         P.spawn(PKind.Puff, x + fx * spec.front * 0.4 + (Math.random() - 0.5) * 0.5, y + spec.height * 0.55, z + fz * spec.front * 0.4 + (Math.random() - 0.5) * 0.5, 0, 1.8 + Math.random(), 0, 0.5 + Math.random() * 0.4, 1.3, 0.3, 0.3, 0.32);
       }
     }
+  }
+
+  /** The snow tank: the turret and gun follow the driver's aim, the barrels spin while it fires, the catapult's arm swings. */
+  private poseTank(v: Vehicle, view: View, dt: number, time: number, P: Particles) {
+    const g = v.tank!;
+    const k = Math.min(1, dt * 18);
+    if (view.turret) view.turret.rotation.y = lerpA(view.turret.rotation.y, g.aimYaw, k);
+    if (view.gun) view.gun.rotation.z += (g.aimPitch - view.gun.rotation.z) * k;
+    // the barrels whirr while it fires and spin down after
+    const want = g.gunT < 0.2 ? 28 : 0;
+    view.spin += (want - view.spin) * Math.min(1, dt * (want > view.spin ? 10 : 2.5));
+    if (view.barrels) view.barrels.rotation.x += view.spin * dt;
+    // a red-hot gun steams
+    if (g.heat > 0.6 && view.muzzle && Math.random() < dt * (g.hot ? 26 : 10) * g.heat) {
+      view.muzzle.getWorldPosition(_v);
+      P.spawn(PKind.Puff, _v.x, _v.y + 0.05, _v.z, (Math.random() - 0.5) * 0.3, 0.9 + Math.random() * 0.6, (Math.random() - 0.5) * 0.3, 0.12 + Math.random() * 0.12, 0.7, 0.92, 0.92, 0.95);
+    }
+    if (view.catapult) view.catapult.rotation.y = lerpA(view.catapult.rotation.y, g.catYaw, k);
+    // the arm: flung up against the stop just after a throw, then cranked back down; the next ball drops in at the end
+    const since = CFG.catReload - g.catT; // seconds since the throw (big when it's loaded)
+    let target = 0;
+    if (g.catT > 0) {
+      if (since < 0.5) target = -1.95;
+      else target = -1.95 * Math.max(0, 1 - (since - 0.5) / Math.max(0.5, CFG.catReload - 1.1));
+    }
+    if (target < view.armNow - 0.3) view.armNow = Math.max(target, view.armNow - dt * 22); // the throw is quick
+    else view.armNow += (target - view.armNow) * Math.min(1, dt * 8);
+    if (view.arm) view.arm.rotation.z = view.armNow + (g.catT <= 0 ? Math.sin(time * 3) * 0.004 : 0);
+    if (view.ammo) view.ammo.visible = g.catT <= 0.35;
   }
 
   /** The blade is cutting snow: a wave of it breaks over the top and pours off both ends. */

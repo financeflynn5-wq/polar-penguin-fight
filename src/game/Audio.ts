@@ -141,6 +141,8 @@ export class Audio {
   freeze(x: number, y: number, z: number) { this.noiseBurst(0.16, 5200, 3, 0.2, 'bandpass', 7400, x, y, z); [2637, 3136].forEach((f, i) => this.tone(f, 0.16, 0.06, 'triangle', undefined, i * 0.04, x, y, z)); }
   /** feet out from under you on an ice patch */
   slip(x: number, y: number, z: number) { this.tone(880, 0.3, 0.12, 'sine', 300, 0, x, y, z); this.noiseBurst(0.3, 3400, 1, 0.14, 'highpass', 1500, x, y, z); }
+  /** one shot of the snow tank's snowball machine gun: a soft pop and a thock */
+  tankGun(x: number, y: number, z: number, vol = 1) { this.noiseBurst(0.05, 1300 + Math.random() * 500, 1.6, 0.2 * vol, 'bandpass', 600, x, y, z); this.tone(150 + Math.random() * 40, 0.05, 0.07 * vol, 'square', 90, 0, x, y, z); }
   gunEmpty() { this.tone(330, 0.09, 0.1, 'square', 220); this.tone(220, 0.12, 0.08, 'square', 160, 0.08); }
   /** the Candy Cane Blade: a swish, a crunchy bonk, a ting off a snowball, and the snap when it breaks */
   bladeSwing(x: number, y: number, z: number) { this.noiseBurst(0.17, 1200, 1.1, 0.22, 'bandpass', 4200, x, y, z); }

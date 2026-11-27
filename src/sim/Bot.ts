@@ -254,10 +254,18 @@ export class BotBrain {
   private takeVehicle(w: World, p: Penguin, dt: number): boolean {
     let best: Vehicle | null = null, bd = Infinity;
     for (const v of w.vehicles) {
-      if (!v.alive || v.seats[0] >= 0 || boardingBlock(w, v, p)) continue;
+      if (!v.alive || boardingBlock(w, v, p)) continue;
       const d = Math.hypot(v.x - p.x, v.z - p.z);
       if (d >= bd) continue;
-      if (v.kind === 'snowplow') {
+      if (v.kind === 'snowtank') {
+        // the snow tank: a bot drives one people have left alone for a bit, and one climbs on the back of a driven one
+        if (v.seats[0] >= 0) {
+          const driver = w.penguin(v.seats[0]);
+          if (v.seats[1] >= 0 || !driver || driver.team !== p.team || d > 16) continue;
+        } else if (v.idleT < CFG.plowBotWait || d > 40 || w.holdT > 0) continue;
+        if (w.penguins.some(q => q !== p && q.bot && q.alive && q.team === p.team && q.riding < 0 && Math.hypot(v.x - q.x, v.z - q.z) < d - 0.01)) continue;
+      } else if (v.seats[0] >= 0) continue;
+      else if (v.kind === 'snowplow') {
         if (v.team !== p.team) continue; // bots leave stealing the other team's snowplow to people
         if (v.idleT < CFG.plowBotWait || d > 55 || w.holdT > 0) continue;
         if (w.penguins.some(q => q !== p && q.bot && q.alive && q.team === p.team && q.riding < 0 && Math.hypot(v.x - q.x, v.z - q.z) < d - 0.01)) continue;
@@ -269,7 +277,7 @@ export class BotBrain {
       bd = d; best = v;
     }
     if (!best) return false;
-    if (this.moveTo(w, p, best, best.kind === 'snowplow' ? 2.9 : 1.7, dt)) p.input.use = (Math.floor(this.t * 10) % 2) === 0;
+    if (this.moveTo(w, p, best, best.kind === 'snowmobile' ? 1.7 : 2.9, dt)) p.input.use = (Math.floor(this.t * 10) % 2) === 0;
     this.reverseT = 0; this.jams = 0; this.stuckT = 0;
     return true;
   }
@@ -281,17 +289,34 @@ export class BotBrain {
     if (!v) return;
     const tap = () => { inp.use = (Math.floor(this.t * 10) % 2) === 0; };
     const hopOff = (wait: number) => { tap(); this.vehicleWait = wait; };
-    if (p.seat !== 0) {
+    if (v.tank) {
+      // the snow tank's guns: the driver sprays anyone it can see, the gunner lobs at whoever it's picked (over walls too)
+      this.pickTarget(w, p);
+      const m = this.mark(w);
+      const d = m ? Math.hypot(m.x - p.x, m.z - p.z) : 999;
+      inp.fire = false; inp.aim = null;
+      if (m && m.alive && w.phase === 'fight') {
+        const lead = p.seat === 0 ? d / CFG.tankGunSpeed : 2.6;
+        const aim = { x: m.x + m.vx * lead, y: m.y + (p.seat === 0 ? m.h : 0), z: m.z + m.vz * lead };
+        if (p.seat === 0 && this.targetVisible && d < 34 && !v.tank.hot) { inp.aim = aim; inp.fire = this.rnd() < 0.85; }
+        if (p.seat === 1 && d > CFG.catMinRange && d < CFG.catMaxRange) { inp.aim = aim; inp.fire = true; inp.yaw = Math.atan2(-(aim.x - p.x), -(aim.z - p.z)); }
+      }
+      if (p.seat === 1) { if (v.seats[0] < 0) hopOff(10); return; }
+    } else if (p.seat !== 0) {
       // a passenger: throw from the back seat, and get off if nobody is driving
       this.pickTarget(w, p);
       this.combatWhileMoving(w, p);
       if (v.seats[0] < 0) hopOff(10);
       return;
     }
-    const plow = v.kind === 'snowplow';
+    const plow = v.kind === 'snowplow', tank = v.kind === 'snowtank';
     let to = this.destination(w, p);
-    let near = plow ? 3 : 9;
-    if (plow) {
+    let near = plow ? 3 : tank ? 12 : 9;
+    if (tank) {
+      // keep its distance from whoever it's shooting at, and get off when it's nearly wrecked
+      if (this.targetVisible && this.targetDist(w, p) < 20) near = 999;
+      if (v.health <= 3) { if (Math.abs(v.speed) < 3) hopOff(25); return; }
+    } else if (plow) {
       // run down whoever is close and in front of the push
       let bd = 17;
       for (const e of w.penguins) {

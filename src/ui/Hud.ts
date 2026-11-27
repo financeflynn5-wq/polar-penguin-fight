@@ -116,7 +116,7 @@ export class Hud {
   feed(killer: Penguin | undefined, victim: Penguin, cause: SplatCause) {
     const f = this.q('#feed');
     const k = killer ? `<span class="t${killer.team}">${esc(killer.name)}</span>` : '<span>Gravity</span>';
-    const icon = cause === 'vehicle' ? 'ran over' : cause === 'bigball' ? 'flattened' : cause === 'turret' ? 'turret got' : cause === 'avalanche' ? 'buried' : cause === 'charge' ? 'ran over' : cause === 'cocoa' ? 'melted' : cause === 'blade' ? 'whacked' : 'splatted';
+    const icon = cause === 'vehicle' ? 'ran over' : cause === 'bigball' ? 'flattened' : cause === 'turret' ? 'turret got' : cause === 'avalanche' ? 'buried' : cause === 'charge' ? 'ran over' : cause === 'cocoa' ? 'melted' : cause === 'blade' ? 'whacked' : cause === 'tankgun' ? 'peppered' : cause === 'catapult' ? 'catapulted' : 'splatted';
     const row = h(`<div class="row">${k}<span class="ic">${icon}</span><span class="t${victim.team}">${esc(victim.name)}</span></div>`);
     f.prepend(row);
     while (f.children.length > 5) f.lastElementChild!.remove();
@@ -228,7 +228,9 @@ export class Hud {
     this.q('#ride').classList.toggle('hidden', !ride);
     if (ride) {
       const name = VEHICLE_NAMES[ride.kind];
-      const label = name[0].toUpperCase() + name.slice(1) + (ride.kind === 'snowplow' ? (ride.plowDown ? ' · blade down' : ' · blade up') : '');
+      let label = name[0].toUpperCase() + name.slice(1) + (ride.kind === 'snowplow' ? (ride.plowDown ? ' · blade down' : ' · blade up') : '');
+      const g = ride.tank;
+      if (g) label += me.seat === 0 ? (g.hot ? ' · gun jammed, cooling!' : g.heat > 0.7 ? ' · gun getting hot' : '') : g.catT > 0 ? ' · winding the catapult…' : ' · catapult loaded';
       if (this.q('#rideName').textContent !== label) this.q('#rideName').textContent = label;
       const frac = Math.max(0, ride.health / maxHealth(w, ride.kind));
       const bar = this.q('#rideBar');
@@ -240,13 +242,16 @@ export class Hud {
     const prompts: string[] = [];
     const pile = ride ? -1 : w.nearPile(me);
     if (ride) {
-      if (me.seat === 0) prompts.push(`<span class="key">W</span><span class="key">S</span>drive &nbsp; <span class="key">A</span><span class="key">D</span>steer &nbsp; ${ride.kind === 'snowplow' ? `<span class="key">Space</span>${ride.plowDown ? 'lift the blade (plow through)' : 'blade down (build a wall)'} &nbsp; ` : ''}<span class="key">E</span>hop off`);
+      if (ride.kind === 'snowtank') prompts.push(me.seat === 0
+        ? `<span class="key">W</span><span class="key">S</span>drive &nbsp; <span class="key">A</span><span class="key">D</span>steer &nbsp; <span class="key">LMB</span>snowball gun &nbsp; <span class="key">E</span>hop off`
+        : `<span class="key">LMB</span>launch the catapult (aim where it lands) &nbsp; <span class="key">E</span>hop off`);
+      else if (me.seat === 0) prompts.push(`<span class="key">W</span><span class="key">S</span>drive &nbsp; <span class="key">A</span><span class="key">D</span>steer &nbsp; ${ride.kind === 'snowplow' ? `<span class="key">Space</span>${ride.plowDown ? 'lift the blade (plow through)' : 'blade down (build a wall)'} &nbsp; ` : ''}<span class="key">E</span>hop off`);
       else prompts.push(`<span class="key">LMB</span>throw &nbsp; <span class="key">E</span>hop off`);
     } else {
       const v = nearVehicle(w, me);
       if (v) {
         const block = boardingBlock(w, v, me);
-        if (!block) prompts.push(`<span class="key">E</span>${v.seats[0] < 0 ? (v.team !== me.team ? `Steal their ${VEHICLE_NAMES[v.kind]}!` : `Drive the ${VEHICLE_NAMES[v.kind]}`) : 'Hop on the back'}`);
+        if (!block) prompts.push(`<span class="key">E</span>${v.seats[0] < 0 ? (v.team !== me.team ? `Steal their ${VEHICLE_NAMES[v.kind]}!` : `Drive the ${VEHICLE_NAMES[v.kind]}`) : v.kind === 'snowtank' ? 'Work the catapult' : 'Hop on the back'}`);
       }
     }
     if (me.alive && pile >= 0) {

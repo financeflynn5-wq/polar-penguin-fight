@@ -22,6 +22,7 @@ import { TurretsView } from '../render/Turrets';
 import { FlagsView } from '../render/Flags';
 import { VehiclesView } from '../render/Vehicles';
 import { vehicleOf, VEHICLE_NAMES, Vehicle } from '../sim/Vehicles';
+import { releasePos, catapultLaunch } from '../sim/Tank';
 import { TEAM_NAMES } from '../render/Environment';
 import { Input } from './Input';
 import { Audio } from './Audio';
@@ -57,6 +58,7 @@ export class Game {
   private turretsView!: TurretsView;
   private flagsView!: FlagsView;
   private vehiclesView!: VehiclesView;
+  private tmpV = new THREE.Vector3();
   /** the heading of the vehicle you're driving, last frame (the camera turns with it) */
   private rideYaw: number | null = null;
   private camClear = 20;
@@ -505,7 +507,7 @@ export class Game {
         const mine = v.id === me.riding;
         const d = Math.hypot(v.x - this.camera.position.x, v.z - this.camera.position.z);
         const l = (mine ? 1 : 0.8) / (1 + d * d * 0.004);
-        if (l > level) { level = l; pitch = Math.abs(v.speed) / (v.kind === 'snowplow' ? 6.6 : 17) + (v.grounded ? 0 : 0.35); heavy = v.kind === 'snowplow' ? 1 : 0; }
+        if (l > level) { level = l; pitch = Math.abs(v.speed) / (v.kind === 'snowplow' ? 6.6 : v.kind === 'snowtank' ? 8 : 17) + (v.grounded ? 0 : 0.35); heavy = v.kind === 'snowmobile' ? 0 : 1; }
       }
       this.audio.setEngine(level, pitch, heavy);
     }
@@ -610,11 +612,11 @@ export class Game {
     const back = def.camDist - CLASSES.penguin.camDist;
     // (a yeti winding up holds a giant snowball over its head: stay back so it doesn't hide what you're aiming at)
     let want = (me.sliding ? 5.6 : me.rushT > 0 ? 6.0 : me.charging ? (def.splash > 0 ? 4.8 : 3.9) : me.input.build || me.input.turret ? 5.6 : 4.8) + back;
-    if (ride) want = (ride.kind === 'snowplow' ? 10.5 : me.charging ? 5.2 : 6.6 + Math.min(1.6, Math.abs(ride.speed) * 0.1)) + back * 0.5;
+    if (ride) want = (ride.kind === 'snowplow' ? 10.5 : ride.kind === 'snowtank' ? 8.6 : me.charging ? 5.2 : 6.6 + Math.min(1.6, Math.abs(ride.speed) * 0.1)) + back * 0.5;
     if (!me.alive) want = 6.5 + back;
     this.camDist += (want - this.camDist) * Math.min(1, dt * 6);
-    const pivY = py + (ride ? (ride.kind === 'snowplow' ? 2.5 : 1.55) : me.sliding ? 1.0 : def.eyeY);
-    const sh = ride ? (ride.kind === 'snowplow' ? 0 : 0.3) : 0.62 + (def.radius - CLASSES.penguin.radius) * 1.4;
+    const pivY = py + (ride ? (ride.kind === 'snowplow' ? 2.5 : ride.kind === 'snowtank' ? (me.seat === 0 ? 2.3 : 1.7) : 1.55) : me.sliding ? 1.0 : def.eyeY);
+    const sh = ride ? (ride.kind === 'snowplow' ? 0 : ride.kind === 'snowtank' ? 0.5 : 0.3) : 0.62 + (def.radius - CLASSES.penguin.radius) * 1.4;
     const pivX = px + rx * sh, pivZ = pz + rz * sh;
     // pull in if snow is in the way
     let dist = this.camDist;
@@ -623,7 +625,7 @@ export class Game {
     if (hit) dist = Math.max(0.6, hit.t - 0.3);
     if (ride) {
       // a vehicle's camera sits a long way back: keep it out of the trees too (in quickly, back out gently)
-      const clear = Math.max(ride.kind === 'snowplow' ? 3.2 : 2.4, this.treeClear(pivX, pivY, pivZ, -fx, -fy, -fz, dist));
+      const clear = Math.max(ride.kind === 'snowplow' ? 3.2 : ride.kind === 'snowtank' ? 3 : 2.4, this.treeClear(pivX, pivY, pivZ, -fx, -fy, -fz, dist));
       this.camClear += (clear - this.camClear) * Math.min(1, dt * (clear < this.camClear ? 14 : 2.5));
       dist = Math.min(dist, this.camClear);
     } else this.camClear = 20;
@@ -764,7 +766,24 @@ export class Game {
     // throw arc: faint whenever you're holding snowballs, bold while you wind up
     const w = this.world!;
     const busy = pi.dig || pi.build || pi.plow || pi.pack || pi.turret;
-    if (me.alive && w.phase === 'fight' && me.carried > 0 && !me.gunOut && (me.charging || !busy) && !(me.riding >= 0 && me.seat === 0)) {
+    const tank = me.alive ? vehicleOf(w, me) : null;
+    if (tank?.tank && me.seat === 1 && w.phase === 'fight') {
+      // working the catapult: where the ball will come down, bold once it's loaded
+      const g = tank.tank;
+      const r = releasePos(tank, g);
+      const v = catapultLaunch(r, this.throwAim(me), tank.yaw + g.catYaw, me.lookPitch);
+      const pts: number[][] = [];
+      let x = r.x, y = r.y, z = r.z, vx = v.x + tank.vx * 0.5, vy = v.y, vz = v.z + tank.vz * 0.5;
+      let normal: { x: number; y: number; z: number } | null = null;
+      for (let i = 0; i < 160; i++) {
+        pts.push([x, y, z]);
+        vy -= CFG.snowballGravity * 0.04;
+        x += vx * 0.04; y += vy * 0.04; z += vz * 0.04;
+        if (f.sample(x, y, z) > ISO || y < 0) { pts.push([x, y, z]); normal = f.normalAt(x, y, z, { x: 0, y: 1, z: 0 }); break; }
+      }
+      this.props.arc.set(pts, normal, g.catT <= 0 ? 1 : 0.35, false, this.time, this.camera.position);
+    } else if (tank?.tank) this.props.arc.hide();
+    else if (me.alive && w.phase === 'fight' && me.carried > 0 && !me.gunOut && (me.charging || !busy) && !(me.riding >= 0 && me.seat === 0)) {
       const speed = this.throwSpeed(me);
       const h = w.handPos(me);
       const v = solveThrow(h, this.throwAim(me), speed, CFG.snowballGravity) ?? lookVelocity(me.lookYaw, me.lookPitch + 0.07, speed);
@@ -892,7 +911,7 @@ export class Game {
         A.splat(e.x, e.y, e.z);
         const killer = w.penguin(e.by);
         H.feed(killer, victim, e.cause);
-        if (e.by === me.id && e.pid !== me.id) H.banner('SPLAT!', e.cause === 'turret' ? `Your turret got ${victim.name}` : e.cause === 'charge' ? `You ran ${victim.name} over` : e.cause === 'vehicle' ? `You ran over ${victim.name}` : e.cause === 'cocoa' ? `You melted ${victim.name}` : e.cause === 'blade' ? `You whacked ${victim.name}` : `You got ${victim.name}`, 1.3);
+        if (e.by === me.id && e.pid !== me.id) H.banner('SPLAT!', e.cause === 'turret' ? `Your turret got ${victim.name}` : e.cause === 'charge' ? `You ran ${victim.name} over` : e.cause === 'vehicle' ? `You ran over ${victim.name}` : e.cause === 'cocoa' ? `You melted ${victim.name}` : e.cause === 'blade' ? `You whacked ${victim.name}` : e.cause === 'tankgun' ? `You peppered ${victim.name}` : e.cause === 'catapult' ? `You catapulted ${victim.name}` : `You got ${victim.name}`, 1.3);
         break;
       }
       case 'turretBuilt': {
@@ -919,10 +938,29 @@ export class Game {
       }
       case 'turretLoad': if (e.pid === me.id) { A.stash(); H.toast(`Loaded ${e.n * CFG.turretAmmoPerBall * CLASSES[me.cls].ballCost} shots into the turret`, 1.6); } break;
       case 'boom': {
-        // a yeti's giant snowball: a wide burst of powder, chunks of wall, and a thump
-        P.burst(e.x, e.y + 0.2, e.z, 90, 7, 1.6);
-        for (let k = 0; k < 14; k++) { const a = Math.random() * Math.PI * 2, r = Math.random() * e.r; P.burst(e.x + Math.cos(a) * r, e.y + 0.1, e.z + Math.sin(a) * r, 4, 3, 0.8); }
-        A.crush(e.x, e.y, e.z, 0.5 + Math.min(0.4, e.mass / 6000)); A.splatSnow(e.x, e.y, e.z);
+        // a yeti's giant snowball: a wide burst of powder, chunks of wall, and a thump (a catapult ball: more of all of it)
+        const big = e.cat ? 1.6 : 1;
+        P.burst(e.x, e.y + 0.2, e.z, Math.round(90 * big), 7 * big, 1.6);
+        for (let k = 0; k < (e.cat ? 24 : 14); k++) { const a = Math.random() * Math.PI * 2, r = Math.random() * e.r; P.burst(e.x + Math.cos(a) * r, e.y + 0.1, e.z + Math.sin(a) * r, 4, 3, 0.8); }
+        if (e.cat) for (let k = 0; k < 10; k++) P.spawn(PKind.Puff, e.x + (Math.random() - 0.5) * e.r, e.y + 0.3 + Math.random(), e.z + (Math.random() - 0.5) * e.r, (Math.random() - 0.5) * 4, 1.5 + Math.random() * 2, (Math.random() - 0.5) * 4, 0.8 + Math.random() * 0.6, 1.2);
+        A.crush(e.x, e.y, e.z, (0.5 + Math.min(0.4, e.mass / 6000)) * (e.cat ? 1.4 : 1)); A.splatSnow(e.x, e.y, e.z);
+        break;
+      }
+      case 'tankFire': {
+        const mine = e.pid === me.id;
+        if (e.gun === 0) {
+          // a pop of powder at the barrels
+          const mz = this.vehiclesView.muzzle(e.vid);
+          if (mz) mz.getWorldPosition(this.tmpV);
+          const x = mz ? this.tmpV.x : e.x, y = mz ? this.tmpV.y : e.y, z = mz ? this.tmpV.z : e.z;
+          P.burst(x, y, z, 5, 2.2, 0.6);
+          A.tankGun(x, y, z, mine ? 1 : 0.7);
+          if (e.hot && mine) { H.toast('The snowball gun jammed! Let it cool down', 1.6); A.gunEmpty(); }
+        } else {
+          // the arm slams into its stop and the ball sails off
+          P.burst(e.x, e.y, e.z, 26, 3.5, 1.1);
+          A.clank(e.x, e.y, e.z, 1.2); A.whoosh(e.x, e.y, e.z, 1); A.crush(e.x, e.y, e.z, 0.25);
+        }
         break;
       }
       case 'rush': {
@@ -1062,7 +1100,8 @@ export class Game {
         for (let k = 0; k < (plow ? 26 : 12); k++) P.spawn(PKind.Puff, e.x + (Math.random() - 0.5) * 3, e.y + 0.5 + Math.random() * 2, e.z + (Math.random() - 0.5) * 3, (Math.random() - 0.5) * 3, 2 + Math.random() * 3, (Math.random() - 0.5) * 3, 0.9 + Math.random(), 1.6, 0.35, 0.35, 0.38);
         P.sparkle(e.x, e.y + 1.2, e.z, plow ? 50 : 24, 1.0, 0.7, 0.3);
         A.crush(e.x, e.y, e.z, 0.9); A.clank(e.x, e.y, e.z); A.splat(e.x, e.y, e.z);
-        if (plow) H.banner(me.team === e.team ? 'THE SNOWPLOW IS WRECKED!' : 'SNOWPLOW WRECKED!', me.team === e.team ? `The next one turns up in ${CFG.plowEvery} seconds` : 'Nice throwing. They get another one soon', 3);
+        if (e.kind === 'snowtank') { if (e.by === me.id) H.toast('Snow tank wrecked!', 1.8); else if (e.team === me.team) H.toast(`Your snow tank is wrecked. Another one in ${CFG.tankRespawn} seconds`, 2.4); }
+        else if (plow) H.banner(me.team === e.team ? 'THE SNOWPLOW IS WRECKED!' : 'SNOWPLOW WRECKED!', me.team === e.team ? `The next one turns up in ${CFG.plowEvery} seconds` : 'Nice throwing. They get another one soon', 3);
         else if (e.by === me.id) H.toast('Snowmobile wrecked!', 1.8);
         break;
       }

@@ -18,10 +18,11 @@
 import type { World, Penguin, PenguinInput, Action, Phase, GameEvent, RosterEntry, CapturePoint } from '../sim/World';
 import type { Mode } from '../world/Maps';
 import { Vehicle, VEHICLE_KINDS, VehicleKind } from '../sim/Vehicles';
+import type { TankGear } from '../sim/Tank';
 import type { GunCrate, IcePatch } from '../sim/Guns';
 import { CLASS_IDS, ClassId } from '../sim/Classes';
 
-export const PROTOCOL = 6;
+export const PROTOCOL = 7;
 export const TICK_HZ = 60;
 export const SNAP_EVERY = 2; // ticks per snapshot: 30 snapshots a second
 export const MSG_MATCH = 1;
@@ -157,7 +158,7 @@ export interface PenguinState {
   gun: number; gunAmmo: number; chill: number; slipT: number;
   cls: ClassId; rushT: number; rushCd: number;
 }
-export interface BallState { id: number; team: number; kind: number; big: boolean; x: number; y: number; z: number; vx: number; vy: number; vz: number; }
+export interface BallState { id: number; team: number; kind: number; big: boolean; cat: boolean; x: number; y: number; z: number; vx: number; vy: number; vz: number; }
 export interface BigBallState { id: number; x: number; y: number; z: number; r: number; vx: number; vy: number; vz: number; grounded: boolean; }
 export interface FlakeState { id: number; spot: number; x: number; y: number; z: number; active: boolean; }
 export interface TurretState { id: number; owner: number; team: number; x: number; y: number; z: number; yaw: number; health: number; ammo: number; fireT: number; }
@@ -167,6 +168,8 @@ export interface VehicleState {
   x: number; y: number; z: number; yaw: number; pitch: number; roll: number;
   vx: number; vy: number; vz: number; speed: number; steer: number;
   grounded: boolean; plowDown: boolean; health: number; seats: number[]; hitT: number; load: number;
+  /** the snow tank's gun and catapult */
+  tank?: TankGear;
 }
 export interface Snapshot {
   tick: number; ack: number;
@@ -205,7 +208,7 @@ export function encodeSnapshot(w: World, tick: number, snow: Uint8Array, events:
   for (const p of w.penguins) writePenguin(o, p);
   o.u16(w.snowballs.length);
   for (const b of w.snowballs) {
-    o.u32(b.id); o.u8((b.team & 3) | ((b.kind & 3) << 2) | (b.big ? 16 : 0)); o.f32(b.x); o.f32(b.y); o.f32(b.z);
+    o.u32(b.id); o.u8((b.team & 3) | ((b.kind & 3) << 2) | (b.big ? 16 : 0) | (b.cat ? 32 : 0)); o.f32(b.x); o.f32(b.y); o.f32(b.z);
     o.i16(clampI16(b.vx * 50)); o.i16(clampI16(b.vy * 50)); o.i16(clampI16(b.vz * 50));
   }
   o.u8(w.bigBalls.length);
@@ -270,6 +273,11 @@ function writeVehicle(o: Writer, v: Vehicle) {
   o.u8(clampU8(v.health)); o.u8(clampU8(v.hitT * 100)); o.u8(clampU8(v.load * 255));
   o.u8(v.seats.length);
   for (const s of v.seats) o.i16(s);
+  const g = v.tank;
+  if (v.kind === 'snowtank') {
+    o.i16(clampI16(wrapA(g?.aimYaw ?? 0) * 10000)); o.i16(clampI16((g?.aimPitch ?? 0) * 10000)); o.i16(clampI16(wrapA(g?.catYaw ?? 0) * 10000));
+    o.u8(clampU8((g?.heat ?? 0) * 254) | 0); o.u8(g?.hot ? 1 : 0); o.u8(clampU8((g?.gunT ?? 9) * 100)); o.u8(clampU8((g?.catT ?? 0) * 50));
+  }
 }
 
 function readVehicle(r: Reader): VehicleState {
@@ -281,7 +289,14 @@ function readVehicle(r: Reader): VehicleState {
   const health = r.u8(), hitT = r.u8() / 100, load = r.u8() / 255;
   const seats: number[] = [];
   for (let n = r.u8(); n > 0; n--) seats.push(r.i16());
-  return { id, kind: VEHICLE_KINDS[bits & 15] ?? 'snowmobile', team: (bits >> 4) & 1, slot, grounded: !!(bits & 32), plowDown: !!(bits & 64), x, y, z, yaw, pitch, roll, vx, vy, vz, speed, steer, health, seats, hitT, load };
+  const kind = VEHICLE_KINDS[bits & 15] ?? 'snowmobile';
+  let tank: TankGear | undefined;
+  if (kind === 'snowtank') {
+    const aimYaw = r.i16() / 10000, aimPitch = r.i16() / 10000, catYaw = r.i16() / 10000;
+    const heat = r.u8() / 254, hot = r.u8() === 1, gunT = r.u8() / 100, catT = r.u8() / 50;
+    tank = { aimYaw, aimPitch, catYaw, heat, hot, gunT, catT, fireT: 0 };
+  }
+  return { id, kind, tank, team: (bits >> 4) & 1, slot, grounded: !!(bits & 32), plowDown: !!(bits & 64), x, y, z, yaw, pitch, roll, vx, vy, vz, speed, steer, health, seats, hitT, load };
 }
 
 function readPenguin(r: Reader): PenguinState {
@@ -327,7 +342,7 @@ export function decodeSnapshot(buf: Uint8Array): Snapshot {
   const balls: BallState[] = [];
   for (let n = r.u16(); n > 0; n--) {
     const id = r.u32(), tk = r.u8(), x = r.f32(), y = r.f32(), z = r.f32();
-    balls.push({ id, team: tk & 3, kind: (tk >> 2) & 3, big: !!(tk & 16), x, y, z, vx: r.i16() / 50, vy: r.i16() / 50, vz: r.i16() / 50 });
+    balls.push({ id, team: tk & 3, kind: (tk >> 2) & 3, big: !!(tk & 16), cat: !!(tk & 32), x, y, z, vx: r.i16() / 50, vy: r.i16() / 50, vz: r.i16() / 50 });
   }
   const bigBalls: BigBallState[] = [];
   for (let n = r.u8(); n > 0; n--) {
