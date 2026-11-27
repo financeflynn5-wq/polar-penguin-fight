@@ -183,3 +183,23 @@ canvas { display: block; }
 .card.ride .ridebar { height: 9px; width: 150px; margin-top: 6px; }
 .card.ride .ridebar > div { width: 100%; background: linear-gradient(90deg, #7fe0a0, #d8ffe2); transition: width .15s; }
 .card.ride .ridebar > div.low { background: linear-gradient(90deg, #ff6b5a, #ffb199); }
+/* guns */
+.card.gun { border-color: rgba(98,214,255,.75); opacity: .78; }
+.card.gun.cocoa { border-color: rgba(255,157,77,.8); }
+.card.gun.out { opacity: 1; box-shadow: 0 0 16px rgba(98,214,255,.45); }
+.card.gun.cocoa.out { box-shadow: 0 0 16px rgba(255,157,77,.5); }
+.card.gun .label { color: #bfeeff; }
+.card.gun.cocoa .label { color: #ffd0a3; }
+.tank { height: 10px; width: 170px; border-radius: 5px; background: rgba(255,255,255,.15); overflow: hidden; }
+.tank > div { height: 100%; width: 100%; border-radius: 5px; background: linear-gradient(90deg, #2f9ad8, #a5e6ff); transition: width .12s linear; }
+.card.gun.cocoa .tank > div { background: linear-gradient(90deg, #6b3416, #c98a4b); }
+.card.gun.blade { border-color: rgba(255,92,122,.85); }
+.card.gun.blade.out { box-shadow: 0 0 16px rgba(255,92,122,.5); }
+.card.gun.blade .label { color: #ffc2cd; }
+.card.gun.blade .tank > div { background: repeating-linear-gradient(115deg, #e0263c 0 9px, #fff4f0 9px 18px); }
+.card.gun .swap { margin-top: 7px; font: 700 13px 'Fredoka'; color: #fff; opacity: .9; }
+.card.gun .swap .key { font-size: 11px; line-height: 16px; min-width: 20px; padding: 1px 5px; }
+.chillfx { position: absolute; inset: 0; pointer-events: none; opacity: 0; transition: opacity .35s;
+  background: radial-gradient(ellipse at center, transparent calc(72% - var(--chill, 0) * 34%), rgba(120,205,255,.5) 100%);
+  box-shadow: inset 0 0 calc(40px + var(--chill, 0) * 90px) rgba(190,235,255,.75); }
+.chillfx.on { opacity: 1; }

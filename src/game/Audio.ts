@@ -133,6 +133,20 @@ export class Audio {
   grab() { this.tone(520, 0.08, 0.12, 'triangle', 780); this.tone(780, 0.1, 0.1, 'triangle', 1040, 0.06); }
   stash() { [700, 600, 500].forEach((f, i) => this.tone(f, 0.08, 0.1, 'triangle', undefined, i * 0.05)); }
   click() { this.tone(900, 0.05, 0.08, 'triangle', 1200); }
+  /** the Hot Chocolate Blaster: a wet hiss per squirt */
+  cocoaSpray(x: number, y: number, z: number) { this.noiseBurst(0.11, 2600 + Math.random() * 700, 0.7, 0.13, 'bandpass', 1300, x, y, z); }
+  /** the Freeze Soaker: a pump-squirt, then a glassy tick */
+  waterShot(x: number, y: number, z: number) { this.noiseBurst(0.13, 900, 1.4, 0.3, 'bandpass', 3200, x, y, z); this.tone(1250, 0.08, 0.05, 'sine', 1900, 0.02, x, y, z); }
+  /** soaked: crackling ice */
+  freeze(x: number, y: number, z: number) { this.noiseBurst(0.16, 5200, 3, 0.2, 'bandpass', 7400, x, y, z); [2637, 3136].forEach((f, i) => this.tone(f, 0.16, 0.06, 'triangle', undefined, i * 0.04, x, y, z)); }
+  /** feet out from under you on an ice patch */
+  slip(x: number, y: number, z: number) { this.tone(880, 0.3, 0.12, 'sine', 300, 0, x, y, z); this.noiseBurst(0.3, 3400, 1, 0.14, 'highpass', 1500, x, y, z); }
+  gunEmpty() { this.tone(330, 0.09, 0.1, 'square', 220); this.tone(220, 0.12, 0.08, 'square', 160, 0.08); }
+  /** the Candy Cane Blade: a swish, a crunchy bonk, a ting off a snowball, and the snap when it breaks */
+  bladeSwing(x: number, y: number, z: number) { this.noiseBurst(0.17, 1200, 1.1, 0.22, 'bandpass', 4200, x, y, z); }
+  bladeHit(x: number, y: number, z: number) { this.tone(190, 0.13, 0.22, 'triangle', 85, 0, x, y, z); this.noiseBurst(0.09, 3200, 1, 0.26, 'highpass', 1300, x, y, z); this.tone(1750, 0.07, 0.07, 'triangle', 2300, 0.01, x, y, z); }
+  bladeBlock(x: number, y: number, z: number) { this.tone(2200, 0.11, 0.1, 'triangle', 3100, 0, x, y, z); this.noiseBurst(0.07, 4800, 2, 0.14, 'bandpass', 2600, x, y, z); }
+  bladeSnap() { this.noiseBurst(0.06, 2400, 1, 0.3, 'highpass', 900); this.tone(760, 0.14, 0.12, 'triangle', 190, 0.02); }
   noSnow() { this.tone(240, 0.12, 0.08, 'square', 200); }
   whistle() {
     if (!this.ctx || this.muted) return;

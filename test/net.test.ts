@@ -79,6 +79,15 @@ await new Promise(r => setTimeout(r, 50));
 assert.ok(room.join(C.c)); players.push(C);
 await new Promise(r => setTimeout(r, 200));
 STEP(60 * 70, () => {});
+// guns: put one in a penguin's mittens, soak another, and freeze a patch, so the last snapshot has all of it to carry
+{
+  const w = room.world, bots = w.penguins.filter(p => p.bot && p.alive);
+  bots[0].gun = 2; bots[0].gunAmmo = 7;
+  bots[1].chill = 0.5; bots[1].chillT = 30;
+  const g = w.field.surfaceBelow(-12, 26, 40, 0, 30)!;
+  w.guns.patches.push({ id: 900, x: -12, y: g, z: 40, r: 1.5, t: 9 });
+  STEP(2, () => {});
+}
 const ms = performance.now() - t0;
 for (const b of players) drain(b);
 const f = room.world.field;
@@ -102,6 +111,21 @@ for (const s of last.penguins) {
   const p = room.world.penguin(s.id)!;
   assert.ok(s.streak === p.streak && s.rewards.join() === p.rewards.join() && s.turretSnow === Math.round(p.turretSnow) && !!s.turretAt === !!p.turretAt, `${p.name}'s streak and turret building match`);
 }
+// guns: who is carrying what, who is soaked, the guns waiting to be picked up and the ice patches
+for (const s of last.penguins) {
+  const p = room.world.penguin(s.id)!;
+  assert.ok(s.gun === p.gun && s.gunAmmo === p.gunAmmo && s.gunOut === p.gunOut && Math.abs(s.chill - p.chill) < 0.01 && Math.abs(s.slipT - p.slipT) < 0.02, `${p.name}'s gun and chill match`);
+}
+assert.ok(last.penguins.some(s => s.gun === 2) && last.penguins.some(s => s.chill > 0.4), 'a carried gun and a soaked penguin come through');
+assert.deepEqual(last.crates.map(c => [c.id, c.gun, c.ammo, c.pad < 0]), room.world.guns.crates.map(c => [c.id, c.gun, c.ammo, c.pad < 0]), 'guns waiting to be picked up match');
+assert.ok(last.crates.every((c, i) => Math.hypot(c.x - room.world.guns.crates[i].x, c.z - room.world.guns.crates[i].z) < 0.01), 'and they are where the server has them');
+assert.deepEqual(last.patches.map(q => q.id), room.world.guns.patches.map(q => q.id), 'ice patches match');
+assert.ok(last.patches.some(q => q.id === 900 && Math.abs(q.x + 12) < 0.02 && Math.abs(q.z - 40) < 0.02 && Math.abs(q.r - 1.5) < 0.03), 'an ice patch comes through where it is');
+{
+  const i = emptyInput(); i.gun = true; i.fire = true;
+  assert.ok(P.unpackInput(P.packInput(i), emptyInput()).gun, 'the gun-out input survives the trip');
+}
+console.log(`ok: ${MODE}: guns: ${last.penguins.filter(s => s.gun).length} carried, ${last.crates.length} waiting, ${last.patches.length} ice patch(es)`);
 console.log(`ok: ${MODE}: Flynn built ${built} turret(s); ${last.turrets.length} turret(s), ${last.points.length} flag(s), ${last.balls.length} snowball(s) in flight in the last snapshot`);
 const secs = (60 * 90) / 60;
 console.log(`ok: 3 players, ${room.world.phase} phase, scores ${room.world.scores.join('-')}; ${(ms / (60 * 90)).toFixed(3)} ms per tick incl. encoding`);

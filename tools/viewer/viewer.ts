@@ -1,11 +1,18 @@
 // Dev-only model viewer (npm run dev, then open /tools/viewer/). Lights the Blender assets like the game does so
 // they can be checked and screenshotted in any pose: see tools/viewer/shots.mjs.
 import * as THREE from 'three';
-import { loadAssets } from '../../src/render/Assets';
+import { Assets, loadAssets } from '../../src/render/Assets';
 import { PenguinModel, setPenguinQuality } from '../../src/render/PenguinModel';
 import { Penguin } from '../../src/sim/World';
 import { PostFX } from '../../src/render/PostFX';
 import { makeVehicleModel, VehicleKind } from '../../src/render/VehicleModel';
+import { GUN_HOLD, GUN_BACK, GUN_BACK_Q } from '../../src/render/GunsView';
+
+/** How a penguin carries the Candy Cane Blade: grip beside the right hip, blade up and a little forward ('YXZ' angles). */
+const BLADE_CARRY = { at: new THREE.Vector3(0.5, 0.6, -0.12), rx: 1.05, ry: 0.12, rz: -0.18 };
+/** The middle of a mitten, seen from its hand joint (the flipper's rest direction, 0.077 m on from the joint). */
+const MITTEN = new THREE.Vector3(0.0447, -0.0627, 0);
+const _v = new THREE.Vector3();
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
 renderer.setSize(innerWidth, innerHeight);
@@ -57,14 +64,15 @@ post.setSize(innerWidth, innerHeight, 1);
 const TEAM_TINT = [0x2f7ee8, 0xff8a2e];
 const vehicles: THREE.Group[] = [];
 
-interface Actor { model: PenguinModel; p: Penguin; tick?: (p: Penguin, t: number, dt: number) => void }
+interface Actor { model: PenguinModel; p: Penguin; tick?: (p: Penguin, t: number, dt: number) => void; after?: () => void }
 const actors: Actor[] = [];
+const props: THREE.Object3D[] = [];
 let time = 0;
 let usePost = true;
 
 const api = {
   ready: false,
-  clear() { for (const a of actors) a.model.dispose(scene); actors.length = 0; for (const v of vehicles) scene.remove(v); vehicles.length = 0; },
+  clear() { for (const a of actors) a.model.dispose(scene); actors.length = 0; for (const o of props) o.removeFromParent(); props.length = 0; for (const v of vehicles) scene.remove(v); vehicles.length = 0; },
   /** Add a vehicle (front toward `yaw`, radians from +x turning toward -z). riders: put a penguin on every seat. */
   async vehicle(opts: { kind: VehicleKind; team?: number; x?: number; z?: number; yaw?: number; riders?: boolean }) {
     const g = await makeVehicleModel(opts.kind, TEAM_TINT[opts.team ?? 0]);
@@ -117,6 +125,34 @@ const api = {
     vehicles[i].traverse(o => { if (o.name && !(o as THREE.Mesh).isMesh) out[o.name] = [...o.getWorldPosition(new THREE.Vector3()).sub(vehicles[i].position).toArray().map(v => +v.toFixed(3)), o.userData.radius ?? 0]; });
     return out;
   },
+  /** Add a gun ('cocoa' | 'water' | 'blade') on its own. It points along -Z when yaw is 0, like a penguin. Returns where its named nodes (muzzle and foregrip, or tip and mid) ended up. */
+  gun(name: string, opts: { x?: number; y?: number; z?: number; yaw?: number; pitch?: number; roll?: number; scale?: number } = {}) {
+    const src = Assets.guns.get(name);
+    if (!src) throw new Error('no gun called ' + name);
+    const g = src.clone();
+    g.position.set(opts.x ?? 0, opts.y ?? 1, opts.z ?? 0);
+    g.rotation.set(opts.pitch ?? 0, opts.yaw ?? 0, opts.roll ?? 0, 'YXZ');
+    g.scale.setScalar(opts.scale ?? 1);
+    scene.add(g); props.push(g);
+    const out: Record<string, number[]> = {};
+    g.updateMatrixWorld(true);
+    g.traverse(o => { if (!(o as THREE.Mesh).isMesh) out[o.name] = o.getWorldPosition(new THREE.Vector3()).toArray(); });
+    return out;
+  },
+  /** Put a gun on penguin i where the game does (GUN_HOLD and GUN_BACK in src/render/GunsView.ts; the game also poses the arm): in its mittens, or slung on its back. The blade is carried point up in the right mitten. */
+  hold(i: number, name: string, where: 'hand' | 'back' = 'hand') {
+    const g = Assets.guns.get(name)!.clone();
+    if (name === 'blade' && where === 'hand') {
+      // the blade follows the right mitten, wherever the pose puts it, so the grip always sits in the mitten
+      g.position.copy(BLADE_CARRY.at); g.rotation.set(BLADE_CARRY.rx, BLADE_CARRY.ry, BLADE_CARRY.rz, 'YXZ');
+      const a = actors[i], hand = a.model.root.getObjectByName('handR');
+      if (hand) a.after = () => { a.model.root.updateMatrixWorld(true); g.position.copy(a.model.root.worldToLocal(hand.localToWorld(_v.copy(MITTEN)))); };
+    } else if (where === 'hand') g.position.copy(GUN_HOLD);
+    else { g.position.copy(GUN_BACK); g.quaternion.copy(GUN_BACK_Q); g.scale.setScalar(0.92); }
+    actors[i].model.root.add(g); props.push(g);
+  },
+  /** Names of the guns that loaded. */
+  guns() { return [...Assets.guns.keys()]; },
   /** Add a penguin. state: fields to set on its sim Penguin; anim: 'walk' | 'run' moves it as if walking. */
   add(opts: { team?: number; hat?: string; x?: number; z?: number; yaw?: number; name?: string | null; state?: Partial<Penguin>; anim?: string }) {
     const p = new Penguin(actors.length, opts.name ?? '', opts.team ?? 0, opts.hat ?? 'none', false);
@@ -143,7 +179,7 @@ const api = {
   run(n = 1, dt = 1 / 60) {
     for (let i = 0; i < n; i++) {
       time += dt;
-      for (const a of actors) { a.tick?.(a.p, time, dt); a.model.camDist = camera.position.distanceTo(a.model.root.position); a.model.update(a.p, 1, dt, time, false); }
+      for (const a of actors) { a.tick?.(a.p, time, dt); a.model.camDist = camera.position.distanceTo(a.model.root.position); a.model.update(a.p, 1, dt, time, false); a.after?.(); }
     }
     if (usePost) post.render(dt, 0); else renderer.render(scene, camera);
   },
@@ -159,6 +195,7 @@ if (!new URLSearchParams(location.search).has('script')) {
   hats.forEach((h, i) => api.add({ team: i % 2, hat: h, x: (i - 4.5) * 1.1, yaw: Math.PI, anim: i % 3 === 1 ? 'walk' : undefined }));
   void api.vehicle({ kind: 'snowmobile', team: 0, x: -3.6, z: 3.2, yaw: 2.2, riders: true });
   void api.vehicle({ kind: 'snowplow', team: 1, x: 3.2, z: 5.2, yaw: 1.2, riders: true });
+  [...Assets.guns.keys()].forEach((n, i) => api.gun(n, { x: (i - 0.5) * 1.1, y: 0.75, z: -1.6, yaw: Math.PI / 2 }));
   api.camera(0, 1.6, -9, 0, 0.6, 0, 35);
   let last = performance.now();
   const loop = (now: number) => { const dt = Math.min(0.05, (now - last) / 1000); last = now; api.run(1, dt); requestAnimationFrame(loop); };

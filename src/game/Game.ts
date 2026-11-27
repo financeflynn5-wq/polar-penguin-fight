@@ -12,7 +12,9 @@ import { PlaygroundView } from '../render/PlaygroundView';
 import { Decals } from '../render/Decals';
 import { World, Penguin, GameEvent, solveThrow, lookVelocity, MatchOptions } from '../sim/World';
 import { BotBrain } from '../sim/Bot';
-import { CFG, MITTEN_NAMES, REWARD_NAMES } from '../sim/config';
+import { CFG, MITTEN_NAMES, REWARD_NAMES, GUN_NAMES } from '../sim/config';
+import { GUN_COCOA, GUN_BLADE } from '../sim/Guns';
+import { GunsView } from '../render/GunsView';
 import { LandmarksView } from '../render/Landmarks';
 import { TurretsView } from '../render/Turrets';
 import { FlagsView } from '../render/Flags';
@@ -57,6 +59,10 @@ export class Game {
   private rideYaw: number | null = null;
   private camClear = 20;
   private taughtDrive = false;
+  private gunsView!: GunsView;
+  /** X swaps between the gun you picked up and your snowballs */
+  private gunWanted = true;
+  private taughtGun = false;
   mapId: MapId = 'bay';
   private rewardQueued = 0;
   private taughtTurret = false;
@@ -115,6 +121,7 @@ export class Game {
     this.input.onKey = code => {
       if (code === 'Tab') this.hud?.setBoard(true);
       if (code === 'Digit1' || code === 'Digit2' || code === 'Digit3') this.rewardQueued = +code.slice(5);
+      if (code === 'KeyX' && this.mode === 'play' && this.world?.player.gun) { this.gunWanted = !this.gunWanted; this.audio.click(); }
     };
     window.addEventListener('keyup', e => { if (e.code === 'Tab') this.hud?.setBoard(false); });
     window.addEventListener('resize', () => this.resize());
@@ -177,6 +184,9 @@ export class Game {
     this.scene.add(this.flagsView.group);
     this.vehiclesView = new VehiclesView();
     this.scene.add(this.vehiclesView.group);
+    this.gunsView?.dispose();
+    this.gunsView = new GunsView(this.map.field, this.particles);
+    this.scene.add(this.gunsView.group);
     this.trails.clear();
   }
 
@@ -363,6 +373,7 @@ export class Game {
     pi.use = playing && inp.down('KeyE');
     pi.roll = playing && inp.down('KeyG');
     pi.turret = playing && inp.down('KeyT');
+    pi.gun = this.gunWanted;
     if (this.rewardQueued && playing) pi.reward = this.rewardQueued;
     this.rewardQueued = 0;
 
@@ -432,6 +443,7 @@ export class Game {
     for (const b of w.snowballs) this.particles.spawn(PKind.Puff, b.px + (b.x - b.px) * alpha, b.py + (b.y - b.py) * alpha, b.pz + (b.z - b.pz) * alpha, 0, 0.1, 0, 0.1, 0.3);
     this.props.update(w, alpha, dt, this.time);
     this.turretsView.update(w, dt, this.time, this.camera.position);
+    this.gunsView.update(w, id => this.models.get(id)?.root, dt, this.time);
     this.updateAimVisuals(me);
 
     // audio beds
@@ -482,6 +494,7 @@ export class Game {
     if (pi.build && me.slumping) hint = 'Too thin to go higher: the snow is sliding down to widen the base';
     if (me.noSnowT > 0 && !riding && (pi.pack || pi.build || pi.dig || pi.roll || pi.turret)) hint = me.carried >= CFG.maxCarry && pi.pack ? 'Your mittens are full (5): stash or throw!' : 'No loose snow here';
     if (w.phase === 'build' && pi.fire && me.carried > 0) hint = 'No throwing until the fight starts!';
+    if (!hint && me.alive && me.chill > 0.05) hint = me.chill > 0.9 ? 'Frozen stiff! Hot chocolate thaws you out' : 'Soaked! You\'re slowed down';
     this.hud!.update(w, me, dt, hint);
   }
 
@@ -708,7 +721,7 @@ export class Game {
     // throw arc: faint whenever you're holding snowballs, bold while you wind up
     const w = this.world!;
     const busy = pi.dig || pi.build || pi.plow || pi.pack || pi.turret;
-    if (me.alive && w.phase === 'fight' && me.carried > 0 && (me.charging || !busy) && !(me.riding >= 0 && me.seat === 0)) {
+    if (me.alive && w.phase === 'fight' && me.carried > 0 && !me.gunOut && (me.charging || !busy) && !(me.riding >= 0 && me.seat === 0)) {
       const speed = this.throwSpeed(me);
       const h = w.handPos(me);
       const v = solveThrow(h, this.throwAim(me), speed, CFG.snowballGravity) ?? lookVelocity(me.lookYaw, me.lookPitch + 0.07, speed);
@@ -836,7 +849,7 @@ export class Game {
         const victim = w.penguin(e.pid)!;
         const killer = w.penguin(e.by);
         H.feed(killer, victim, e.cause);
-        if (e.by === me.id && e.pid !== me.id) H.banner('SPLAT!', e.cause === 'turret' ? `Your turret got ${victim.name}` : e.cause === 'vehicle' ? `You ran over ${victim.name}` : `You got ${victim.name}`, 1.3);
+        if (e.by === me.id && e.pid !== me.id) H.banner('SPLAT!', e.cause === 'turret' ? `Your turret got ${victim.name}` : e.cause === 'vehicle' ? `You ran over ${victim.name}` : e.cause === 'cocoa' ? `You melted ${victim.name}` : e.cause === 'blade' ? `You whacked ${victim.name}` : `You got ${victim.name}`, 1.3);
         break;
       }
       case 'turretBuilt': {
@@ -1004,6 +1017,75 @@ export class Game {
         A.fanfare(win);
         this.input.unlock();
         this.hooks?.onGameOver(w);
+        break;
+      }
+      case 'gunSpawn': {
+        P.sparkle(e.x, e.y, e.z, 40, e.gun === GUN_COCOA || e.gun === GUN_BLADE ? 1 : 0.5, e.gun === GUN_COCOA ? 0.7 : e.gun === GUN_BLADE ? 0.5 : 0.9, e.gun === GUN_COCOA ? 0.4 : e.gun === GUN_BLADE ? 0.6 : 1);
+        if (e.team === me.team) { A.flake(e.x, e.y, e.z); H.toast(`A ${GUN_NAMES[e.gun]} is up on your team's ${e.gun === GUN_COCOA ? 'north' : e.gun === GUN_BLADE ? 'middle' : 'south'} gun pad!`, 2.4); }
+        break;
+      }
+      case 'gunGrab': {
+        P.sparkle(e.x, e.y, e.z, 36, e.gun === GUN_COCOA || e.gun === GUN_BLADE ? 1 : 0.5, e.gun === GUN_COCOA ? 0.7 : e.gun === GUN_BLADE ? 0.5 : 0.9, e.gun === GUN_COCOA ? 0.4 : e.gun === GUN_BLADE ? 0.6 : 1);
+        A.packDone(e.x, e.y, e.z);
+        if (e.pid === me.id) {
+          this.gunWanted = true;
+          A.grab();
+          const what = e.gun === GUN_COCOA ? 'Hold the mouse to melt their walls and snowmen'
+            : e.gun === GUN_BLADE ? 'Get close and click to swing. Two whacks splat a penguin, and a swing smashes snowballs out of the air'
+            : 'Soak them to slow them down. A miss leaves a slippery ice patch';
+          if (!this.taughtGun) { this.taughtGun = true; H.banner(GUN_NAMES[e.gun].toUpperCase() + '!', `${what}. X swaps back to snowballs`, 3.6); }
+          else H.banner(GUN_NAMES[e.gun].toUpperCase() + '!', what, 2.2);
+        }
+        break;
+      }
+      case 'gunDrop': P.burst(e.x, e.y, e.z, 10, 2, 1); break;
+      case 'gunShot': {
+        this.gunsView.shot(e, w.penguin(e.pid)?.team ?? 0);
+        if (e.gun === GUN_COCOA) { if (Math.random() < 0.6) A.cocoaSpray(e.x, e.y, e.z); } else A.waterShot(e.x, e.y, e.z);
+        break;
+      }
+      case 'gunEmpty': {
+        if (e.gun === GUN_BLADE) {
+          // the candy cane snaps: red and white bits everywhere
+          const p = w.penguin(e.pid);
+          if (p) for (let k = 0; k < 16; k++) { const a = Math.random() * Math.PI * 2, sp = 1 + Math.random() * 3; P.spawn(PKind.Grain, p.x, p.y + 0.9, p.z, Math.cos(a) * sp, 2 + Math.random() * 3, Math.sin(a) * sp, 0.05 + Math.random() * 0.04, 1, 1, k % 2 ? 0.25 : 0.95, k % 2 ? 0.3 : 0.95); }
+          if (e.pid === me.id) { A.bladeSnap(); H.toast('Your Candy Cane Blade snapped: back to snowballs', 2); }
+        } else if (e.pid === me.id) { A.gunEmpty(); H.toast(`${GUN_NAMES[e.gun]} is empty: back to snowballs`, 2); }
+        break;
+      }
+      case 'bladeSwing': { const p = w.penguin(e.pid); if (p) A.bladeSwing(p.x, p.y + 0.8, p.z); break; }
+      case 'bladeHit': {
+        A.bladeHit(e.x, e.y, e.z);
+        P.sparkle(e.x, e.y, e.z, 14, 1, 0.6, 0.7);
+        for (let k = 0; k < 8; k++) { const a = Math.random() * Math.PI * 2, sp = 1.5 + Math.random() * 3; P.spawn(PKind.Grain, e.x, e.y, e.z, Math.cos(a) * sp, 1.5 + Math.random() * 3, Math.sin(a) * sp, 0.04 + Math.random() * 0.03, 0.8, 1, k % 2 ? 0.25 : 0.95, k % 2 ? 0.3 : 0.95); }
+        break;
+      }
+      case 'bladeBlock': {
+        A.bladeBlock(e.x, e.y, e.z);
+        P.burst(e.x, e.y, e.z, 18, 3.5, 1);
+        P.sparkle(e.x, e.y, e.z, 10, 1, 0.9, 0.95);
+        if (e.pid === me.id) H.toast('Smashed a snowball!', 0.9);
+        break;
+      }
+      case 'soak': {
+        A.freeze(e.x, e.y, e.z);
+        if (e.by === me.id) { H.hitMarker(e.chill >= 1); A.hitMarker(); }
+        if (e.pid === me.id) H.splatScreen();
+        break;
+      }
+      case 'thaw': {
+        const p = w.penguin(e.pid);
+        if (p) for (let k = 0; k < 8; k++) P.spawn(PKind.Puff, p.x + (Math.random() - 0.5) * 0.6, p.y + 0.3 + Math.random() * 0.7, p.z + (Math.random() - 0.5) * 0.6, 0, 1.5 + Math.random(), 0, 0.35, 0.9);
+        if (e.pid === me.id) H.toast('Thawed out!', 1.4);
+        break;
+      }
+      case 'icePatch': A.freeze(e.x, e.y, e.z); P.sparkle(e.x, e.y + 0.2, e.z, 14, 0.7, 0.92, 1); break;
+      case 'slip': {
+        const p = w.penguin(e.pid);
+        if (!p) break;
+        A.slip(p.x, p.y, p.z);
+        P.burst(p.x, p.y, p.z, 10, 2.5, 0.8);
+        if (e.pid === me.id) H.toast('WHOA! Ice!', 1.2);
         break;
       }
       case 'respawn': break;

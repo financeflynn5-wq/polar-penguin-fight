@@ -10,10 +10,12 @@
 //   JSON text: { t: 'roster', roster } when someone joins or leaves, { t: 'pong', c }, { t: 'joinErr', err }
 //   binary MSG_MATCH: a match starts (or you just joined one): match info JSON + the whole snow field, deflated
 //   binary MSG_SNAP: 30 times a second: every penguin, snowball, big ball, snowflake, turret, flag and vehicle, the surfboard,
-//                    the snow that changed, and what happened (hits, splats, throws...)
+//                    the guns waiting to be picked up, the ice patches, the snow that changed, and what happened
+//                    (hits, splats, throws, squirts...)
 import type { World, Penguin, PenguinInput, Action, Phase, GameEvent, RosterEntry, CapturePoint } from '../sim/World';
 import type { Mode } from '../world/Maps';
 import { Vehicle, VEHICLE_KINDS, VehicleKind } from '../sim/Vehicles';
+import type { GunCrate, IcePatch } from '../sim/Guns';
 
 export const PROTOCOL = 5;
 export const TICK_HZ = 60;
@@ -36,13 +38,14 @@ export interface MatchInfo {
 export type InputRow = [number, number, number, number, number, number?, number?, number?];
 const B = { jump: 1, slide: 2, fire: 4, plow: 8, pack: 16, dig: 32, build: 64, use: 128, roll: 256, turret: 512 };
 const REWARD_SHIFT = 10; // bits 10-11: which splat-streak reward to use (0 = none)
+const GUN_BIT = 4096; // bit 12: gun out (use the gun you picked up instead of throwing)
 
 const r3 = (v: number) => Math.round(v * 1000) / 1000;
 
 export function packInput(i: PenguinInput): InputRow {
   const bits = (i.jump ? B.jump : 0) | (i.slide ? B.slide : 0) | (i.fire ? B.fire : 0) | (i.plow ? B.plow : 0) | (i.pack ? B.pack : 0)
     | (i.dig ? B.dig : 0) | (i.build ? B.build : 0) | (i.use ? B.use : 0) | (i.roll ? B.roll : 0) | (i.turret ? B.turret : 0)
-    | ((i.reward & 3) << REWARD_SHIFT);
+    | ((i.reward & 3) << REWARD_SHIFT) | (i.gun ? GUN_BIT : 0);
   const row: InputRow = [i.moveX, i.moveZ, r3(i.yaw), r3(i.pitch), bits];
   if (i.aim) row.push(r3(i.aim.x), r3(i.aim.y), r3(i.aim.z));
   return row;
@@ -58,7 +61,7 @@ export function unpackInput(row: unknown, out: PenguinInput) {
   const bits = num(r[4], 0, 0xffff) | 0;
   out.jump = !!(bits & B.jump); out.slide = !!(bits & B.slide); out.fire = !!(bits & B.fire); out.plow = !!(bits & B.plow);
   out.pack = !!(bits & B.pack); out.dig = !!(bits & B.dig); out.build = !!(bits & B.build); out.use = !!(bits & B.use); out.roll = !!(bits & B.roll);
-  out.turret = !!(bits & B.turret); out.reward = (bits >> REWARD_SHIFT) & 3;
+  out.turret = !!(bits & B.turret); out.reward = (bits >> REWARD_SHIFT) & 3; out.gun = !!(bits & GUN_BIT);
   out.aim = r.length >= 8 ? { x: num(r[5], -500, 500), y: num(r[6], -50, 200), z: num(r[7], -500, 500) } : null;
   return out;
 }
@@ -66,7 +69,7 @@ export function unpackInput(row: unknown, out: PenguinInput) {
 export function copyInput(src: PenguinInput, out: PenguinInput) {
   out.moveX = src.moveX; out.moveZ = src.moveZ; out.yaw = src.yaw; out.pitch = src.pitch;
   out.jump = src.jump; out.slide = src.slide; out.fire = src.fire; out.plow = src.plow; out.pack = src.pack;
-  out.dig = src.dig; out.build = src.build; out.use = src.use; out.roll = src.roll; out.turret = src.turret; out.reward = src.reward;
+  out.dig = src.dig; out.build = src.build; out.use = src.use; out.roll = src.roll; out.turret = src.turret; out.reward = src.reward; out.gun = src.gun;
   out.aim = src.aim ? { x: src.aim.x, y: src.aim.y, z: src.aim.z } : null;
   return out;
 }
@@ -134,19 +137,20 @@ export function decodeMatch(buf: Uint8Array): { info: MatchInfo; field: Uint8Arr
 // ───────────────────────── snapshots ─────────────────────────
 const ACTIONS: Action[] = ['idle', 'plow', 'pack', 'dig', 'build', 'charge', 'throw', 'slide', 'down'];
 const PHASES: Phase[] = ['build', 'fight', 'end'];
-const F = { alive: 1, grounded: 2, sliding: 4, surfing: 8, onIce: 16, onProp: 32, onSlide: 64, charging: 128, aimOk: 256, slumping: 512, turretAt: 1024 };
+const F = { alive: 1, grounded: 2, sliding: 4, surfing: 8, onIce: 16, onProp: 32, onSlide: 64, charging: 128, aimOk: 256, slumping: 512, turretAt: 1024, gunOut: 2048 };
 
 export interface PenguinState {
   id: number;
   x: number; y: number; z: number; vx: number; vy: number; vz: number;
   yaw: number; lookYaw: number; lookPitch: number;
   alive: boolean; grounded: boolean; sliding: boolean; surfing: boolean; onIce: boolean; onProp: boolean; onSlide: boolean;
-  charging: boolean; aimOk: boolean; slumping: boolean;
+  charging: boolean; aimOk: boolean; slumping: boolean; gunOut: boolean;
   action: Action; charge: number; throwAnim: number; throwCd: number;
   carried: number; health: number; mitten: number; invuln: number; downT: number; packProgress: number;
   buildBlock: number; noSnowT: number; slideSlowT: number; plowLoad: number; splats: number; downs: number; lastHitBy: number;
   streak: number; rewards: [number, number, number]; frenzyT: number;
   turretSnow: number; turretAt: { x: number; y: number; z: number } | null; turretBlock: number;
+  gun: number; gunAmmo: number; chill: number; slipT: number;
 }
 export interface BallState { id: number; team: number; kind: number; x: number; y: number; z: number; vx: number; vy: number; vz: number; }
 export interface BigBallState { id: number; x: number; y: number; z: number; r: number; vx: number; vy: number; vz: number; grounded: boolean; }
@@ -174,6 +178,8 @@ export interface Snapshot {
   /** Breakthrough: seconds until the attackers' next snowplow */
   plowT: number;
   board: { active: boolean; holder: number; x: number; y: number; z: number; yaw: number };
+  crates: GunCrate[];
+  patches: IcePatch[];
   snow: Uint8Array; // 5 bytes per changed voxel: 24-bit index, density, hardness
   events: GameEvent[];
 }
@@ -218,6 +224,11 @@ export function encodeSnapshot(w: World, tick: number, snow: Uint8Array, events:
   const vehicles = w.vehicles.filter(v => v.alive);
   o.u8(vehicles.length);
   for (const v of vehicles) writeVehicle(o, v);
+  const g = w.guns;
+  o.u8(g.crates.length);
+  for (const c of g.crates) { o.u16(c.id & 0xffff); o.u8(c.gun | (c.pad < 0 ? 128 : 0)); o.f32(c.x); o.f32(c.y); o.f32(c.z); o.u8(clampU8(c.ammo)); }
+  o.u8(g.patches.length);
+  for (const q of g.patches) { o.u16(q.id & 0xffff); o.i16(clampI16(q.x * 100)); o.i16(clampI16(q.y * 100)); o.i16(clampI16(q.z * 100)); o.u8(clampU8(q.r * 50)); o.u8(clampU8(q.t * 10)); }
   o.u32(snow.length / 5); o.bytes(snow);
   const ev = enc.encode(events.length ? JSON.stringify(events, (_k, v) => (typeof v === 'number' ? Math.round(v * 100) / 100 : v)) : '');
   o.u32(ev.length); o.bytes(ev);
@@ -231,7 +242,7 @@ function writePenguin(o: Writer, p: Penguin) {
   o.i16(clampI16(wrapA(p.yaw) * 10000)); o.i16(clampI16(wrapA(p.lookYaw) * 10000)); o.i16(clampI16(p.lookPitch * 10000));
   o.u16((p.alive ? F.alive : 0) | (p.grounded ? F.grounded : 0) | (p.sliding ? F.sliding : 0) | (p.surfing ? F.surfing : 0)
     | (p.onIce ? F.onIce : 0) | (p.onProp ? F.onProp : 0) | (p.onSlide ? F.onSlide : 0) | (p.charging ? F.charging : 0)
-    | (p.aimOk ? F.aimOk : 0) | (p.slumping ? F.slumping : 0) | (p.turretAt ? F.turretAt : 0));
+    | (p.aimOk ? F.aimOk : 0) | (p.slumping ? F.slumping : 0) | (p.turretAt ? F.turretAt : 0) | (p.gunOut ? F.gunOut : 0));
   o.u8(Math.max(0, ACTIONS.indexOf(p.action)));
   o.u8(clampU8(p.charge * 255)); o.u8(clampU8(p.throwAnim * 1000)); o.u8(clampU8(p.throwCd * 500));
   o.u8(clampU8(p.carried)); o.u8(clampU8(p.health)); o.u8(clampU8(p.mitten));
@@ -241,6 +252,7 @@ function writePenguin(o: Writer, p: Penguin) {
   o.u8(clampU8(p.streak)); o.u8(clampU8(p.rewards[0])); o.u8(clampU8(p.rewards[1])); o.u8(clampU8(p.rewards[2]));
   o.u8(clampU8(p.frenzyT * 20)); o.u16(clampU16(p.turretSnow)); o.u8(clampU8(p.turretBlock));
   if (p.turretAt) { o.f32(p.turretAt.x); o.f32(p.turretAt.y); o.f32(p.turretAt.z); }
+  o.u8(p.gun); o.u8(clampU8(p.gunAmmo)); o.u8(clampU8(p.chill * 255)); o.u8(clampU8(p.slipT * 100));
 }
 
 function writeVehicle(o: Writer, v: Vehicle) {
@@ -281,13 +293,15 @@ function readPenguin(r: Reader): PenguinState {
   const streak = r.u8(), rewards: [number, number, number] = [r.u8(), r.u8(), r.u8()];
   const frenzyT = r.u8() / 20, turretSnow = r.u16(), turretBlock = r.u8();
   const turretAt = fl & F.turretAt ? { x: r.f32(), y: r.f32(), z: r.f32() } : null;
+  const gun = r.u8(), gunAmmo = r.u8(), chill = r.u8() / 255, slipT = r.u8() / 100;
   return {
     id, x, y, z, vx, vy, vz, yaw, lookYaw, lookPitch,
     alive: !!(fl & F.alive), grounded: !!(fl & F.grounded), sliding: !!(fl & F.sliding), surfing: !!(fl & F.surfing),
     onIce: !!(fl & F.onIce), onProp: !!(fl & F.onProp), onSlide: !!(fl & F.onSlide), charging: !!(fl & F.charging),
-    aimOk: !!(fl & F.aimOk), slumping: !!(fl & F.slumping),
+    aimOk: !!(fl & F.aimOk), slumping: !!(fl & F.slumping), gunOut: !!(fl & F.gunOut),
     action, charge, throwAnim, throwCd, carried, health, mitten, invuln, downT, packProgress, buildBlock, noSnowT, slideSlowT,
     plowLoad, splats, downs, lastHitBy, streak, rewards, frenzyT, turretSnow, turretAt, turretBlock,
+    gun, gunAmmo, chill, slipT,
   };
 }
 
@@ -329,12 +343,19 @@ export function decodeSnapshot(buf: Uint8Array): Snapshot {
   const plowT = r.f32();
   const vehicles: VehicleState[] = [];
   for (let n = r.u8(); n > 0; n--) vehicles.push(readVehicle(r));
+  const crates: GunCrate[] = [];
+  for (let n = r.u8(); n > 0; n--) {
+    const id = r.u16(), gk = r.u8(), x = r.f32(), y = r.f32(), z = r.f32();
+    crates.push({ id, gun: gk & 127, x, y, z, ammo: r.u8(), pad: gk & 128 ? -1 : 0, life: 0 });
+  }
+  const patches: IcePatch[] = [];
+  for (let n = r.u8(); n > 0; n--) patches.push({ id: r.u16(), x: r.i16() / 100, y: r.i16() / 100, z: r.i16() / 100, r: r.u8() / 50, t: r.u8() / 10 });
   const snow = r.bytes(r.u32() * 5);
   const evLen = r.u32();
   const events = evLen ? JSON.parse(dec.decode(r.bytes(evLen))) as GameEvent[] : [];
   return {
     tick, ack, phase, phaseT, scores, piles, winner, sector, holdT, lastStandT, penguins, balls, bigBalls, flakes, turrets, points, vehicles, plowT,
-    board: { active, holder, x: bx, y: by, z: bz, yaw: byaw }, snow, events,
+    board: { active, holder, x: bx, y: by, z: bz, yaw: byaw }, crates, patches, snow, events,
   };
 }
 
@@ -345,6 +366,7 @@ export function applyPenguinState(p: Penguin, s: PenguinState) {
   p.alive = s.alive; p.grounded = s.grounded; p.sliding = s.sliding; p.surfing = s.surfing; p.onIce = s.onIce;
   p.onProp = s.onProp; p.onSlide = s.onSlide; p.charging = s.charging; p.aimOk = s.aimOk; p.slumping = s.slumping;
   p.action = s.action; p.charge = s.charge; p.throwAnim = s.throwAnim; p.throwCd = s.throwCd; p.frenzyT = s.frenzyT;
+  p.gunOut = s.gunOut; p.chill = s.chill; p.slipT = s.slipT; // (the chill and a slip change how you move, so they're replayed with your inputs)
   applyPenguinStats(p, s);
   p.slideSlowT = s.slideSlowT; p.plowLoad = s.plowLoad;
 }
@@ -356,6 +378,7 @@ export function applyPenguinStats(p: Penguin, s: PenguinState) {
   p.splats = s.splats; p.downs = s.downs; p.lastHitBy = s.lastHitBy;
   p.streak = s.streak; p.rewards[0] = s.rewards[0]; p.rewards[1] = s.rewards[1]; p.rewards[2] = s.rewards[2];
   p.turretSnow = s.turretSnow; p.turretBlock = s.turretBlock;
+  p.gun = s.gun; p.gunAmmo = s.gunAmmo;
   if (!s.turretAt) p.turretAt = null;
   else if (p.turretAt) { p.turretAt.x = s.turretAt.x; p.turretAt.y = s.turretAt.y; p.turretAt.z = s.turretAt.z; }
   else p.turretAt = { x: s.turretAt.x, y: s.turretAt.y, z: s.turretAt.z };

@@ -4,6 +4,8 @@ import { Penguin } from '../sim/World';
 import { TEAM_COLORS } from './Environment';
 import { makeSurfboard } from './Props';
 import { Assets } from './Assets';
+import { GUN_BLADE } from '../sim/Guns';
+import { bladePose, BladeAt } from './BladePose';
 
 // The penguin and its hats are Blender assets (tools/blender → src/assets/models). This file dresses a copy in team
 // colours and animates its skeleton. Every joint is axis-aligned at rest: x = the penguin's right, y = up, -z = ahead.
@@ -152,6 +154,8 @@ class Strand {
   dir: THREE.Vector3; vel = new THREE.Vector3();
   constructor(readonly bones: THREE.Bone[], readonly rest: THREE.Vector3, readonly phase: number) { this.dir = rest.clone(); }
 }
+
+const _blade: BladeAt = { x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0 };
 
 export class PenguinModel {
   readonly root = new THREE.Group(); // positioned at feet, yawed
@@ -485,6 +489,22 @@ export class PenguinModel {
       }
     }
     if (p.throwAnim > 0) { jaw = Math.max(jaw, 0.7); lid = LID_OPEN - 0.35; }
+
+    // a gun in the mittens (see GunsView): right flipper on the grip, left one under the barrel, shoulders squared to it
+    if (p.gunOut && (p.action === 'idle' || p.action === 'throw')) {
+      const pitch = Math.max(-0.7, Math.min(0.75, p.lookPitch));
+      if (p.gun === GUN_BLADE) {
+        // the Candy Cane Blade: the right flipper follows the grip through the carry and the swing (the swing's
+        // body twist comes from the throw pose above, which the sim's swing timer already set off)
+        const at = bladePose(p.throwAnim > 0 ? 1 - p.throwAnim / 0.25 : -1, Math.max(-0.6, Math.min(0.6, p.lookPitch)), _blade);
+        this.arm('R', at.x - 0.33, at.y - 0.72, -(at.z - 0.05)); this.elbow('R', 0.2);
+      } else {
+        this.arm('R', 0.55, -0.62 + pitch * 0.6, 1); this.elbow('R', 0.5);
+        this.arm('L', 0.5, -1, 0.3);
+        this.addRot('chest', 0, -0.22, 0);
+      }
+      lid = Math.min(lid, LID_OPEN - 0.3);
+    }
 
     // look up / down with the head
     if (p.action !== 'slide') this.addRot('head', p.lookPitch * 0.4, 0, 0);
