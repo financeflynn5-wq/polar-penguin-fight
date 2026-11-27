@@ -9,10 +9,11 @@
 // Server → browser:
 //   JSON text: { t: 'roster', roster } when someone joins or leaves, { t: 'pong', c }, { t: 'joinErr', err }
 //   binary MSG_MATCH: a match starts (or you just joined one): match info JSON + the whole snow field, deflated
-//   binary MSG_SNAP: 30 times a second: every penguin, snowball, big ball, snowflake, turret and flag, the surfboard,
+//   binary MSG_SNAP: 30 times a second: every penguin, snowball, big ball, snowflake, turret, flag and vehicle, the surfboard,
 //                    the snow that changed, and what happened (hits, splats, throws...)
 import type { World, Penguin, PenguinInput, Action, Phase, GameEvent, RosterEntry, CapturePoint } from '../sim/World';
 import type { Mode } from '../world/Maps';
+import { Vehicle, VEHICLE_KINDS, VehicleKind } from '../sim/Vehicles';
 
 export const PROTOCOL = 5;
 export const TICK_HZ = 60;
@@ -152,6 +153,12 @@ export interface BigBallState { id: number; x: number; y: number; z: number; r: 
 export interface FlakeState { id: number; spot: number; x: number; y: number; z: number; active: boolean; }
 export interface TurretState { id: number; owner: number; team: number; x: number; y: number; z: number; yaw: number; health: number; ammo: number; fireT: number; }
 export interface PointState { id: number; owner: number; cap: number; n0: number; n1: number; }
+export interface VehicleState {
+  id: number; kind: VehicleKind; team: number; slot: number;
+  x: number; y: number; z: number; yaw: number; pitch: number; roll: number;
+  vx: number; vy: number; vz: number; speed: number; steer: number;
+  grounded: boolean; health: number; seats: number[]; hitT: number; load: number;
+}
 export interface Snapshot {
   tick: number; ack: number;
   phase: Phase; phaseT: number; scores: [number, number]; piles: [number, number]; winner: number;
@@ -163,6 +170,9 @@ export interface Snapshot {
   flakes: FlakeState[];
   turrets: TurretState[];
   points: PointState[];
+  vehicles: VehicleState[];
+  /** Breakthrough: seconds until the attackers' next snowplow */
+  plowT: number;
   board: { active: boolean; holder: number; x: number; y: number; z: number; yaw: number };
   snow: Uint8Array; // 5 bytes per changed voxel: 24-bit index, density, hardness
   events: GameEvent[];
@@ -204,6 +214,10 @@ export function encodeSnapshot(w: World, tick: number, snow: Uint8Array, events:
   for (const pt of w.points) { o.i8(pt.owner); o.i16(clampI16(pt.cap * 10000)); o.u8(clampU8(pt.n0)); o.u8(clampU8(pt.n1)); }
   const bd = w.board;
   o.u8(bd.active ? 1 : 0); o.i16(bd.holder); o.f32(bd.x); o.f32(bd.y); o.f32(bd.z); o.i16(clampI16(wrapA(bd.yaw) * 10000));
+  o.f32(w.garage.plowT);
+  const vehicles = w.vehicles.filter(v => v.alive);
+  o.u8(vehicles.length);
+  for (const v of vehicles) writeVehicle(o, v);
   o.u32(snow.length / 5); o.bytes(snow);
   const ev = enc.encode(events.length ? JSON.stringify(events, (_k, v) => (typeof v === 'number' ? Math.round(v * 100) / 100 : v)) : '');
   o.u32(ev.length); o.bytes(ev);
@@ -227,6 +241,29 @@ function writePenguin(o: Writer, p: Penguin) {
   o.u8(clampU8(p.streak)); o.u8(clampU8(p.rewards[0])); o.u8(clampU8(p.rewards[1])); o.u8(clampU8(p.rewards[2]));
   o.u8(clampU8(p.frenzyT * 20)); o.u16(clampU16(p.turretSnow)); o.u8(clampU8(p.turretBlock));
   if (p.turretAt) { o.f32(p.turretAt.x); o.f32(p.turretAt.y); o.f32(p.turretAt.z); }
+}
+
+function writeVehicle(o: Writer, v: Vehicle) {
+  o.u32(v.id); o.u8(VEHICLE_KINDS.indexOf(v.kind) | ((v.team & 1) << 4) | (v.grounded ? 32 : 0)); o.u8(v.slot);
+  o.f32(v.x); o.f32(v.y); o.f32(v.z);
+  o.i16(clampI16(wrapA(v.yaw) * 10000)); o.i16(clampI16(v.pitch * 10000)); o.i16(clampI16(v.roll * 10000));
+  o.i16(clampI16(v.vx * 100)); o.i16(clampI16(v.vy * 100)); o.i16(clampI16(v.vz * 100)); o.i16(clampI16(v.speed * 100));
+  o.i8(Math.round(Math.max(-1, Math.min(1, v.steer)) * 100));
+  o.u8(clampU8(v.health)); o.u8(clampU8(v.hitT * 100)); o.u8(clampU8(v.load * 255));
+  o.u8(v.seats.length);
+  for (const s of v.seats) o.i16(s);
+}
+
+function readVehicle(r: Reader): VehicleState {
+  const id = r.u32(), bits = r.u8(), slot = r.u8();
+  const x = r.f32(), y = r.f32(), z = r.f32();
+  const yaw = r.i16() / 10000, pitch = r.i16() / 10000, roll = r.i16() / 10000;
+  const vx = r.i16() / 100, vy = r.i16() / 100, vz = r.i16() / 100, speed = r.i16() / 100;
+  const steer = r.i8() / 100;
+  const health = r.u8(), hitT = r.u8() / 100, load = r.u8() / 255;
+  const seats: number[] = [];
+  for (let n = r.u8(); n > 0; n--) seats.push(r.i16());
+  return { id, kind: VEHICLE_KINDS[bits & 15] ?? 'snowmobile', team: (bits >> 4) & 1, slot, grounded: !!(bits & 32), x, y, z, yaw, pitch, roll, vx, vy, vz, speed, steer, health, seats, hitT, load };
 }
 
 function readPenguin(r: Reader): PenguinState {
@@ -289,11 +326,14 @@ export function decodeSnapshot(buf: Uint8Array): Snapshot {
   const points: PointState[] = [];
   for (let n = r.u8(), id = 0; id < n; id++) points.push({ id, owner: r.i8(), cap: r.i16() / 10000, n0: r.u8(), n1: r.u8() });
   const active = r.u8() === 1, holder = r.i16(), bx = r.f32(), by = r.f32(), bz = r.f32(), byaw = r.i16() / 10000;
+  const plowT = r.f32();
+  const vehicles: VehicleState[] = [];
+  for (let n = r.u8(); n > 0; n--) vehicles.push(readVehicle(r));
   const snow = r.bytes(r.u32() * 5);
   const evLen = r.u32();
   const events = evLen ? JSON.parse(dec.decode(r.bytes(evLen))) as GameEvent[] : [];
   return {
-    tick, ack, phase, phaseT, scores, piles, winner, sector, holdT, lastStandT, penguins, balls, bigBalls, flakes, turrets, points,
+    tick, ack, phase, phaseT, scores, piles, winner, sector, holdT, lastStandT, penguins, balls, bigBalls, flakes, turrets, points, vehicles, plowT,
     board: { active, holder, x: bx, y: by, z: bz, yaw: byaw }, snow, events,
   };
 }

@@ -7,6 +7,7 @@ import type { Mode } from '../world/Maps';
 import { CFG } from './config';
 import { boxGround, boxPush, pointInBoxes, slideY } from '../world/Playground';
 import { Prop, RAMP, RAMP_LIP, rampGround, rampLocal, rampPush, rampUnder, pointInRamps } from '../world/Landmarks';
+import { Vehicle, VehicleKind, makeGarage, initVehicles, stepVehicles, stepRider, tryEnter, leaveVehicle, reparkVehicles, snowballHitsVehicle } from './Vehicles';
 
 export type { Mode };
 
@@ -35,7 +36,7 @@ export const emptyInput = (): PenguinInput => ({
 
 export type Action = 'idle' | 'plow' | 'pack' | 'dig' | 'build' | 'charge' | 'throw' | 'slide' | 'down';
 export type Phase = 'build' | 'fight' | 'end';
-export type SplatCause = 'snowball' | 'bigball' | 'turret' | 'avalanche';
+export type SplatCause = 'snowball' | 'bigball' | 'turret' | 'avalanche' | 'vehicle';
 
 export type GameEvent =
   | { type: 'plow'; pid: number; x: number; y: number; z: number; fx: number; fz: number; mass: number }
@@ -74,6 +75,14 @@ export type GameEvent =
   | { type: 'sector'; sector: number; tickets: number } // Breakthrough: the attackers took this section (tickets = what they got for it)
   | { type: 'sectorOpen'; sector: number } // Breakthrough: the regroup is over, this section is on
   | { type: 'lastStand' } // Breakthrough: the attackers are out of tickets
+  // vehicles: someone hopped on or off, one turned up at camp ('spawn') or went back there ('home'), or it isn't yours to take ('denied')
+  | { type: 'vehicle'; what: 'enter' | 'exit' | 'spawn' | 'home' | 'denied'; vid: number; kind: VehicleKind; team: number; pid: number; x: number; y: number; z: number }
+  | { type: 'vehicleHit'; vid: number; by: number; x: number; y: number; z: number; health: number }
+  | { type: 'vehicleDown'; vid: number; kind: VehicleKind; team: number; by: number; x: number; y: number; z: number }
+  | { type: 'vehicleBump'; vid: number; x: number; y: number; z: number; hard: number }
+  | { type: 'vehicleAir'; vid: number; x: number; y: number; z: number }
+  | { type: 'vehicleLand'; vid: number; x: number; y: number; z: number; hard: number }
+  | { type: 'plowSnow'; vid: number; x: number; y: number; z: number; fx: number; fz: number; mass: number } // the snowplow's blade is cutting
   | { type: 'gameOver'; winner: number };
 
 export class Penguin {
@@ -130,6 +139,12 @@ export class Penguin {
   turretBlock = 0;
   /** where this penguin last went down (Conquest brings you back at the nearest flag you hold) */
   downX = 0; downZ = 0;
+  /** the vehicle this penguin is on (its id, or -1), and which seat (0 = driving) */
+  riding = -1; seat = 0;
+  /** behind glass in the snowplow's cab: snowballs hit the vehicle instead */
+  covered = false;
+  /** a moment's grace after being run into, so one bump is one hit */
+  ramCd = 0;
 
   constructor(public id: number, public name: string, public team: number, public hat: string, public bot: boolean) {}
 }
@@ -222,6 +237,8 @@ export class World {
   phaseT = CFG.buildPhase;
   readonly mode: Mode;
   turrets: Turret[] = [];
+  vehicles: Vehicle[] = [];
+  garage = makeGarage();
   points: CapturePoint[] = [];
   barrages: Barrage[] = [];
   readonly scoreToWin: number;
@@ -288,11 +305,14 @@ export class World {
     this.penguins.forEach((p, i) => this.spawn(p, i));
     for (let s = 0; s < 4; s++) this.spawnBigBall(s);
     for (let f = 0; f < CFG.flakeActive; f++) this.spawnFlake();
+    initVehicles(this);
   }
 
   get player() { return this.penguins[0]; }
   penguin(id: number) { return this.penguins.find(p => p.id === id); }
   emit(e: GameEvent) { this.events.push(e); }
+  newId() { return this.nextId++; }
+  random() { return this.rand(); }
 
   roster(): RosterEntry[] { return this.penguins.map(p => ({ id: p.id, name: p.name, team: p.team, hat: p.hat, bot: p.bot })); }
 
@@ -312,6 +332,7 @@ export class World {
     const home = this.front(team).center;
     bots.sort((a, b) => (a.alive ? 1 : 0) - (b.alive ? 1 : 0) || Math.hypot(a.x - home.x, a.z - home.z) - Math.hypot(b.x - home.x, b.z - home.z));
     const p = bots[0];
+    if (p.riding >= 0) leaveVehicle(this, p);
     if (this.board.holder === p.id) { this.board.holder = -1; this.board.x = p.x; this.board.y = p.y + 0.6; this.board.z = p.z; this.board.vy = 4; p.surfing = false; }
     p.bot = false; p.name = name; p.hat = hat;
     p.splats = 0; p.downs = 0; p.mitten = 0;
@@ -384,6 +405,7 @@ export class World {
   }
 
   spawn(p: Penguin, index?: number) {
+    if (p.riding >= 0) leaveVehicle(this, p);
     const base = this.front(p.team);
     const s = (index === undefined ? this.flagSpawn(p) : null) ?? this.lineSpawn(p, index !== undefined);
     p.x = s.x + (this.rand() - 0.5) * 0.6; p.z = s.z + (this.rand() - 0.5) * 0.6;
@@ -424,6 +446,7 @@ export class World {
     for (const p of this.penguins) { p.px = p.x; p.py = p.y; p.pz = p.z; }
     for (const p of this.penguins) this.stepPenguin(p, dt);
     this.separatePenguins();
+    stepVehicles(this, dt);
     this.stepSnowballs(dt);
     this.stepBigBalls(dt);
     this.stepFlakes(dt);
@@ -486,6 +509,9 @@ export class World {
     if (this.phase === 'end') { p.vx = p.vz = 0; p.action = 'idle'; return; }
 
     if (p.health < CFG.maxHealth && p.sinceHit > CFG.regenDelay && !this.predicting) { p.health++; p.sinceHit = CFG.regenDelay * 0.5; }
+
+    // on a vehicle: it carries you (an online client never runs this ahead of the server: the server drives)
+    if (p.riding >= 0) { if (!this.predicting) stepRider(this, p, dt); return; }
 
     const fwdX = -Math.sin(p.lookYaw), fwdZ = -Math.cos(p.lookYaw);
     const rightX = Math.cos(p.lookYaw), rightZ = -Math.sin(p.lookYaw);
@@ -675,7 +701,8 @@ export class World {
         } else if (p.carried > 0) this.loadTurret(p);
       }
     } else if (p.useT >= 0) {
-      if (!p.useDone) this.tryGrab(p);
+      // a tap: hop on the vehicle beside you, else grab from the stockpile
+      if (!p.useDone && !tryEnter(this, p)) this.tryGrab(p);
       p.useT = -1;
     }
   }
@@ -908,9 +935,9 @@ export class World {
   private separatePenguins() {
     const ps = this.penguins;
     for (let a = 0; a < ps.length; a++) {
-      const A = ps[a]; if (!A.alive) continue;
+      const A = ps[a]; if (!A.alive || A.riding >= 0) continue;
       for (let b = a + 1; b < ps.length; b++) {
-        const B = ps[b]; if (!B.alive) continue;
+        const B = ps[b]; if (!B.alive || B.riding >= 0) continue;
         const dx = B.x - A.x, dz = B.z - A.z;
         if (Math.abs(A.y - B.y) > 1) continue;
         const d = Math.hypot(dx, dz), min = CFG.radius * 2;
@@ -1101,7 +1128,7 @@ export class World {
         b.x += b.vx * sdt; b.y += b.vy * sdt; b.z += b.vz * sdt;
         // penguins
         for (const p of this.penguins) {
-          if (!p.alive || p.team === b.team || p.id === b.owner) continue;
+          if (!p.alive || p.team === b.team || p.id === b.owner || p.covered) continue;
           const hitR = CFG.hitRadius + CFG.snowballRadius;
           let d: number;
           if (p.sliding) d = Math.hypot(b.x - p.x, b.y - (p.y + 0.3), b.z - p.z);
@@ -1121,6 +1148,8 @@ export class World {
           }
         }
         if (!b.alive) break;
+        // vehicles take the hit (not from their own side)
+        if (snowballHitsVehicle(this, b)) { b.alive = false; break; }
         // big balls soak it up
         for (const bb of this.bigBalls) {
           if (Math.hypot(b.x - bb.x, b.y - bb.y, b.z - bb.z) < bb.r + CFG.snowballRadius) {
@@ -1175,6 +1204,7 @@ export class World {
 
   splat(p: Penguin, by: number, cause: SplatCause) {
     if (!p.alive) return;
+    if (p.riding >= 0) leaveVehicle(this, p);
     p.alive = false;
     p.downX = p.x; p.downZ = p.z;
     p.frenzyT = 0;
@@ -1198,13 +1228,15 @@ export class World {
     p.streak = 0;
     this.emit({ type: 'splat', pid: p.id, by, x: p.x, y: p.y, z: p.z, cause });
     p.carried = 0;
-    if (this.board.holder === p.id) {
-      // the surfboard drops right where you got splatted
-      const bd = this.board;
-      bd.holder = -1; bd.x = p.x; bd.y = p.y + 0.6; bd.z = p.z; bd.vy = 4; bd.yaw = p.yaw;
-      p.surfing = false;
-      this.emit({ type: 'board', pid: p.id, what: 'drop', x: bd.x, y: bd.y, z: bd.z });
-    }
+    if (this.board.holder === p.id) this.dropBoard(p); // the surfboard drops right where you got splatted
+  }
+
+  /** The surfboard leaves its holder and lands where they are. */
+  dropBoard(p: Penguin) {
+    const bd = this.board;
+    bd.holder = -1; bd.x = p.x; bd.y = p.y + 0.6; bd.z = p.z; bd.vy = 4; bd.yaw = p.yaw;
+    p.surfing = false;
+    this.emit({ type: 'board', pid: p.id, what: 'drop', x: bd.x, y: bd.y, z: bd.z });
   }
 
   // ───────────────────────── big rolling snowballs ─────────────────────────
@@ -1241,7 +1273,7 @@ export class World {
       b.pushT = Math.max(0, b.pushT - dt);
       // penguins push the ball (pushing with mittens out is stronger)
       for (const p of this.penguins) {
-        if (!p.alive) continue;
+        if (!p.alive || p.riding >= 0) continue;
         const dx = b.x - p.x, dz = b.z - p.z;
         const dh = Math.hypot(dx, dz);
         if (dh > b.r + CFG.radius + 0.12 || Math.abs((p.y + 0.5) - b.y) > b.r + 0.6) continue;
@@ -1412,7 +1444,7 @@ export class World {
     this.bigBalls = this.bigBalls.filter(b => b.alive);
   }
 
-  private burstBall(b: BigBall) {
+  burstBall(b: BigBall) {
     b.alive = false;
     const vol = (4 / 3) * Math.PI * b.r ** 3 * 2040 * 0.7;
     this.field.pourColumns(b.x, b.z, b.r * 1.6, vol, b.y - b.r, b.y + b.r * 0.6);
@@ -1516,7 +1548,7 @@ export class World {
     if (t.health <= 0) this.destroyTurret(t, by);
   }
 
-  private destroyTurret(t: Turret, by: number) {
+  destroyTurret(t: Turret, by: number) {
     if (!t.alive) return;
     t.alive = false;
     this.field.pourColumns(t.x, t.z, 1.1, CFG.turretCost * 0.4, t.y, t.y + 1.4);
@@ -1744,6 +1776,7 @@ export class World {
       for (const t of this.turrets) if (t.alive && t.team === DEFEND && t.x < line) this.destroyTurret(t, -1);
       // both camps start the next section with something in the pile
       for (let t = 0; t < 2; t++) this.piles[t] = Math.max(this.piles[t], CFG.startPile);
+      reparkVehicles(this); // empty vehicles move up to the new camps
       this.emit({ type: 'sector', sector: fallen, tickets: bonus });
       return;
     }
@@ -1786,7 +1819,7 @@ export class World {
     if (bd.y < -5) { bd.active = false; return; }
     if (this.phase === 'end') return;
     for (const p of this.penguins) {
-      if (!p.alive) continue;
+      if (!p.alive || p.riding >= 0) continue;
       if (Math.hypot(p.x - bd.x, p.z - bd.z) < 1.2 && Math.abs(p.y - bd.y) < 1.6) {
         bd.holder = p.id; p.surfing = true; p.sliding = false;
         this.emit({ type: 'board', pid: p.id, what: 'grab', x: bd.x, y: bd.y, z: bd.z });

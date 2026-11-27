@@ -66,6 +66,43 @@ const SETS = {
       await shot('hatback_' + h);
     }
   },
+  // both vehicles in both team colours, with riders; then the moving parts moved
+  vehicles: async (page, shot) => {
+    const cams = { front: [6.2, 2.3, 4.6, 0.2, 0.75, 0], side: [0.2, 1.5, 8.5, 0.2, 0.8, 0], rear: [-6.4, 2.6, -4.4, 0, 0.8, 0], top: [2.5, 8.5, 2.5, 0, 0.5, 0], low: [5.5, 0.7, -5.2, 0.3, 0.7, 0] };
+    await page.evaluate(async () => { const v = window.viewer; await v.vehicle({ kind: 'snowplow', team: 0 }); v.run(2); });
+    await page.waitForTimeout(2500); // the tiling textures arrive after the models
+    for (const [kind, k] of [['snowmobile', 0.62], ['snowplow', 1.0]]) {
+      for (const team of [0, 1]) {
+        await page.evaluate(async ([kind, team]) => { const v = window.viewer; v.clear(); await v.vehicle({ kind, team, riders: true }); }, [kind, team]);
+        for (const [name, c] of Object.entries(cams)) {
+          if (team === 1 && name !== 'front') continue;
+          await page.evaluate(([c, k]) => { window.viewer.camera(c[0] * k, c[1] * k, c[2] * k, c[3], c[4] * (k < 1 ? 0.75 : 1.4), c[5], 30); window.viewer.run(30); }, [c, k]);
+          await shot(`${kind}_${team ? 'orange' : 'blue'}_${name}`);
+        }
+      }
+      // moving parts: steering hard over / blade up, belts run on a third of a lug
+      await page.evaluate(async ([kind]) => {
+        const v = window.viewer; v.clear(); await v.vehicle({ kind, team: 0 });
+        if (kind === 'snowmobile') { v.part(0, 'steer', [0, 0.5, 0]); v.part(0, 'skiL', [0, 0.4, 0]); v.part(0, 'skiR', [0, 0.4, 0]); }
+        else v.part(0, 'blade', [0, 0, 0.3]);
+        v.drive(0, 0.04);
+      }, [kind]);
+      await page.evaluate(([k]) => { window.viewer.camera(6.2 * k, 2.0 * k, 4.6 * k, 0.2, 0.75 * (k < 1 ? 0.75 : 1.4), 0, 30); window.viewer.run(3); }, [k]);
+      await shot(`${kind}_moved`);
+      await page.evaluate(([k]) => { window.viewer.camera(1.0 * k, 0.9 * k, 5.6 * k, 0.2, 0.4 * (k < 1 ? 0.75 : 1.4), 0, 30); window.viewer.run(3); }, [k]);
+      await shot(`${kind}_moved_side`);
+      console.log(kind, JSON.stringify(await page.evaluate(() => window.viewer.nodes(0))));
+    }
+    // how they sit together, at the distance the game's camera keeps
+    await page.evaluate(async () => {
+      const v = window.viewer; v.clear();
+      await v.vehicle({ kind: 'snowplow', team: 1, x: -1.5, z: -2.5, yaw: -0.5, riders: true });
+      await v.vehicle({ kind: 'snowmobile', team: 0, x: 2.2, z: 2.0, yaw: -0.9, riders: true });
+      v.add({ team: 0, hat: 'viking', x: 3.6, z: 0.2, yaw: 2.4 });
+      v.camera(9.5, 3.4, 9.5, 0, 1.0, -0.5, 32); v.run(30);
+    });
+    await shot('vehicles_together');
+  },
 };
 
 const browser = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });

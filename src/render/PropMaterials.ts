@@ -29,6 +29,8 @@ function tex(name: string, srgb: boolean) {
 interface Spec {
   tex?: string; color?: number; rough?: number; metal?: number; normal?: number;
   coat?: number; coatRough?: number; emissive?: number; glow?: number; env?: number; sheen?: number; plain?: boolean;
+  /** below 1 the material is see-through (window glass): drawn blended, without writing depth */
+  opacity?: number;
 }
 
 const SPECS: Record<string, Spec> = {
@@ -48,6 +50,16 @@ const SPECS: Record<string, Spec> = {
   rope: { color: 0x9a774a, rough: 0.9 },
   ribbon: { color: 0xffffff, rough: 0.45, sheen: 0.6 },
   glow: { color: 0xffc27a, rough: 0.4, emissive: 0xffb45e, glow: 2.4, plain: true },
+  // vehicles (public/models/snowmobile.glb, snowplow.glb; see VehicleModel.ts)
+  paint: { color: 0xffffff, rough: 0.34, coat: 1, coatRough: 0.08, env: 1.15 }, // baked light grey; VehicleModel multiplies in the team colour
+  trim: { color: 0xffffff, rough: 0.5 },                                        // its colours (charcoal, ivory, hazard yellow) are vertex tints
+  rubber: { color: 0x26272b, rough: 0.85 },
+  tread: { tex: 'tread', normal: 1.6 },
+  glass: { color: 0x7fb4d6, rough: 0.06, env: 1.6, opacity: 0.34, plain: true },
+  chrome: { color: 0xe6ebf2, rough: 0.14, metal: 1, env: 1.3 },
+  seat: { color: 0xffffff, rough: 0.55, sheen: 0.35 },
+  beacon: { color: 0xffa21f, rough: 0.3, emissive: 0xff8a00, glow: 2.2, plain: true },
+  lamp_red: { color: 0xff2a1f, rough: 0.3, emissive: 0xff1a10, glow: 1.6, plain: true },
 };
 
 const made = new Map<string, THREE.Material>();
@@ -74,6 +86,7 @@ export function propMaterial(name: string): THREE.Material {
   }
   if (s.emissive !== undefined) { m.emissive.set(s.emissive); m.emissiveIntensity = s.glow ?? 1; }
   if (s.env !== undefined) m.envMapIntensity = s.env;
+  if (s.opacity !== undefined && s.opacity < 1) { m.transparent = true; m.opacity = s.opacity; m.depthWrite = false; }
   if (m instanceof THREE.MeshPhysicalMaterial) {
     if (s.coat !== undefined) { m.clearcoat = s.coat; m.clearcoatRoughness = s.coatRough ?? 0.1; }
     if (s.sheen !== undefined) { m.sheen = s.sheen; m.sheenRoughness = 0.5; m.sheenColor.set(0xffffff); }

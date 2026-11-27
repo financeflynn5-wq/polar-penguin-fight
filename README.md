@@ -14,6 +14,15 @@ Snowman turrets work in every mode: hold T to scoop a lot of snow into one. It t
 
 Every map has jump ramps on its hills (icy decks with gold arrows and candy-cane rails): belly slide into one at speed and you fly. Every map also has a surfboard that pops up shortly after the fight starts: grab it to ride faster than a slide until you are splatted. In Breakthrough the board appears in the section being fought over.
 
+## Vehicles
+
+Tap E beside a vehicle to hop on and E again to hop off. W and S drive, A and D steer, and the camera follows.
+
+- **Snowmobile** (every mode): fast, two seats, parked at each team's camp (one for every 5 penguins on the team). The driver steers; a passenger on the back can still pack and throw. It can't get through a snow wall, it jumps off ramps and drifts, it slides about on ice, and running into an enemy at speed knocks them flying. Riders sit out in the open and get hit like anyone else. Five snowball hits wreck it (a rolling giant snowball does it in one), and a new one turns up at camp 20 seconds later. Either team can take any snowmobile that is standing empty.
+- **Snowplow** (Breakthrough, attackers only): slow and very tough. The blade cuts whatever snow is in front of it down to the ground and throws it off to both sides, so it drives straight through walls and forts and leaves a road behind it. It knocks down turrets, bursts giant snowballs it drives into, and flattens any defender the blade reaches. The driver is safe inside until it is wrecked. It turns up at the attackers' camp 30 seconds into the fight, and again 90 seconds after the last one was wrecked. It takes 3.5 snowball hits for every penguin on a team to wreck it (about 18 in 5v5, 35 in 10v10), and a rolling giant snowball does 7 hits' worth at once. A bot drives it if no person takes it within a few seconds.
+
+All of these numbers are in `src/sim/config.ts` (how long, how tough) and `VEHICLE_SPECS` in `src/sim/Vehicles.ts` (how each one drives).
+
 ## Play locally
 
 ```
@@ -36,7 +45,7 @@ Then open the link Vite prints (usually http://localhost:5173).
 | G (hold) | Pack a giant snowball to roll |
 | T (hold) | Build a snowman turret (takes a lot of snow) |
 | 1 / 2 / 3 | Use a splat-streak reward (Team Deathmatch) |
-| E | Grab snowballs from a stockpile (works on the enemy's too) |
+| E | Grab snowballs from a stockpile (works on the enemy's too), or hop on or off a vehicle |
 | Hold E | Stash your snowballs in your stockpile, or load a turret beside you |
 | Shift | Belly slide. A / D steer left and right as you see it on screen, W bends the slide toward where you look, S brakes. Hit a jump ramp at speed to fly |
 | Space | Hop |
@@ -85,8 +94,8 @@ For the Flynn Arcade hub, add `{ "id": "penguin", "name": "Polar Penguin Fight",
 
 ### How online works
 
-- The server runs the real match with the same code as the offline game (`src/sim`), 60 steps a second, and sends a binary snapshot 30 times a second: every penguin, snowball, big ball, snowflake and the surfboard, the snow voxels that changed, and the events (hits, splats, throws). See `src/net/Protocol.ts`.
-- Your own penguin moves the moment you press a key: the browser runs the same movement code ahead of the server and quietly corrects itself when the server disagrees (`src/net/NetClient.ts`). Everyone else is shown 0.1 s in the past, blended between snapshots.
+- The server runs the real match with the same code as the offline game (`src/sim`), 60 steps a second, and sends a binary snapshot 30 times a second: every penguin, snowball, big ball, snowflake, vehicle and the surfboard, the snow voxels that changed, and the events (hits, splats, throws). See `src/net/Protocol.ts`.
+- Your own penguin moves the moment you press a key: the browser runs the same movement code ahead of the server and quietly corrects itself when the server disagrees (`src/net/NetClient.ts`). Everyone else is shown 0.1 s in the past, blended between snapshots. Vehicles are driven on the server, so on one you are shown 0.1 s in the past too.
 - The server does all the digging, building, packing, throwing, hits and pickups.
 - Tests: `npm run test:net` plays a match with three fake players in-process and checks that each one's copy of the snow matches the server's exactly. `npm run test:online` starts the real server and connects two headless players over a laggy connection (`LAG=120 JITTER=60 npm run test:online` for a bad one) and reports how far prediction drifts. Put `MODE=conquest` or `MODE=breakthrough` in front of either to test those modes on their own maps.
 
@@ -94,7 +103,7 @@ For the Flynn Arcade hub, add `{ "id": "penguin", "name": "Polar Penguin Fight",
 
 - `src/world/SnowField.ts`: the snow is a 3D density grid (0.5 m voxels). Push, dig, build, pack and the big-ball smashing are all edits to this grid.
 - `src/render/SnowMesher.ts`: Surface Nets turns the grid into smooth snow meshes, re-meshed in 16³ chunks as the snow changes.
-- `src/sim/`: the game rules, penguins, snowballs, big balls, snowflakes and bots. No Three.js here, so the same code runs on the multiplayer server.
+- `src/sim/`: the game rules, penguins, snowballs, big balls, snowflakes, vehicles (`Vehicles.ts`) and bots. No Three.js here, so the same code runs on the multiplayer server.
 - `src/net/`, `server/`: online play (see above).
 - `src/render/`, `src/ui/`, `src/game/`: visuals, particles, HUD, menus, procedural sound.
 - `src/world/Maps.ts`: the maps by id (`MapDef.ts` is Frostbite Bay, `ConquestMap.ts` is Glacier Gap, `BreakthroughMap.ts` is Peppermint Pass). `Landmarks.ts` is what you bump into: ice, houses, ruins, candy canes, sleds, ice blocks, and the jump ramps (their curve, the launch and the snow shaped around them).

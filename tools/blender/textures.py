@@ -298,6 +298,38 @@ def mint(n=512):
     save('mint', col, normal_map(height, 3.5), np.ones((n, n)), rough)
 
 
+LUGS = 6  # lugs per tile along the belt: the track meshes in vehicles.py are sized to a whole number of these
+
+
+def tread(n=512):
+    """A rubber snow track for a belt whose u runs across it and v along it (one tile = 1 m of belt): LUGS chunky
+    chevron bars per tile standing proud of the carcass, a guide lane down each side, a little snow packed in the
+    grooves. Bold and simple, so it still reads as a track from across the map."""
+    yy, xx = np.mgrid[0:n, 0:n] / n
+    ax = np.abs(xx - 0.5) * 2                                # 0 on the centre line, 1 at the edges
+    ph = (yy * LUGS + ax * 0.42) % 1.0                        # chevrons: the bars sweep back toward the edges
+    bar = smooth(0.14, 0.24, ph) * (1 - smooth(0.60, 0.70, ph))
+    bar *= 1 - smooth(0.86, 0.93, ax)                         # the bars stop short of the belt's edge
+    lane = 1 - smooth(0.03, 0.06, np.abs(ax - 0.5))           # a groove where the wheels' guides run
+    bar *= 1 - lane * 0.55
+    grain = fnoise(n, 0.6, 121, 40, 250)
+    scuff = fnoise(n, 1.8, 122, 2, 30)
+    wear = fnoise(n, 1.4, 123, 3, 60, aniso=(1, 0.2))
+    height = norm01(bar * 1.0 - lane * (1 - bar) * 0.25 + (grain - 0.5) * 0.04 + (scuff - 0.5) * 0.05)
+    # packed snow lies in some of the grooves and dusts the leading edge of the bars
+    pack = smooth(0.6, 0.72, fnoise(n, 1.6, 124, 2, 14)) * (1 - smooth(0.02, 0.3, bar))
+    dust = smooth(0.6, 0.85, fnoise(n, 1.2, 125, 6, 60)) * smooth(0.14, 0.3, ph) * (1 - smooth(0.3, 0.42, ph)) * 0.5
+    snow_k = np.clip(pack * 0.7 + dust, 0, 1)[..., None]
+    tone = np.clip(0.16 + bar * 0.62 + (scuff - 0.5) * 0.22 + (wear - 0.5) * 0.2, 0, 1)
+    col = ramp(tone, [(0.0, 0x08090a), (0.3, 0x131417), (0.7, 0x3a3e46), (1.0, 0x5a5f6a)])
+    edge = np.clip(np.abs(np.gradient(bar, axis=0)) * 7, 0, 1)[..., None]
+    col = col * (1 - edge * 0.35) + srgb(0x5d626c) * edge * 0.35      # the bars' edges are rubbed pale
+    col = col * (1 - snow_k) + srgb(0xdfe8f4) * snow_k
+    rough = np.clip(0.85 - bar * 0.2 + (grain - 0.5) * 0.1 + snow_k[..., 0] * 0.08, 0, 1)
+    ao = np.clip(ao_from_height(height, 6, 2.2) * (0.55 + 0.45 * smooth(0.0, 0.5, bar + snow_k[..., 0])), 0, 1)
+    save('tread', col, normal_map(blur(height, 1.0), 30), ao, rough)
+
+
 if __name__ == '__main__':
     import sys
     if len(sys.argv) > 1:
@@ -315,3 +347,4 @@ if __name__ == '__main__':
     canvas()
     stone()
     mint()
+    tread()

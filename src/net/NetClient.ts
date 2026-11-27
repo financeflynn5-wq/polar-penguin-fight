@@ -10,6 +10,7 @@
 import * as P from './Protocol';
 import { World, Penguin, PenguinInput, GameEvent, RosterEntry, emptyInput, Snowball, BigBall, Flake, Turret } from '../sim/World';
 import type { Mode } from '../world/Maps';
+import type { Vehicle } from '../sim/Vehicles';
 
 const STEP = 1 / P.TICK_HZ;
 const DELAY = 6; // ticks behind the server that other penguins are shown (100 ms): room for a late snapshot
@@ -220,10 +221,12 @@ export class NetClient {
     const st = s.penguins.find(p => p.id === me.id);
     if (!st) return;
     while (this.history.length && this.history[0].seq <= s.ack) this.history.shift();
-    if (!st.alive || s.phase === 'end') {
+    // down, or on a vehicle (the server drives it): shown like everyone else until you're back on your feet
+    if (!st.alive || s.phase === 'end' || s.vehicles.some(v => v.seats.includes(me.id))) {
       if (this.predicting) { this.predicting = false; this.drawOffset.x = this.drawOffset.y = this.drawOffset.z = 0; }
-      return; // shown like everyone else until you're back
+      return;
     }
+    me.riding = -1; me.covered = false;
     const wasPredicting = this.predicting;
     const bx = me.x, by = me.y, bz = me.z;
     const live = P.copyInput(me.input, emptyInput());
@@ -307,6 +310,36 @@ export class NetClient {
     }
     w.turrets = turrets;
     for (const s of a.points) { const pt = w.points[s.id]; if (pt) P.applyPoint(pt, s); }
+
+    // vehicles, and who is sitting on them
+    const vb = new Map(b.vehicles.map(s => [s.id, s]));
+    const old = new Map(w.vehicles.map(v => [v.id, v]));
+    const vehicles: Vehicle[] = [];
+    for (const p of w.penguins) if (!(p === me && this.predicting)) { p.riding = -1; p.covered = false; }
+    for (const s of a.vehicles) {
+      const e = vb.get(s.id) ?? s;
+      const jump = Math.hypot(e.x - s.x, e.z - s.z) > 8; // sent back to camp: don't slide across the map
+      const u = jump ? 1 : t;
+      const x = lerp(s.x, e.x, u), y = lerp(s.y, e.y, u), z = lerp(s.z, e.z, u), yaw = lerpA(s.yaw, e.yaw, u);
+      const v: Vehicle = old.get(s.id) ?? {
+        id: s.id, kind: s.kind, team: s.team, slot: s.slot, x, y, z, px: x, py: y, pz: z, yaw, pyaw: yaw, pitch: 0, roll: 0,
+        vx: 0, vy: 0, vz: 0, speed: 0, steer: 0, grounded: true, health: s.health, seats: [], alive: true, idleT: 0, lastDriver: -1,
+        hitT: 9, load: 0, climb: 0, snowAcc: 0, snowT: 0, stuckT: 0,
+      };
+      v.x = v.px = x; v.y = v.py = y; v.z = v.pz = z; v.yaw = v.pyaw = yaw;
+      v.pitch = lerp(s.pitch, e.pitch, u); v.roll = lerp(s.roll, e.roll, u);
+      v.vx = lerp(s.vx, e.vx, u); v.vy = lerp(s.vy, e.vy, u); v.vz = lerp(s.vz, e.vz, u);
+      v.speed = lerp(s.speed, e.speed, u); v.steer = lerp(s.steer, e.steer, u);
+      v.grounded = s.grounded; v.health = s.health; v.hitT = s.hitT; v.load = s.load; v.team = s.team; v.slot = s.slot;
+      v.seats = s.seats.slice();
+      s.seats.forEach((id, seat) => {
+        const p = id >= 0 ? w.penguin(id) : undefined;
+        if (p && !(p === me && this.predicting)) { p.riding = v.id; p.seat = seat; p.covered = v.kind === 'snowplow'; }
+      });
+      vehicles.push(v);
+    }
+    w.vehicles = vehicles;
+    w.garage.plowT = a.plowT;
 
     const ba = a.board, bz = b.board;
     w.board.active = ba.active; w.board.holder = ba.holder;

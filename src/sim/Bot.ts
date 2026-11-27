@@ -6,6 +6,7 @@ import { V3 } from '../world/MapDef';
 import { houseLocal, turned } from '../world/Landmarks';
 import { World, Penguin, solveThrow } from './World';
 import { CFG } from './config';
+import { Vehicle, vehicleOf, boardingBlock } from './Vehicles';
 
 type Goal = 'build' | 'pack' | 'stash' | 'grab' | 'fight' | 'flake' | 'roll' | 'retreat' | 'advance' | 'board' | 'turret' | 'capture';
 
@@ -46,6 +47,9 @@ export class BotBrain {
   private detourT = 0;
   private homeZ: number | null = null; // where along the team's line this bot builds
   private sector = 0; // Breakthrough: the section this bot's plans were made for
+  private vehicleWait = 0; // seconds before this bot looks at vehicles again
+  private reverseT = 0; // driving: backing out of something it ran into
+  private jams = 0;
   private slot: number;
   private rnd: () => number;
 
@@ -87,6 +91,11 @@ export class BotBrain {
     const enemyBase = w.front(1 - p.team);
     const toCenter = p.team === 0 ? 1 : -1;
     if (this.homeZ === null) this.homeZ = p.z;
+
+    // vehicles: drive the one we're on; otherwise maybe go and take one
+    this.vehicleWait -= dt;
+    if (p.riding >= 0) { this.ride(w, p, dt); return; }
+    if (w.phase === 'fight' && this.vehicleWait <= 0 && this.takeVehicle(w, p, dt)) return;
 
     // ── choose a goal ──
     if (w.phase === 'build') {
@@ -188,6 +197,100 @@ export class BotBrain {
         break;
       }
     }
+  }
+
+  /** Where this bot is trying to get to in the fight: its objective, or (Team Deathmatch) the middle of the map. */
+  private destination(w: World, p: Penguin): V3 {
+    const flags = w.mode !== 'tdm';
+    if (flags) {
+      if (this.objective < 0) this.pickObjective(w, p, 0);
+      const pt = w.points[this.objective];
+      if (pt) return pt;
+    }
+    return this.advanceSpot ?? { x: w.map.midLineX, y: 0, z: p.z };
+  }
+
+  /**
+   * Walk over to a vehicle and hop on. The attackers' snowplow goes to the nearest bot, once people have had a moment to
+   * claim it; a snowmobile is only worth it when there's a long way to go and nobody else wants it.
+   */
+  private takeVehicle(w: World, p: Penguin, dt: number): boolean {
+    let best: Vehicle | null = null, bd = Infinity;
+    for (const v of w.vehicles) {
+      if (!v.alive || v.seats[0] >= 0 || boardingBlock(w, v, p)) continue;
+      const d = Math.hypot(v.x - p.x, v.z - p.z);
+      if (d >= bd) continue;
+      if (v.kind === 'snowplow') {
+        if (v.idleT < CFG.plowBotWait || d > 55 || w.holdT > 0) continue;
+        if (w.penguins.some(q => q !== p && q.bot && q.alive && q.team === p.team && q.riding < 0 && Math.hypot(v.x - q.x, v.z - q.z) < d - 0.01)) continue;
+      } else {
+        if (v.idleT < 8 || d > 12 || p.carried === 0) continue;
+        const to = this.destination(w, p);
+        if (Math.hypot(to.x - p.x, to.z - p.z) < 45) continue;
+      }
+      bd = d; best = v;
+    }
+    if (!best) return false;
+    if (this.moveTo(w, p, best, best.kind === 'snowplow' ? 2.9 : 1.7, dt)) p.input.use = (Math.floor(this.t * 10) % 2) === 0;
+    this.reverseT = 0; this.jams = 0; this.stuckT = 0;
+    return true;
+  }
+
+  /** At the wheel: steer for where this bot wants to be. The snowplow goes for the objective and anyone in its way. */
+  private ride(w: World, p: Penguin, dt: number) {
+    const v = vehicleOf(w, p);
+    const inp = p.input;
+    if (!v) return;
+    const tap = () => { inp.use = (Math.floor(this.t * 10) % 2) === 0; };
+    const hopOff = (wait: number) => { tap(); this.vehicleWait = wait; };
+    if (p.seat !== 0) {
+      // a passenger: throw from the back seat, and get off if nobody is driving
+      this.pickTarget(w, p);
+      this.combatWhileMoving(w, p);
+      if (v.seats[0] < 0) hopOff(10);
+      return;
+    }
+    const plow = v.kind === 'snowplow';
+    let to = this.destination(w, p);
+    let near = plow ? 3 : 9;
+    if (plow) {
+      // run down whoever is close and in front of the push
+      let bd = 17;
+      for (const e of w.penguins) {
+        if (!e.alive || e.team === p.team || e.invuln > 0 || e.riding >= 0) continue;
+        const d = Math.hypot(e.x - v.x, e.z - v.z);
+        if (d < bd && Math.abs(e.y - v.y) < 2.5) { bd = d; to = e; near = 0; }
+      }
+    } else {
+      this.pickTarget(w, p);
+      // a snowmobile is for getting there: hop off near the objective, or when a fight starts close by
+      const d = Math.hypot(to.x - v.x, to.z - v.z);
+      if (d < near || p.health <= 1 || (this.targetVisible && this.targetDist(w, p) < 13) || this.jams >= 3) { if (Math.abs(v.speed) < 6) hopOff(25); return; }
+    }
+    const dx = to.x - v.x, dz = to.z - v.z, d = Math.hypot(dx, dz);
+    let yaw = Math.atan2(-dx, -dz);
+    // something solid ahead (a house, a sled, a tree)? swing round it
+    const fx = -Math.sin(v.yaw), fz = -Math.cos(v.yaw);
+    const look = plow ? 5.5 : 4 + Math.abs(v.speed) * 0.35;
+    let blocked = w.propAt(v.x + fx * look, v.y + 0.9, v.z + fz * look) || w.propAt(v.x + fx * look * 0.55, v.y + 0.9, v.z + fz * look * 0.55);
+    if (!blocked) for (const t of w.map.trees) {
+      const tx = t.x - v.x, tz = t.z - v.z, along = tx * fx + tz * fz;
+      if (along > 0 && along < look + 1 && Math.abs(tx * fz - tz * fx) < t.r + (plow ? 1.7 : 0.9)) { blocked = true; break; }
+    }
+    if (blocked) yaw = v.yaw + this.strafeDir * 1.1;
+    const err = wrap(yaw - v.yaw);
+    inp.yaw = v.yaw; inp.pitch = -0.1;
+    if (d < near) { inp.moveZ = 0; return; } // sit on the objective and take it
+    if (this.reverseT > 0) {
+      this.reverseT -= dt;
+      inp.moveZ = -1; inp.moveX = this.strafeDir;
+      return;
+    }
+    inp.moveX = Math.max(-1, Math.min(1, -err * 1.8));
+    inp.moveZ = plow ? (Math.abs(err) > 1.1 ? 0.2 : 1) : (Math.abs(err) > 1.4 ? 0.55 : 1);
+    // jammed against something: back out and try the other way round
+    if (Math.abs(v.speed) < 0.7) { this.stuckT += dt; if (this.stuckT > 1.1) { this.stuckT = 0; this.reverseT = 1.3; this.strafeDir *= -1; this.jams++; } }
+    else { this.stuckT = 0; if (Math.abs(v.speed) > 3) this.jams = 0; }
   }
 
   /** Whoever (or whatever) this bot is throwing at right now. */

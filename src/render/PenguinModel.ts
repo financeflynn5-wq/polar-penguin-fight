@@ -430,6 +430,28 @@ export class PenguinModel {
         break;
       }
       default: {
+        if (p.riding >= 0) {
+          // sitting on a vehicle: the driver leans in with both flippers on the bars, a passenger sits up and looks about
+          const driving = p.seat === 0;
+          const buzz = Math.sin(time * 31 + this.seed) * 0.012 * Math.min(1, speed / 4);
+          this.rot('body', driving ? -0.2 : 0.05, 0, buzz);
+          T.body.p.y -= 0.02;
+          this.rot('head', driving ? 0.16 : 0, 0, 0);
+          this.rot('tail', 0.5, 0, 0);
+          T.footL.q.setFromEuler(_e.set(-0.9, 0.25, 0)); T.footR.q.setFromEuler(_e.set(-0.9, -0.25, 0));
+          T.footL.p.set(-0.1, 0.05, -0.12); T.footR.p.set(0.1, 0.05, -0.12);
+          if (driving) {
+            const turn = (p.input.moveX || 0) * 0.12;
+            this.arm('L', 0.3, -0.18 + turn, 1); this.arm('R', 0.3, -0.18 - turn, 1);
+            this.elbow('L', 0.3, 0.1); this.elbow('R', 0.3, 0.1);
+          } else if (p.action === 'idle') {
+            this.arm('L', 0.5, -1, 0.25); this.arm('R', 0.5, -1, 0.25);
+          }
+          if (p.throwAnim > 0) this.throwPose(1 - p.throwAnim / 0.25);
+          if (speed > 9) { lid = LID_OPEN + 0.15; jaw = 0.35; }
+          armsSet = true;
+          break;
+        }
         if (p.surfing) {
           // surfer stance: low, flippers out for balance, no waddle
           const lean = (p.input.moveX || 0);

@@ -176,3 +176,10 @@ canvas { display: block; }
 #boot .bar { width: 260px; height: 12px; border-radius: 8px; background: rgba(255,255,255,.16); overflow: hidden; }
 #boot .fill { width: 0; height: 100%; border-radius: 8px; background: #8fd3ff; transition: width .15s; }
 #boot .sub { font: 600 14px 'Nunito', sans-serif; opacity: .8; }
+
+/* vehicles */
+.score .goal.plow { color: #ffd98a; margin-top: 2px; min-height: 12px; }
+.points.low { top: 102px; } /* Breakthrough's score card has the snowplow line under it */
+.card.ride .ridebar { height: 9px; width: 150px; margin-top: 6px; }
+.card.ride .ridebar > div { width: 100%; background: linear-gradient(90deg, #7fe0a0, #d8ffe2); transition: width .15s; }
+.card.ride .ridebar > div.low { background: linear-gradient(90deg, #ff6b5a, #ffb199); }

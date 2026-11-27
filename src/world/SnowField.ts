@@ -499,6 +499,57 @@ export class SnowField {
     return mass;
   }
 
+  /**
+   * The snowplow's blade: clear the box `near`..`far` ahead of (px, pz) and `halfW` to each side, from just under the
+   * original ground up to `top`, and heap what it cut into a windrow along each side (some of it is lost as spray).
+   * Unlike plow() it doesn't dig: it takes built-up snow (walls, mounds, forts) back down to the ground it stood on.
+   * Returns how much snow it cut, plus the centre of the cut for the spray.
+   */
+  bulldoze(px: number, pz: number, fx: number, fz: number, halfW: number, near: number, far: number, top: number,
+    rate: number, out: { mass: number; cx: number; cy: number; cz: number }): number {
+    out.mass = 0; out.cx = px + fx * far; out.cy = top; out.cz = pz + fz * far;
+    const c = this.cell;
+    const rx = -fz, rz = fx;
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (const f of [near, far]) for (const u of [-halfW, halfW]) {
+      const x = px + fx * f + rx * u, z = pz + fz * f + rz * u;
+      minX = Math.min(minX, x); maxX = Math.max(maxX, x); minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z);
+    }
+    const i0 = Math.max(0, Math.floor((minX - this.x0) / c)), i1 = Math.min(this.nx - 1, Math.ceil((maxX - this.x0) / c));
+    const k0 = Math.max(0, Math.floor((minZ - this.z0) / c)), k1 = Math.min(this.nz - 1, Math.ceil((maxZ - this.z0) / c));
+    const j1 = Math.min(this.ny - 1, Math.ceil(top / c));
+    let mass = 0, sx = 0, sy = 0, sz = 0, jMin = this.ny, lowest = Infinity;
+    for (let k = k0; k <= k1; k++) for (let i = i0; i <= i1; i++) {
+      const wx = this.x0 + i * c - px, wz = this.z0 + k * c - pz;
+      const f = wx * fx + wz * fz, u = wx * rx + wz * rz;
+      if (f < near || f > far || Math.abs(u) > halfW) continue;
+      const col = k * this.nx + i;
+      const base = this.baseHeight[col];
+      if (base < lowest) lowest = base;
+      // leave the ground as it was: only what stands above it goes
+      const jStart = Math.max(0, Math.ceil((Math.max(this.bedrock[col], base) + 0.12) / c));
+      if (jStart < jMin) jMin = jStart;
+      for (let j = jStart; j <= j1; j++) {
+        const id = col * this.ny + j;
+        const cur = this.density[id];
+        if (cur === 0) continue;
+        const res = 1 - 0.6 * (this.hard[id] / 255);
+        const take = Math.min(cur, Math.ceil(cur * rate * res));
+        this.density[id] = cur - take;
+        if (this.density[id] < 30) this.hard[id] = 0;
+        mass += take; sx += (this.x0 + i * c) * take; sy += j * c * take; sz += (this.z0 + k * c) * take;
+      }
+    }
+    if (mass <= 0) return 0;
+    out.mass = mass; out.cx = sx / mass; out.cy = sy / mass; out.cz = sz / mass;
+    this.markDirty(i0, Math.max(0, jMin - 1), k0, i1, j1, k1);
+    this.markUnstable(i0, k0, i1, k1);
+    // the windrows: most of it rolls off the ends of the blade
+    const side = halfW + 1.0, back = near - 0.4;
+    for (const s of [-1, 1]) this.pourColumns(px + fx * back + rx * side * s, pz + fz * back + rz * side * s, 1.0, mass * 0.4, lowest, lowest + 1.7);
+    return mass;
+  }
+
   // ───────────────────────── snapshots (for late joiners online) ─────────────────────────
   snapshot(): Uint8Array { return this.density.slice(); }
 }
