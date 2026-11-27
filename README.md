@@ -36,10 +36,10 @@ Every map has jump ramps on its hills (icy decks with gold arrows and candy-cane
 
 ## Vehicles
 
-Tap E beside a vehicle to hop on and E again to hop off. W and S drive, A and D steer, and the camera follows.
+Tap E beside a vehicle to hop on and E again to hop off. W and S drive, A and D steer, and the camera follows. Any vehicle standing empty is anyone's, the other team's included: a stolen one takes on its new team's colours, and goes back to its own camp if it is left empty for 30 seconds.
 
-- **Snowmobile** (every mode): fast, two seats, parked at each team's camp (one for every 5 penguins on the team). The driver steers; a passenger on the back can still pack and throw. It can't get through a snow wall, it jumps off ramps and drifts, it slides about on ice, and running into an enemy at speed knocks them flying. Riders sit out in the open and get hit like anyone else. Five snowball hits wreck it (a rolling giant snowball does it in one), and a new one turns up at camp 20 seconds later. Either team can take any snowmobile that is standing empty.
-- **Snowplow** (Breakthrough, attackers only): slow and very tough. The blade cuts whatever snow is in front of it down to the ground and throws it off to both sides, so it drives straight through walls and forts and leaves a road behind it. It knocks down turrets, bursts giant snowballs it drives into, and flattens any defender the blade reaches. The driver is safe inside until it is wrecked. It turns up at the attackers' camp 30 seconds into the fight, and again 90 seconds after the last one was wrecked. It takes 3.5 snowball hits for every penguin on a team to wreck it (about 18 in 5v5, 35 in 10v10), and a rolling giant snowball does 7 hits' worth at once. A bot drives it if no person takes it within a few seconds.
+- **Snowmobile** (every mode): fast, two seats, parked at each team's camp (one for every 5 penguins on the team). The driver steers; a passenger on the back can still pack and throw. It can't get through a snow wall, it jumps off ramps and drifts, it slides about on ice, and running into an enemy at speed knocks them flying. Riders sit out in the open and get hit like anyone else. Five snowball hits wreck it (a rolling giant snowball does it in one), and a new one turns up at camp 20 seconds later.
+- **Snowplow** (Breakthrough, turns up at the attackers' camp): slow and very tough. Space puts the blade down or lifts it. With the blade up it cuts whatever snow is in front of it down to the ground and throws it off to both sides, so it drives straight through walls and forts and leaves a road behind it. With the blade down it scrapes the snow up off the ground and pushes it along in a heap in front (about 3.5 m tall and as wide as the blade, with the overflow rolling off into banks at both sides), which slows it down; stop or lift the blade and the heap stays where it is as a wall. It knocks down turrets, bursts giant snowballs it drives into, and flattens any defender the blade reaches. The driver is safe inside until it is wrecked. It turns up at the attackers' camp 30 seconds into the fight, and again 90 seconds after the last one was wrecked. It takes 3.5 snowball hits for every penguin on a team to wreck it (about 18 in 5v5, 35 in 10v10), and a rolling giant snowball does 7 hits' worth at once. A bot drives it (blade up) if no person takes it within a few seconds. The defenders can steal it if the attackers leave it standing empty; bots never steal it.
 
 All of these numbers are in `src/sim/config.ts` (how long, how tough) and `VEHICLE_SPECS` in `src/sim/Vehicles.ts` (how each one drives).
 
@@ -79,7 +79,7 @@ Then open the link Vite prints (usually http://localhost:5173).
 | Hold E | Stash your snowballs in your stockpile, or load a turret beside you |
 | X | Swap between your gun or blade and your snowballs (they come from the gun pads) |
 | Shift | Belly slide (penguin), charge (polar bear). Sliding: A / D steer left and right as you see it on screen, W bends the slide toward where you look, S brakes. Hit a jump ramp at speed to fly |
-| Space | Hop |
+| Space | Hop. Driving the snowplow: blade down or up |
 | Tab | Scoreboard |
 
 ## Build for the web

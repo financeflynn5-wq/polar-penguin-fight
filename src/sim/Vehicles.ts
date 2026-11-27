@@ -68,6 +68,9 @@ export const VEHICLE_SPECS: Record<VehicleKind, VehicleSpec> = {
 
 /** The snowplow's blade, in the vehicle's own frame. */
 export const BLADE = { near: 1.9, far: 3.0, halfW: 1.55, top: 3.4 };
+const PUSH_LOAD = 150000; // snow moved per second that slows the snowplow right down when it is pushing a heap
+/** Blade down (Space): how deep it bites into the ground, and how high the heap in front of it can get. */
+export const PUSH = { skim: 0.35, heap: 3.4, top: 5.0 };
 
 export interface Vehicle {
   id: number; kind: VehicleKind;
@@ -98,6 +101,8 @@ export interface Vehicle {
   /** how fast the ground under it was rising or falling: this is what throws it into the air off a ramp */
   climb: number;
   snowAcc: number; snowT: number;
+  /** snowplow: the blade is down, heaping snow up in front of it into a wall (up, it cuts through and throws it aside) */
+  plowDown: boolean; plowCd: number;
   stuckT: number;
 }
 
@@ -202,7 +207,7 @@ function makeVehicle(w: World, kind: VehicleKind, team: number, slot: number, at
     x: at.x, y: at.y, z: at.z, px: at.x, py: at.y, pz: at.z, yaw: at.yaw, pyaw: at.yaw, pitch: 0, roll: 0,
     vx: 0, vy: 0, vz: 0, speed: 0, steer: 0, grounded: true,
     health: maxHealth(w, kind),
-    seats: spec.seats.map(() => -1), alive: true, idleT: 0, lastDriver: -1, hitT: 9, load: 0, climb: 0, snowAcc: 0, snowT: 0, stuckT: 0,
+    seats: spec.seats.map(() => -1), alive: true, idleT: 0, lastDriver: -1, hitT: 9, load: 0, climb: 0, snowAcc: 0, snowT: 0, stuckT: 0, plowDown: false, plowCd: 0,
   };
 }
 
@@ -243,9 +248,8 @@ export function nearVehicle(w: World, p: Penguin): Vehicle | null {
   return best;
 }
 
-/** Why this penguin can't take that vehicle: 0 = they can, 1 = it's the other team's snowplow, 2 = other team's riders are on it. */
+/** Why this penguin can't take that vehicle: 0 = they can, 2 = other team's riders are on it. (An empty one is anybody's, the snowplow too.) */
 export function boardingBlock(w: World, v: Vehicle, p: Penguin): number {
-  if (v.kind === 'snowplow' && v.team !== p.team) return 1;
   for (const id of v.seats) { const r = id >= 0 ? w.penguin(id) : undefined; if (r && r.team !== p.team) return 2; }
   return 0;
 }
@@ -320,6 +324,11 @@ export function stepRider(w: World, p: Penguin, dt: number) {
   const v = vehicleOf(w, p);
   if (!v || !v.alive || v.seats[p.seat] !== p.id) { p.riding = -1; p.covered = false; return; }
   const inp = p.input;
+  // Space in the snowplow's cab puts the blade down, or lifts it again
+  if (inp.jump && p.seat === 0 && v.kind === 'snowplow' && v.plowCd <= 0 && w.phase !== 'end') {
+    v.plowDown = !v.plowDown; v.plowCd = 0.3;
+    w.emit({ type: 'vehicle', what: v.plowDown ? 'bladeDown' : 'bladeUp', vid: v.id, kind: v.kind, team: v.team, pid: p.id, x: v.x, y: v.y, z: v.z });
+  }
   inp.jump = false;
   const spec = VEHICLE_SPECS[v.kind];
   if (spec.canThrow[p.seat]) {
@@ -447,7 +456,8 @@ function stepVehicle(w: World, v: Vehicle, dt: number) {
     const ice = w.isIce(v.x, v.z);
     const top = spec.maxSpeed * (1 - 0.7 * v.load);
     if (throttle > 0) {
-      if (vf < 0) vf = Math.min(0, vf + spec.brake * dt);
+      // (rolling back slowly counts as standing: braking to a stop every frame would leave it stuck nose-up on a slope)
+      if (vf < -0.4) vf = Math.min(0, vf + spec.brake * dt);
       else vf += spec.accel * throttle * Math.max(0, 1 - vf / top) * dt;
     } else if (throttle < 0) {
       if (vf > 0.4) vf = Math.max(0, vf - spec.brake * dt);
@@ -475,9 +485,14 @@ function stepVehicle(w: World, v: Vehicle, dt: number) {
     // the snowplow's blade: whatever stands in front of it is cut down to the ground and shoved off to the sides
     if (v.kind === 'snowplow') {
       let inst = 0;
+      v.plowCd = Math.max(0, v.plowCd - dt);
+      if (!driver) v.plowDown = false;
       if (vf > 0.35) {
-        const m = f.bulldoze(v.x, v.z, fx, fz, BLADE.halfW, BLADE.near, BLADE.far, v.y + BLADE.top, 0.55, cut);
-        inst = m / dt / 26000;
+        // blade down: it heaps the snow up in front and carries it along (a wall, when you stop). Up: straight through.
+        const m = v.plowDown
+          ? f.shove(v.x, v.z, fx, fz, BLADE.halfW, BLADE.near, BLADE.far, v.y + PUSH.top, PUSH.skim, PUSH.heap, 0.55, cut)
+          : f.bulldoze(v.x, v.z, fx, fz, BLADE.halfW, BLADE.near, BLADE.far, v.y + BLADE.top, 0.55, cut);
+        inst = m / dt / (v.plowDown ? PUSH_LOAD : 26000);
         v.snowAcc += m;
         v.snowT -= dt;
         if (v.snowT <= 0 && v.snowAcc > 60) {
