@@ -906,9 +906,9 @@ export class Game {
         break;
       }
       case 'splat': {
-        P.burst(e.x, e.y + 0.6, e.z, 70, 6, 1.5);
-        A.splat(e.x, e.y, e.z);
         const victim = w.penguin(e.pid)!;
+        P.poof(e.x, e.y, e.z, CLASSES[victim.cls].top);
+        A.splat(e.x, e.y, e.z);
         const killer = w.penguin(e.by);
         H.feed(killer, victim, e.cause);
         if (e.by === me.id && e.pid !== me.id) H.banner('SPLAT!', e.cause === 'turret' ? `Your turret got ${victim.name}` : e.cause === 'charge' ? `You ran ${victim.name} over` : e.cause === 'vehicle' ? `You ran over ${victim.name}` : e.cause === 'cocoa' ? `You melted ${victim.name}` : e.cause === 'blade' ? `You whacked ${victim.name}` : e.cause === 'tankgun' ? `You peppered ${victim.name}` : e.cause === 'catapult' ? `You catapulted ${victim.name}` : `You got ${victim.name}`, 1.3);
