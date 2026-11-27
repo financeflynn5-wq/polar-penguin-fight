@@ -113,6 +113,14 @@ export const CFG = {
   avalancheDelay: 1.3,
   avalancheRange: 75,
 
+  // polar bear charge (Shift)
+  rushSpeed: 12.5,
+  rushTime: 1.15, // seconds a charge lasts
+  rushCooldown: 7, // seconds after a charge before the next
+  rushSteer: 1.5, // how fast a charge can be turned, rad/s
+  rushDamage: 2, // hits an enemy takes from being bowled over
+  rushSmash: 7500, // snow one charge can burst through before it stalls (2040 = one cubic metre)
+
   // Conquest
   conquestBuildPhase: 45,
   conquestFightPhase: 480,

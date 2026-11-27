@@ -3,18 +3,15 @@ import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { Penguin } from '../sim/World';
 import { TEAM_COLORS } from './Environment';
 import { makeSurfboard } from './Props';
-import { Assets } from './Assets';
+import { Assets, RigFacts } from './Assets';
+import { CLASSES, ClassId } from '../sim/Classes';
 import { GUN_BLADE } from '../sim/Guns';
 import { bladePose, BladeAt } from './BladePose';
 
-// The penguin and its hats are Blender assets (tools/blender → src/assets/models). This file dresses a copy in team
-// colours and animates its skeleton. Every joint is axis-aligned at rest: x = the penguin's right, y = up, -z = ahead.
-
-/** How far the flippers are held out from straight down in the model's rest pose (radians). */
-const ARM_REST = 0.62;
-/** Each eye is turned outward by this much; its lid sweeps round that axis. */
-const EYE_YAW = 0.30;
-const LID_OPEN = 2.72;
+// The penguin, the polar bear, the yeti and the hats are Blender assets (tools/blender → src/assets/models). This file
+// dresses a copy in team colours and animates its skeleton. All three share one skeleton layout, and every joint is
+// axis-aligned at rest: x = the character's right, y = up, -z = ahead. What differs between them (how the arms hang,
+// how tall they are, where snow sticks) comes from Assets.rigs.
 
 // Team looks: jacket in the team colour, scarf and mittens in a lighter accent so the silhouette has some contrast.
 const SCARF_COLORS = [0xa9e4ff, 0xffd43d];
@@ -26,11 +23,22 @@ const UPGRADED_MITTENS: { color: number; emissive: number; glow: number; metal: 
 ];
 
 interface Looks {
-  base: THREE.Material; eye: THREE.Material;
+  base: THREE.Material; eye: THREE.Material; other: Record<string, THREE.Material>;
   jacket: THREE.Material[]; scarf: THREE.Material[]; mitten: THREE.Material[][];
   all: THREE.MeshPhysicalMaterial[];
 }
-let looks: Looks | null = null;
+type Side = 'L' | 'R';
+type Sides = Record<Side, THREE.Vector3>;
+/** One class's model, its materials, and the numbers its poses are built from. */
+interface Rig {
+  src: THREE.Group; facts: RigFacts; looks: Looks;
+  /** how much bigger than the penguin it is (pose offsets are written for the penguin and scaled by this) */
+  size: number;
+  /** the model itself is scaled by this (only when a class has no model of its own yet and borrows the penguin) */
+  scale: number;
+  armBind: Sides; elbowAxis: Sides; lidAxis: Sides;
+}
+const rigs = new Map<ClassId, Rig>();
 let lowQuality = false;
 
 function tinted(src: THREE.MeshPhysicalMaterial, color: number, glow: number) {
@@ -42,10 +50,15 @@ function tinted(src: THREE.MeshPhysicalMaterial, color: number, glow: number) {
   return m;
 }
 
-function buildLooks(): Looks {
+const DRESSED = ['Eye', 'TeamJacket', 'TeamScarf', 'Mitten'];
+
+function buildLooks(src: THREE.Group): Looks {
   const found: Record<string, THREE.MeshPhysicalMaterial> = {};
-  Assets.penguin!.traverse(o => { const m = (o as THREE.Mesh).material as THREE.MeshPhysicalMaterial | undefined; if (m && !Array.isArray(m)) found[m.name] = m; });
-  const base = found.Penguin, eye = found.Eye;
+  src.traverse(o => { const m = (o as THREE.Mesh).material as THREE.MeshPhysicalMaterial | undefined; if (m && !Array.isArray(m)) found[m.name] = m; });
+  // everything that isn't an eye or team clothing: feathers or fur, beak or muzzle, feet
+  const other: Record<string, THREE.Material> = {};
+  for (const n of Object.keys(found)) if (!DRESSED.includes(n)) other[n] = found[n];
+  const base = Object.values(other)[0] as THREE.MeshPhysicalMaterial, eye = found.Eye;
   eye.envMapIntensity = 1.6;
   // the whites and the painted catch-lights glow a little, so eyes still sparkle when a face is in shade
   eye.emissive.set(0xffffff); eye.emissiveMap = eye.map; eye.emissiveIntensity = 0.3;
@@ -61,11 +74,31 @@ function buildLooks(): Looks {
     }
     return row;
   });
-  const all = [base, eye, ...jacket, ...scarf, ...mitten.flat()];
+  const all = [...Object.values(other) as THREE.MeshPhysicalMaterial[], eye, ...jacket, ...scarf, ...mitten.flat()];
   for (const m of all) { m.userData.normalMap = m.normalMap; m.userData.sheen = m.sheen; m.userData.clearcoat = m.clearcoat; }
-  const l = { base, eye, jacket, scarf, mitten, all };
+  const l = { base, eye, other, jacket, scarf, mitten, all };
   applyQuality(l);
   return l;
+}
+
+function rigFor(cls: ClassId): Rig {
+  let r = rigs.get(cls);
+  if (r) return r;
+  // a class whose model isn't built yet borrows the penguin, scaled up to its size
+  const own = Assets.models[cls];
+  const src = own ?? Assets.models.penguin!;
+  const facts = own ? Assets.rigs[cls] : Assets.rigs.penguin;
+  const scale = own ? 1 : CLASSES[cls].top / CLASSES.penguin.top;
+  const a = facts.armRest, e = facts.eyeYaw;
+  r = {
+    src, facts, scale, looks: (own ? null : rigs.get('penguin')?.looks) ?? buildLooks(src),
+    size: facts.height * scale / Assets.rigs.penguin.height,
+    armBind: { L: new THREE.Vector3(-Math.sin(a), -Math.cos(a), 0), R: new THREE.Vector3(Math.sin(a), -Math.cos(a), 0) },
+    elbowAxis: { L: new THREE.Vector3(Math.cos(a), -Math.sin(a), 0), R: new THREE.Vector3(Math.cos(a), Math.sin(a), 0) },
+    lidAxis: { L: new THREE.Vector3(Math.cos(e), 0, -Math.sin(e)), R: new THREE.Vector3(Math.cos(e), 0, Math.sin(e)) },
+  };
+  rigs.set(cls, r);
+  return r;
 }
 
 function applyQuality(l: Looks) {
@@ -81,7 +114,7 @@ function applyQuality(l: Looks) {
 export function setPenguinQuality(low: boolean) {
   if (low === lowQuality) return;
   lowQuality = low;
-  if (looks) applyQuality(looks);
+  for (const r of new Set([...rigs.values()].map(r => r.looks))) applyQuality(r);
 }
 
 const SNOW = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 });
@@ -97,7 +130,7 @@ function lumpy(r: number, detail: number, seed: number, amount = 0.12) {
   g.computeVertexNormals();
   return g;
 }
-const G = { ball: lumpy(0.07, 2, 1.3), splat: lumpy(1, 2, 4.1, 0.2), lump: lumpy(1, 3, 2.2, 0.1) };
+const G = { ball: lumpy(0.07, 2, 1.3), giant: lumpy(1, 3, 3.3, 0.05), splat: lumpy(1, 2, 4.1, 0.2), lump: lumpy(1, 3, 2.2, 0.1) };
 
 /** A copy of a Blender-built hat, ready to sit on the head's hat joint. Null for 'none' (or a hat that isn't built). */
 export function makeHat(name: string): THREE.Object3D | null {
@@ -132,7 +165,6 @@ function nameTag(text: string, team: number) {
   return s;
 }
 
-type Side = 'L' | 'R';
 const BONES = ['body', 'chest', 'head', 'jaw', 'tail', 'footL', 'footR', 'armL', 'armR', 'forearmL', 'forearmR', 'handL', 'handR'] as const;
 type BoneName = typeof BONES[number];
 interface Target { q: THREE.Quaternion; p: THREE.Vector3; s: THREE.Vector3; bone: THREE.Bone; rest: THREE.Vector3 }
@@ -142,10 +174,7 @@ const _q = new THREE.Quaternion();
 const _q2 = new THREE.Quaternion();
 const _v = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
-const X = new THREE.Vector3(1, 0, 0), Z = new THREE.Vector3(0, 0, 1);
-const ARM_BIND = { L: new THREE.Vector3(-Math.sin(ARM_REST), -Math.cos(ARM_REST), 0), R: new THREE.Vector3(Math.sin(ARM_REST), -Math.cos(ARM_REST), 0) };
-const ELBOW_AXIS = { L: new THREE.Vector3(Math.cos(ARM_REST), -Math.sin(ARM_REST), 0), R: new THREE.Vector3(Math.cos(ARM_REST), Math.sin(ARM_REST), 0) };
-const LID_AXIS = { L: new THREE.Vector3(Math.cos(EYE_YAW), 0, -Math.sin(EYE_YAW)), R: new THREE.Vector3(Math.cos(EYE_YAW), 0, Math.sin(EYE_YAW)) };
+const Z = new THREE.Vector3(0, 0, 1);
 const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
 const ease = (x: number) => { x = clamp01(x); return x * x * (3 - 2 * x); };
 
@@ -178,7 +207,13 @@ export class PenguinModel {
   private seed = Math.random() * 100;
   private mittenLevel = -1;
   private blink = 1 + Math.random() * 3;
-  private lidNow = LID_OPEN;
+  private lidNow: number;
+  private rig: Rig;
+  /** pose offsets are written for the penguin; bigger characters scale them by this */
+  private S: number;
+  private maxHealth: number;
+  /** the giant snowball a yeti holds over its head while it winds up */
+  private heldBall: THREE.Mesh | null = null;
   private landSquash = 0;
   private wasGrounded = true;
   private lastHealth = 99;
@@ -193,68 +228,92 @@ export class PenguinModel {
   camDist = 0;
   private boardYaw = 0;
 
-  constructor(public team: number, hat: string, name: string | null, private showTag = true) {
-    if (!looks) looks = buildLooks();
-    const L = looks;
-    this.model = SkeletonUtils.clone(Assets.penguin!);
+  constructor(public team: number, hat: string, name: string | null, private showTag = true, readonly cls: ClassId = 'penguin') {
+    const rig = this.rig = rigFor(cls);
+    const L = rig.looks, facts = rig.facts, def = CLASSES[cls];
+    const S = this.S = rig.size;
+    this.maxHealth = def.health;
+    this.lidNow = facts.lidOpen;
+    this.model = SkeletonUtils.clone(rig.src);
+    this.model.scale.setScalar(rig.scale);
     this.root.add(this.model);
     this.model.traverse(o => {
       const m = o as THREE.SkinnedMesh;
       if (!m.isSkinnedMesh) return;
       const n = (m.material as THREE.Material).name;
-      m.material = n === 'TeamJacket' ? L.jacket[team] : n === 'TeamScarf' ? L.scarf[team] : n === 'Mitten' ? L.mitten[team][0] : n === 'Eye' ? L.eye : L.base;
+      m.material = n === 'TeamJacket' ? L.jacket[team] : n === 'TeamScarf' ? L.scarf[team] : n === 'Mitten' ? L.mitten[team][0] : n === 'Eye' ? L.eye : L.other[n] ?? L.base;
       if (n === 'Mitten') this.mittenMeshes.push(m);
-      (m.parent!.name.startsWith('PenguinLOD') ? this.far : this.near).push(m);
+      (m.name.includes('LOD') || m.parent!.name.includes('LOD') ? this.far : this.near).push(m);
       m.castShadow = true;
       m.frustumCulled = false; // the skeleton moves the mesh well away from its rest box (belly slides, squashes)
     });
     for (const m of this.far) m.visible = false;
-    const bone = (n: string) => this.model.getObjectByName(n) as THREE.Bone;
+    // (a joint a model doesn't have gets a stand-in that moves nothing)
+    const bone = (n: string) => (this.model.getObjectByName(n) as THREE.Bone | undefined) ?? new THREE.Bone();
     for (const n of BONES) { const b = bone(n); this.t[n] = { q: new THREE.Quaternion(), p: new THREE.Vector3(), s: new THREE.Vector3(1, 1, 1), bone: b, rest: b.position.clone() }; }
     this.lids = { L: bone('lidL'), R: bone('lidR') };
     this.hatBone = bone('hat');
     for (const [k, ch] of ['A', 'B'].entries()) {
       const bs = [1, 2, 3].map(i => bone(`scarf${ch}${i}`));
+      if (bs.some(b => !b.parent)) continue;
       // the strand's rest direction: from its first joint to its last, in the chest's space
       const rest = bs[2].position.clone().add(bs[1].position).normalize();
       this.strands.push(new Strand(bs, rest, k * 1.9));
     }
     this.setHat(hat);
 
+    // put something at a point given in the model's own space (feet at the origin) onto a joint, so it moves with it
+    this.model.updateMatrixWorld(true);
+    const onto = (b: BoneName, o: THREE.Object3D, x: number, y: number, z: number) => {
+      const bn = this.t[b].bone;
+      o.position.copy(bn.worldToLocal(_v.set(x, y, z).multiplyScalar(rig.scale)));
+      bn.add(o);
+    };
+
     // snow splat marks (show damage): clumps stuck to the jacket and the face
-    const stuck: [BoneName, number, number, number, number, number, number][] = [
-      ['chest', 0.17, 0.02, -0.335, 0.105, 0.085, 0.05], ['head', -0.15, 0.26, -0.215, 0.085, 0.07, 0.045], ['body', -0.2, 0.3, -0.31, 0.11, 0.09, 0.05],
+    const stuck: [BoneName, [number, number, number], number, number, number][] = [
+      ['chest', facts.chestFront, 0.105, 0.085, 0.05], ['head', facts.cheek, 0.085, 0.07, 0.045], ['body', facts.belly, 0.11, 0.09, 0.05],
     ];
-    for (const [b, x, y, z, sx, sy, sz] of stuck) {
+    for (const [b, at, sx, sy, sz] of stuck) {
       const s = new THREE.Mesh(G.splat, SNOW);
-      s.position.set(x, y, z); s.scale.set(sx, sy, sz); s.rotation.set(0.3, x * 2, 0.4);
+      s.scale.set(sx * S, sy * S, sz * S); s.rotation.set(0.3, at[0] * 2, 0.4);
       s.visible = false; s.castShadow = true;
-      this.t[b].bone.add(s);
+      onto(b, s, at[0], at[1], at[2]);
       this.splats.push(s);
     }
 
     // the snow lump you become when splatted
     this.lump = new THREE.Mesh(G.lump, SNOW);
-    this.lump.position.y = 0.2;
+    this.lump.position.y = 0.2 * S;
     this.lump.visible = false;
     this.lump.castShadow = true;
     this.root.add(this.lump);
 
     // carried snowballs: tucked round the back of the jacket hem, so you can count them from behind
-    for (let i = 0; i < 6; i++) {
+    const ballSize = def.ballRadius / CLASSES.penguin.ballRadius, belt = facts.belt;
+    const n = Math.max(def.maxCarry, 1) + (cls === 'penguin' ? 1 : 0);
+    const spread = Math.min(0.36 * Math.sqrt(ballSize), 2.2 / n);
+    for (let i = 0; i < n; i++) {
       const b = new THREE.Mesh(G.ball, SNOW);
-      const a = (i - 2.5) * 0.36;
-      b.position.set(Math.sin(a) * 0.41, 0.2 + (i % 2) * 0.012, Math.cos(a) * 0.4);
+      const a = (i - (n - 1) / 2) * spread;
+      b.scale.setScalar(ballSize > 1.5 ? ballSize * 0.62 : ballSize);
       b.rotation.set(i, i * 2, i * 3);
       b.castShadow = true;
       b.visible = false;
-      this.t.body.bone.add(b);
+      onto('body', b, Math.sin(a) * belt.rx, belt.y + (i % 2) * 0.012, Math.cos(a) * belt.rz);
       this.carriedBalls.push(b);
+    }
+
+    if (def.splash > 0) {
+      const hb = this.heldBall = new THREE.Mesh(G.giant, SNOW);
+      hb.scale.setScalar(def.ballRadius);
+      hb.castShadow = true; hb.visible = false;
+      onto('chest', hb, 0, facts.height + def.ballRadius * 0.85, 0.2);
     }
 
     if (name && showTag) {
       this.tag = nameTag(name, team);
-      this.tag.position.y = 1.8;
+      this.tag.position.y = facts.height * rig.scale + 0.65;
       this.root.add(this.tag);
     }
   }
@@ -266,6 +325,7 @@ export class PenguinModel {
     this.hatName = name;
     this.spinner = null; this.jiggles = [];
     if (!this.hat) return;
+    this.hat.scale.setScalar(this.rig.facts.hatScale);
     this.hatBone.add(this.hat);
     this.hat.traverse(o => {
       if (o.name.startsWith('spin')) this.spinner = o;
@@ -276,7 +336,7 @@ export class PenguinModel {
   setMittenLevel(level: number) {
     if (level === this.mittenLevel) return;
     this.mittenLevel = level;
-    for (const m of this.mittenMeshes) m.material = looks!.mitten[this.team][level];
+    for (const m of this.mittenMeshes) m.material = this.rig.looks.mitten[this.team][level];
   }
 
   // ── pose helpers: they write this frame's target for a joint; update() eases the skeleton toward the targets ──
@@ -285,11 +345,11 @@ export class PenguinModel {
   /** Point a flipper: out to its own side, up, and forward (any length; it is normalised). */
   private arm(side: Side, out: number, up: number, fwd: number) {
     _v.set(side === 'R' ? out : -out, up, -fwd).normalize();
-    this.t[side === 'R' ? 'armR' : 'armL'].q.setFromUnitVectors(ARM_BIND[side], _v);
+    this.t[side === 'R' ? 'armR' : 'armL'].q.setFromUnitVectors(this.rig.armBind[side], _v);
   }
   /** Bend the elbow forward and/or in toward the belly. */
   private elbow(side: Side, forward: number, inward = 0) {
-    const q = this.t[side === 'R' ? 'forearmR' : 'forearmL'].q.setFromAxisAngle(ELBOW_AXIS[side], forward);
+    const q = this.t[side === 'R' ? 'forearmR' : 'forearmL'].q.setFromAxisAngle(this.rig.elbowAxis[side], forward);
     if (inward) q.multiply(_q.setFromAxisAngle(Z, side === 'R' ? -inward : inward));
   }
 
@@ -331,7 +391,7 @@ export class PenguinModel {
       this.model.visible = false;
       this.lump.visible = true;
       const t = Math.min(1, (3.5 - p.downT) * 4);
-      this.lump.scale.set(0.55 * t + 0.1, 0.45 * t + 0.05, 0.55 * t + 0.1);
+      this.lump.scale.set(0.55 * t + 0.1, 0.45 * t + 0.05, 0.55 * t + 0.1).multiplyScalar(this.S);
       if (this.tag) this.tag.visible = false;
       this.snapPose = true;
       return;
@@ -349,7 +409,10 @@ export class PenguinModel {
     // ── this frame's target pose ──
     for (const n of BONES) { const t = T[n]; t.q.identity(); t.p.set(0, 0, 0); t.s.set(1, 1, 1); }
     const breathe = Math.sin(time * 2.1 + this.seed);
+    const LID_OPEN = this.rig.facts.lidOpen, S = this.S;
+    const slider = CLASSES[this.cls].slide, overhead = !!this.heldBall;
     let lid = LID_OPEN, jaw = 0;
+    let holding = false;
     let armsSet = false;
     const idleArms = () => { this.arm('L', 0.42, -1, 0.04); this.arm('R', 0.42, -1, 0.04); };
     idleArms();
@@ -358,7 +421,36 @@ export class PenguinModel {
     T.body.s.set(1 + sq * 0.3, 1 - sq * 0.35, 1 + sq * 0.3);
 
     switch (p.action) {
+      case 'rush': {
+        // the polar bear's charge: head down, shoulders first, bounding along with the arms pumping
+        this.walkPhase += dt * 13;
+        const s = Math.sin(this.walkPhase * 2), c = Math.cos(this.walkPhase * 2);
+        this.rot('body', -0.66 + s * 0.08, 0, 0);
+        T.body.p.set(0, (0.03 + Math.abs(c) * 0.08) * S, 0);
+        this.rot('head', 0.52, 0, 0);
+        // in the leaning body's own frame, "down at the snow" is forward and a bit down
+        this.arm('L', 0.22, -0.55 + s * 0.3, 0.85 + s * 0.35); this.arm('R', 0.22, -0.55 - s * 0.3, 0.85 - s * 0.35);
+        this.elbow('L', 0.3); this.elbow('R', 0.3);
+        T.footL.p.y += Math.max(0, s) * 0.13 * S; T.footL.p.z += (c * 0.2 - 0.14) * S;
+        T.footR.p.y += Math.max(0, -s) * 0.13 * S; T.footR.p.z += (-c * 0.2 - 0.14) * S;
+        T.footL.q.setFromEuler(_e.set(Math.max(0, s) * 0.6, 0, 0)); T.footR.q.setFromEuler(_e.set(Math.max(0, -s) * 0.6, 0, 0));
+        this.rot('tail', 0.4, s * 0.3, 0);
+        lid = LID_OPEN - 0.55; jaw = 0.75;
+        armsSet = true;
+        break;
+      }
       case 'slide': {
+        if (!slider) {
+          // no belly slides for bears and yetis: on the playground slide they sit, lean back and throw their arms up
+          this.rot('body', 0.3, 0, Math.sin(time * 8) * 0.04);
+          T.body.p.set(0, -0.06 * S, 0.05 * S);
+          this.rot('head', -0.15, 0, 0);
+          this.arm('L', 0.7, 1, 0.15 + Math.sin(time * 15) * 0.1); this.arm('R', 0.7, 1, 0.15 - Math.sin(time * 15) * 0.1);
+          for (const f of [T.footL, T.footR] as Target[]) { f.p.set(0, 0.1 * S, -0.3 * S); f.q.setFromEuler(_e.set(0.9, 0, 0)); }
+          lid = LID_OPEN + 0.2; jaw = 0.8;
+          armsSet = true;
+          break;
+        }
         // belly down, head first, flippers swept back like little wings, feet trailing with their soles up
         this.rot('body', -1.32, 0, Math.sin(time * 9) * 0.05);
         T.body.p.set(0, 0.33, 0.36);
@@ -421,8 +513,19 @@ export class PenguinModel {
         break;
       }
       case 'charge': {
-        // wind up: throwing flipper cocked back over the shoulder, the other one points at the target
         const c = p.charge;
+        if (overhead) {
+          // the yeti hoists a giant snowball over its head with both hands and leans back under it
+          this.rot('body', 0.06 + 0.16 * c, 0, 0);
+          this.rot('head', -0.12 - 0.1 * c, 0, 0);
+          for (const sd of ['L', 'R'] as Side[]) { this.arm(sd, 0.2, 1, -0.02 - 0.22 * c); this.elbow(sd, 0.12, 0.1); }
+          this.walk(speed, dt, 0.06, false);
+          lid = LID_OPEN - 0.5; jaw = 0.3 * c;
+          holding = true;
+          armsSet = true;
+          break;
+        }
+        // wind up: throwing flipper cocked back over the shoulder, the other one points at the target
         this.rot('body', 0.06 + 0.1 * c, 0, 0);
         this.rot('chest', 0, -0.3 - 0.3 * c, 0);
         this.rot('head', 0, 0.25 + 0.2 * c, 0);
@@ -460,20 +563,20 @@ export class PenguinModel {
           // surfer stance: low, flippers out for balance, no waddle
           const lean = (p.input.moveX || 0);
           this.rot('body', -0.12, 0.5, Math.sin(time * 3) * 0.05 - lean * 0.18);
-          T.body.p.y += 0.1; T.body.s.y *= 0.93;
+          T.body.p.y += 0.1 * S; T.body.s.y *= 0.93;
           this.rot('head', 0, -0.45, 0);
           this.arm('L', 1, -0.1 + Math.sin(time * 4) * 0.12, 0.1); this.arm('R', 1, -0.1 + Math.sin(time * 4 + 1) * 0.12, 0.1);
-          T.footL.p.y += 0.1; T.footR.p.y += 0.1;
+          T.footL.p.y += 0.1 * S; T.footR.p.y += 0.1 * S;
           if (p.throwAnim > 0) this.throwPose(1 - p.throwAnim / 0.25);
           armsSet = true;
           break;
         }
         if (!p.grounded) {
-          // in the air: flap!
-          const f = Math.sin(time * 26);
+          // in the air: flap! (the big ones just flail)
+          const f = Math.sin(time * (slider ? 26 : 13));
           this.arm('L', 1, 0.15 + f * 0.45, 0.05); this.arm('R', 1, 0.15 - f * 0.45, 0.05);
           T.footL.q.setFromEuler(_e.set(-0.5 + f * 0.25, 0, 0)); T.footR.q.setFromEuler(_e.set(-0.5 - f * 0.25, 0, 0));
-          T.footL.p.y += 0.03; T.footR.p.y += 0.03;
+          T.footL.p.y += 0.03 * S; T.footR.p.y += 0.03 * S;
           T.body.s.y *= 1.04;
           lid = LID_OPEN + 0.25; jaw = 0.6;
           armsSet = true;
@@ -533,15 +636,18 @@ export class PenguinModel {
     if (this.blink < 0) this.blink = 2 + Math.random() * 3.5;
     if (this.blink < 0.11) lid = 0.25;
     this.lidNow += (lid - this.lidNow) * Math.min(1, dt * 30);
-    this.lids.L.quaternion.setFromAxisAngle(LID_AXIS.L, -this.lidNow);
-    this.lids.R.quaternion.setFromAxisAngle(LID_AXIS.R, -this.lidNow);
+    this.lids.L.quaternion.setFromAxisAngle(this.rig.lidAxis.L, -this.lidNow);
+    this.lids.R.quaternion.setFromAxisAngle(this.rig.lidAxis.R, -this.lidNow);
+    if (this.heldBall) this.heldBall.visible = holding;
     this.jawNow += (jaw - this.jawNow) * Math.min(1, dt * 14);
     T.jaw.bone.rotation.set(-0.42 * this.jawNow, 0, 0);
 
     this.secondary(p, dt, time, speed);
 
     // damage marks
-    for (let i = 0; i < this.splats.length; i++) this.splats[i].visible = i < 3 - p.health;
+    // (a class with more health gets its three snow marks spread over more hits)
+    const marks = Math.ceil(this.splats.length * (this.maxHealth - p.health) / this.maxHealth);
+    for (let i = 0; i < this.splats.length; i++) this.splats[i].visible = i < marks;
     // carried snowballs
     for (let i = 0; i < this.carriedBalls.length; i++) this.carriedBalls[i].visible = i < p.carried;
     // spawn protection blink
@@ -553,6 +659,13 @@ export class PenguinModel {
   /** The follow-through of a throw. u: 0 at release → 1 when the flipper has swung through. */
   private throwPose(u: number) {
     const a = ease(u / 0.45), b = ease((u - 0.3) / 0.7);
+    if (this.heldBall) {
+      // the yeti's two-handed heave: from overhead, forward and down
+      for (const sd of ['L', 'R'] as Side[]) { this.arm(sd, 0.25, 1 - 1.5 * a - 0.3 * b, -0.2 + 1.3 * a); this.elbow(sd, 0.1); }
+      this.addRot('body', 0.2 - 0.62 * ease(u / 0.6), 0, 0);
+      this.addRot('head', 0.2 * a, 0, 0);
+      return;
+    }
     // cocked back → whipping over the top → down across the body
     this.arm('R', 0.5 - 0.3 * a - 0.25 * b, 0.9 - 0.25 * a - 1.25 * b, -0.6 + 1.5 * a + 0.1 * b);
     this.elbow('R', 0.6 * (1 - a));
@@ -570,12 +683,13 @@ export class PenguinModel {
     const ph = this.walkPhase * 2;
     const s = Math.sin(ph), c = Math.cos(ph);
     this.addRot('body', 0, 0, -s * amount * 1.5 * moving);
-    T.body.p.y += Math.abs(c) * 0.045 * moving;
+    const S = this.S;
+    T.body.p.y += Math.abs(c) * 0.045 * moving * S;
     this.addRot('chest', 0, s * 0.1 * moving, 0);
     this.addRot('head', 0, 0, s * amount * 1.0 * moving); // the head stays level while the body rocks
     // left foot is in the air while s > 0, right foot while s < 0; each swings forward as it lifts
-    T.footL.p.y += Math.max(0, s) * 0.075 * moving; T.footL.p.z += c * 0.085 * moving;
-    T.footR.p.y += Math.max(0, -s) * 0.075 * moving; T.footR.p.z += -c * 0.085 * moving;
+    T.footL.p.y += Math.max(0, s) * 0.075 * moving * S; T.footL.p.z += c * 0.085 * moving * S;
+    T.footR.p.y += Math.max(0, -s) * 0.075 * moving * S; T.footR.p.z += -c * 0.085 * moving * S;
     T.footL.q.multiply(_q.setFromEuler(_e.set(Math.max(0, s) * 0.45 * moving, 0, 0)));
     T.footR.q.multiply(_q.setFromEuler(_e.set(Math.max(0, -s) * 0.45 * moving, 0, 0)));
     this.addRot('tail', 0, -s * 0.4 * moving, 0);

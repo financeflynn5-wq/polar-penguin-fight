@@ -12,7 +12,8 @@
     "preview": "vite preview --host",
     "typecheck": "tsc --noEmit && tsc --noEmit -p server",
     "test:net": "esbuild test/net.test.ts --bundle --platform=node --format=esm --outfile=server-dist/net.test.mjs --log-level=warning && node server-dist/net.test.mjs",
-    "test:online": "npm run build:server && esbuild test/netclient.test.ts --bundle --platform=node --format=esm --outfile=server-dist/netclient.test.mjs --log-level=warning && node server-dist/netclient.test.mjs"
+    "test:online": "npm run build:server && esbuild test/netclient.test.ts --bundle --platform=node --format=esm --outfile=server-dist/netclient.test.mjs --log-level=warning && node server-dist/netclient.test.mjs",
+    "balance": "esbuild tools/balance/classes.ts --bundle --platform=node --format=esm --outfile=server-dist/balance.mjs --log-level=warning && node server-dist/balance.mjs"
   },
   "dependencies": {
     "three": "0.180.0",

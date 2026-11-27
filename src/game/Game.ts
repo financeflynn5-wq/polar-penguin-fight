@@ -15,6 +15,7 @@ import { BotBrain } from '../sim/Bot';
 import { CFG, MITTEN_NAMES, REWARD_NAMES, GUN_NAMES } from '../sim/config';
 import { GUN_COCOA, GUN_BLADE } from '../sim/Guns';
 import { GunsView } from '../render/GunsView';
+import { CLASSES, ClassId } from '../sim/Classes';
 import { LandmarksView } from '../render/Landmarks';
 import { TurretsView } from '../render/Turrets';
 import { FlagsView } from '../render/Flags';
@@ -66,6 +67,9 @@ export class Game {
   mapId: MapId = 'bay';
   private rewardQueued = 0;
   private taughtTurret = false;
+  private taughtRush = false;
+  private menuClass: ClassId = 'penguin';
+  private menuHat = 'beanie';
   private trails = new Map<number, { dist: number; side: number; x: number; z: number }>();
   private models = new Map<number, PenguinModel>();
   private modelKeys = new Map<number, string>();
@@ -200,18 +204,38 @@ export class Game {
     if (this.net) { this.net.close(); this.net = null; }
     if (this.world || this.mapId !== 'bay') { this.world = null; this.loadMap('bay'); }
     const b = this.map.bases[0];
-    const p = new Penguin(0, '', 0, 'beanie', false);
+    const p = new Penguin(0, '', 0, this.menuHat, false, this.menuClass);
     p.x = b.center.x + 4; p.z = b.center.z + 3;
     p.y = this.map.field.surfaceBelow(p.x, 20, p.z, 0, 20) ?? b.center.y;
     p.px = p.x; p.py = p.y; p.pz = p.z;
     p.yaw = -Math.PI / 2 + 0.5;
     p.grounded = true;
     this.menuFake = p;
-    this.menuPenguin = new PenguinModel(0, 'beanie', null, false);
+    this.menuPenguin = new PenguinModel(0, this.menuHat, null, false, this.menuClass);
     this.scene.add(this.menuPenguin.root);
   }
 
-  setMenuHat(hat: string) { this.menuPenguin?.setHat(hat); }
+  setMenuHat(hat: string) { this.menuHat = hat; this.menuPenguin?.setHat(hat); }
+
+  /** The menu shows the class you've picked. */
+  setMenuClass(cls: ClassId) {
+    if (cls === this.menuClass) return;
+    this.menuClass = cls;
+    if (!this.menuPenguin || !this.menuFake) return;
+    this.menuPenguin.dispose(this.scene);
+    this.menuFake.cls = cls;
+    this.menuFake.health = CLASSES[cls].health;
+    this.menuPenguin = new PenguinModel(0, this.menuHat, null, false, cls);
+    this.scene.add(this.menuPenguin.root);
+  }
+
+  /** Pick the class you come back as after your next splat (offline it's set here; online the server is told). */
+  setNextClass(cls: ClassId) {
+    const me = this.world?.player;
+    if (!me) return;
+    me.nextCls = cls;
+    this.net?.setClass(cls);
+  }
 
   // ───────────────────────── match ─────────────────────────
   startMatch(opts: MatchOptions) {
@@ -225,11 +249,9 @@ export class Game {
     const slots = [0, 0];
     slots[this.world.player.team] = 1; // the player takes the first job slot on their team
     this.world.penguins.forEach((p, i) => {
-      const m = new PenguinModel(p.team, p.hat, p.bot ? p.name : p.name, true);
-      this.scene.add(m.root);
-      this.models.set(p.id, m);
       if (p.bot) this.bots.set(p.id, new BotBrain(i, rnd, slots[p.team]++));
     });
+    this.refreshModels();
     this.hud = new Hud(this.world);
     this.mode = 'play';
     this.input.enabled = true;
@@ -290,10 +312,10 @@ export class Game {
     const w = this.world;
     if (!w) return;
     for (const p of w.penguins) {
-      const key = `${p.team}|${p.hat}|${p.name}`;
+      const key = `${p.team}|${p.hat}|${p.name}|${p.cls}`;
       if (this.modelKeys.get(p.id) === key) continue;
       this.models.get(p.id)?.dispose(this.scene);
-      const m = new PenguinModel(p.team, p.hat, p.name, true);
+      const m = new PenguinModel(p.team, p.hat, p.name, true, p.cls);
       this.scene.add(m.root);
       this.models.set(p.id, m);
       this.modelKeys.set(p.id, key);
@@ -418,6 +440,7 @@ export class Game {
     this.handleEvents(w, me);
 
     // visuals
+    if (w.penguins.some(p => this.models.get(p.id)?.cls !== p.cls)) this.refreshModels(); // someone came back as another class
     for (const p of w.penguins) {
       const m = this.models.get(p.id);
       if (!m) continue;
@@ -492,7 +515,7 @@ export class Game {
     }
     if (pi.build && me.buildBlock === 1) hint = 'Too tall to reach from here: get closer or climb up';
     if (pi.build && me.slumping) hint = 'Too thin to go higher: the snow is sliding down to widen the base';
-    if (me.noSnowT > 0 && !riding && (pi.pack || pi.build || pi.dig || pi.roll || pi.turret)) hint = me.carried >= CFG.maxCarry && pi.pack ? 'Your mittens are full (5): stash or throw!' : 'No loose snow here';
+    if (me.noSnowT > 0 && !riding && (pi.pack || pi.build || pi.dig || pi.roll || pi.turret)) hint = me.carried >= CLASSES[me.cls].maxCarry && pi.pack ? `Your mittens are full (${CLASSES[me.cls].maxCarry}): stash or throw!` : 'No loose snow here';
     if (w.phase === 'build' && pi.fire && me.carried > 0) hint = 'No throwing until the fight starts!';
     if (!hint && me.alive && me.chill > 0.05) hint = me.chill > 0.9 ? 'Frozen stiff! Hot chocolate thaws you out' : 'Soaked! You\'re slowed down';
     this.hud!.update(w, me, dt, hint);
@@ -565,12 +588,16 @@ export class Game {
     const fx = -Math.sin(yaw) * Math.cos(pitch), fy = Math.sin(pitch), fz = -Math.cos(yaw) * Math.cos(pitch);
     const rx = Math.cos(yaw), rz = -Math.sin(yaw);
     const ride = me.alive ? vehicleOf(this.world!, me) : null;
-    let want = me.sliding ? 5.6 : me.charging ? 3.9 : me.input.build || me.input.turret ? 5.6 : 4.8;
-    if (ride) want = ride.kind === 'snowplow' ? 10.5 : me.charging ? 5.2 : 6.6 + Math.min(1.6, Math.abs(ride.speed) * 0.1);
-    if (!me.alive) want = 6.5;
+    const def = CLASSES[me.cls];
+    // (the camera sits further back and higher behind the bigger classes, so they don't fill the screen)
+    const back = def.camDist - CLASSES.penguin.camDist;
+    // (a yeti winding up holds a giant snowball over its head: stay back so it doesn't hide what you're aiming at)
+    let want = (me.sliding ? 5.6 : me.rushT > 0 ? 6.0 : me.charging ? (def.splash > 0 ? 4.8 : 3.9) : me.input.build || me.input.turret ? 5.6 : 4.8) + back;
+    if (ride) want = (ride.kind === 'snowplow' ? 10.5 : me.charging ? 5.2 : 6.6 + Math.min(1.6, Math.abs(ride.speed) * 0.1)) + back * 0.5;
+    if (!me.alive) want = 6.5 + back;
     this.camDist += (want - this.camDist) * Math.min(1, dt * 6);
-    const pivY = py + (ride ? (ride.kind === 'snowplow' ? 2.5 : 1.55) : me.sliding ? 1.0 : 1.5);
-    const sh = ride ? (ride.kind === 'snowplow' ? 0 : 0.3) : 0.62;
+    const pivY = py + (ride ? (ride.kind === 'snowplow' ? 2.5 : 1.55) : me.sliding ? 1.0 : def.eyeY);
+    const sh = ride ? (ride.kind === 'snowplow' ? 0 : 0.3) : 0.62 + (def.radius - CLASSES.penguin.radius) * 1.4;
     const pivX = px + rx * sh, pivZ = pz + rz * sh;
     // pull in if snow is in the way
     let dist = this.camDist;
@@ -588,7 +615,7 @@ export class Game {
     if (g !== null && cy < g + 0.35) cy = g + 0.35;
     this.camera.position.set(cx, cy, cz);
     this.camera.rotation.set(pitch, yaw, 0, 'YXZ');
-    const fovWant = ride ? (me.charging ? 66 : 72 + Math.min(12, Math.abs(ride.speed) * 0.7)) : me.sliding ? 78 + Math.min(10, Math.hypot(me.vx, me.vz) * 0.5) : me.charging ? 64 : 70;
+    const fovWant = ride ? (me.charging ? 66 : 72 + Math.min(12, Math.abs(ride.speed) * 0.7)) : me.sliding ? 78 + Math.min(10, Math.hypot(me.vx, me.vz) * 0.5) : me.rushT > 0 ? 80 : me.charging ? 64 : 70;
     this.camera.fov += (fovWant - this.camera.fov) * Math.min(1, dt * 5);
     this.camera.updateProjectionMatrix();
   }
@@ -648,11 +675,12 @@ export class Game {
     };
     for (const p of w.penguins) {
       if (p === me || !p.alive) continue;
-      const cy = p.y + (p.sliding ? 0.3 : 0.65);
+      const pd = CLASSES[p.cls];
+      const cy = p.y + (p.sliding ? 0.3 : pd.top * 0.62);
       // enemies are a little "sticky" under the crosshair, more so far away where a penguin is only a few pixels
       const enemy = p.team !== me.team;
       const d = Math.hypot(p.x - ox, cy - oy, p.z - oz);
-      const t = raySphere(p.x, cy, p.z, enemy ? 0.52 + Math.min(0.22, d * 0.006) : 0.5);
+      const t = raySphere(p.x, cy, p.z, pd.hitRadius + (enemy ? 0.02 + Math.min(0.22, d * 0.006) : 0));
       // snow in front of them still blocks the shot; the throw goes where the crosshair is, pulled only a little toward them
       if (t > 0 && t < bestT + (enemy ? 0.3 : 0)) {
         bestT = Math.min(bestT, t);
@@ -674,9 +702,7 @@ export class Game {
     this.aimAny = any;
   }
 
-  private throwSpeed(me: Penguin) {
-    return (CFG.throwSpeedMin + (CFG.throwSpeedMax - CFG.throwSpeedMin) * me.charge) * (1 + me.mitten * CFG.throwPerLevel);
-  }
+  private throwSpeed(me: Penguin) { return this.world!.throwSpeed(me); }
 
   /** Where a throw should go: the crosshair point, led a little when there's a moving enemy under it. */
   private throwAim(me: Penguin) {
@@ -730,7 +756,7 @@ export class Game {
       let normal: { x: number; y: number; z: number } | null = null;
       let willHit = false;
       const sdt = 0.04;
-      const hitR = CFG.hitRadius + CFG.snowballRadius;
+      const myBall = CLASSES[me.cls].ballRadius;
       outer: for (let i = 0; i < 71; i++) {
         pts.push([x, y, z]);
         vy -= CFG.snowballGravity * sdt;
@@ -740,8 +766,8 @@ export class Game {
           const u = s / 4, qx = x + (nx - x) * u, qy = y + (ny - y) * u, qz = z + (nz - z) * u;
           for (const p of w.penguins) {
             if (!p.alive || p.team === me.team) continue;
-            const cy = p.sliding ? p.y + 0.3 : Math.max(p.y + 0.3, Math.min(p.y + 1.05, qy));
-            if (Math.hypot(qx - p.x, qy - cy, qz - p.z) < hitR) { pts.push([qx, qy, qz]); normal = { x: -vx, y: -vy, z: -vz }; willHit = true; break outer; }
+            const cy = p.sliding ? p.y + 0.3 : Math.max(p.y + 0.3, Math.min(p.y + CLASSES[p.cls].top, qy));
+            if (Math.hypot(qx - p.x, qy - cy, qz - p.z) < CLASSES[p.cls].hitRadius + myBall) { pts.push([qx, qy, qz]); normal = { x: -vx, y: -vy, z: -vz }; willHit = true; break outer; }
           }
           if (f.sample(qx, qy, qz) > ISO || qy < 0) {
             pts.push([qx, qy, qz]);
@@ -849,7 +875,7 @@ export class Game {
         const victim = w.penguin(e.pid)!;
         const killer = w.penguin(e.by);
         H.feed(killer, victim, e.cause);
-        if (e.by === me.id && e.pid !== me.id) H.banner('SPLAT!', e.cause === 'turret' ? `Your turret got ${victim.name}` : e.cause === 'vehicle' ? `You ran over ${victim.name}` : e.cause === 'cocoa' ? `You melted ${victim.name}` : e.cause === 'blade' ? `You whacked ${victim.name}` : `You got ${victim.name}`, 1.3);
+        if (e.by === me.id && e.pid !== me.id) H.banner('SPLAT!', e.cause === 'turret' ? `Your turret got ${victim.name}` : e.cause === 'charge' ? `You ran ${victim.name} over` : e.cause === 'vehicle' ? `You ran over ${victim.name}` : e.cause === 'cocoa' ? `You melted ${victim.name}` : e.cause === 'blade' ? `You whacked ${victim.name}` : `You got ${victim.name}`, 1.3);
         break;
       }
       case 'turretBuilt': {
@@ -874,7 +900,24 @@ export class Game {
         else if (e.owner === me.id && e.by >= 0) H.toast('Your turret got knocked down!', 2);
         break;
       }
-      case 'turretLoad': if (e.pid === me.id) { A.stash(); H.toast(`Loaded ${e.n * CFG.turretAmmoPerBall} shots into the turret`, 1.6); } break;
+      case 'turretLoad': if (e.pid === me.id) { A.stash(); H.toast(`Loaded ${e.n * CFG.turretAmmoPerBall * CLASSES[me.cls].ballCost} shots into the turret`, 1.6); } break;
+      case 'boom': {
+        // a yeti's giant snowball: a wide burst of powder, chunks of wall, and a thump
+        P.burst(e.x, e.y + 0.2, e.z, 90, 7, 1.6);
+        for (let k = 0; k < 14; k++) { const a = Math.random() * Math.PI * 2, r = Math.random() * e.r; P.burst(e.x + Math.cos(a) * r, e.y + 0.1, e.z + Math.sin(a) * r, 4, 3, 0.8); }
+        A.crush(e.x, e.y, e.z, 0.5 + Math.min(0.4, e.mass / 6000)); A.splatSnow(e.x, e.y, e.z);
+        break;
+      }
+      case 'rush': {
+        P.burst(e.x, e.y + 0.2, e.z, 24, 4, 1); A.slide(e.x, e.y, e.z); A.whoosh(e.x, e.y, e.z, 1);
+        if (e.pid === me.id && !this.taughtRush) { this.taughtRush = true; H.toast('CHARGE! Run enemies over and burst through walls', 2.4); }
+        break;
+      }
+      case 'rushHit': {
+        P.burst(e.x, e.y, e.z, 50, 6, 1.3); A.crush(e.x, e.y, e.z, 0.6);
+        if (e.by === me.id) H.toast('Bowled over!', 1.2);
+        break;
+      }
       case 'streak': {
         if (e.pid !== me.id) {
           const p = w.penguin(e.pid);

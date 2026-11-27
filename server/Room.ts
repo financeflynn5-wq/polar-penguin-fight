@@ -6,6 +6,7 @@ import { buildMap, mapForMode, Mode, MapId } from '../src/world/Maps';
 import { World, PenguinInput, GameEvent, emptyInput } from '../src/sim/World';
 import { BotBrain } from '../src/sim/Bot';
 import * as P from '../src/net/Protocol';
+import type { ClassId } from '../src/sim/Classes';
 
 const DT = 1 / P.TICK_HZ;
 const END_HOLD = 14; // seconds on the results screen before the next match
@@ -17,6 +18,7 @@ export interface Client {
   ws: WebSocket;
   name: string;
   hat: string;
+  cls: ClassId;
   team: number;
   penguinId: number;
   queue: { seq: number; input: PenguinInput }[];
@@ -82,7 +84,7 @@ export class Room {
     };
     this.endT = 0;
     for (const c of this.clients) {
-      const p = this.world.addHuman(c.name, c.hat, c.team)!;
+      const p = this.world.addHuman(c.name, c.hat, c.team, c.cls)!;
       this.seat(c, p.id, p.team);
     }
     for (const c of this.clients) this.sendMatch(c, packed, true);
@@ -96,7 +98,7 @@ export class Room {
 
   /** Someone joins: they take a bot's place. Returns false if every slot is taken. */
   join(c: Client) {
-    const p = this.world.addHuman(c.name, c.hat, c.team);
+    const p = this.world.addHuman(c.name, c.hat, c.team, c.cls);
     if (!p) return false;
     this.clients.add(c);
     this.seat(c, p.id, p.team);
@@ -104,6 +106,13 @@ export class Room {
     this.sendField(c);
     this.broadcastRoster(c);
     return true;
+  }
+
+  /** They picked another class: it starts with their next life (and is remembered for the next match). */
+  setClass(c: Client, cls: ClassId) {
+    c.cls = cls;
+    const p = this.world.penguin(c.penguinId);
+    if (p && !p.bot) p.nextCls = cls;
   }
 
   leave(c: Client) {

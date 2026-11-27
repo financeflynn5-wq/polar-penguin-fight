@@ -38,6 +38,37 @@ One mesh, five materials: `Penguin` (feathers, beak, feet), `Eye`, `TeamJacket`,
 three are baked in neutral greys and tinted in the game, which is how the two teams and the mitten upgrades get
 their colours. The joints are listed in `bones()` in `penguin.py`; `src/render/PenguinModel.ts` animates them.
 
+## The polar bear and the yeti
+
+Two more playable characters, built the same way as the penguin:
+
+    python tools/blender/polarbear.py               # → src/assets/models/polarbear.glb + polarbear.json  (about 4 minutes)
+    python tools/blender/yeti.py                    # → src/assets/models/yeti.glb + yeti.json            (about 4½ minutes)
+
+    polarbear.py --size=1024                        quicker draft (the real one is 2048)
+    polarbear.py --shapes                           one-minute preview: the sculpt with its un-baked colours, lids open
+    polarbear.py --shapes --views=face,back --res=700   pick the views (front back side face faceside top low feet q)
+    polarbear.py --shapes --grey                    the same in plain grey
+    polarbear.py --count                            triangles per part
+
+- `lib/creature.py` holds what the two share: eyes and lids, the soft fur look, sculpted fur tufts, the puffer vest,
+  the scarf, mittens, and the build pipeline (weights → atlas → bake → far-away copy → GLB → JSON).
+- Both use the penguin's skeleton (same joint names and parents, every bone upright), so the game animates them with
+  the same code. The numbers that differ per character are written to the `.json` next to the `.glb`, in game space
+  (metres, y up, facing -z): `armRest`, `eyeYaw`, `lidOpen`, `height`, `hatScale`, where snow splats land
+  (`chestFront`, `cheek`, `belly`), the belt (`belt`), how far down the arm the hand ends (`handTip`), and the
+  triangle counts.
+- Materials: `Bear` / `Yeti` (fur, skin, everything that keeps its colour), `Eye`, and the same tinted
+  `TeamJacket`, `TeamScarf` and `Mitten` as the penguin. The far-away copy is the object named `…LOD`.
+- The top of each skull is the penguin's head dome scaled by `hatScale`, and the `hat` joint sits in the matching
+  place, so every hat fits when the game scales it by `hatScale`.
+
+`python tools/blender/review.py polarbear` (or `yeti`) loads the exported GLB the way the game does and renders
+pose tests into `tools/blender/out/review_<name>_<sheet>.png`: both team colours at rest (`rest`), arms overhead
+(`up`), the charge lean (`lean`), bent elbows with the jaw open and a foot lifted (`bend`), a walk stride (`walk`)
+and hats (`hats`). `review.py yeti up hats top --res=700` renders only those sheets; `top` is the view from above
+and behind, `leanraw` the bear's charge without lifting the body.
+
 ## Hats
 
 Each hat is modelled around the penguin's head and saved with its origin at the head's `hat` joint. Parts named

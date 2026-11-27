@@ -203,3 +203,18 @@ canvas { display: block; }
   background: radial-gradient(ellipse at center, transparent calc(72% - var(--chill, 0) * 34%), rgba(120,205,255,.5) 100%);
   box-shadow: inset 0 0 calc(40px + var(--chill, 0) * 90px) rgba(190,235,255,.75); }
 .chillfx.on { opacity: 1; }
+/* classes: the picker in the menu and the pause panel, the bear's charge meter, the yeti's giant snowballs */
+.classes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.mode.cls b { font-size: 20px; }
+.mode.cls span { display: block; line-height: 1.35; }
+.classblurb { font: 600 13px 'Nunito'; opacity: .85; margin-top: 8px; line-height: 1.35; min-height: 2.7em; }
+.classes.small .mode.cls b { font-size: 16px; }
+.classes.small .mode.cls span { font-size: 11px; }
+.panel .setlabel { font: 700 15px 'Nunito'; margin: 14px 0 8px; text-align: left; }
+.panel .setlabel small { font-weight: 600; opacity: .7; }
+.ball.big { width: 34px; height: 34px; }
+.rushbar { height: 8px; width: 120px; border-radius: 4px; background: rgba(255,255,255,.15); margin-top: 6px; overflow: hidden; }
+.rushbar > div { height: 100%; width: 0; background: linear-gradient(90deg, #ffb36b, #fff3d6); border-radius: 4px; }
+.rushtxt { font: 700 14px 'Fredoka'; color: var(--ice-2); margin-top: 4px; }
+#rushCard.ready .rushtxt { color: #ffe9a8; }
+#rushCard.ready { border-color: rgba(255, 220, 150, .8); }

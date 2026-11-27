@@ -5,6 +5,7 @@ import { SnowField, ISO } from '../world/SnowField';
 import { MapDef, V3, Front, mulberry32 } from '../world/MapDef';
 import type { Mode } from '../world/Maps';
 import { CFG } from './config';
+import { CLASSES, ClassId, BOT_CLASS_MIX, asClass } from './Classes';
 import { boxGround, boxPush, pointInBoxes, slideY } from '../world/Playground';
 import { Prop, RAMP, RAMP_LIP, rampGround, rampLocal, rampPush, rampUnder, pointInRamps } from '../world/Landmarks';
 import { Vehicle, VehicleKind, makeGarage, initVehicles, stepVehicles, stepRider, tryEnter, leaveVehicle, reparkVehicles, snowballHitsVehicle } from './Vehicles';
@@ -17,7 +18,7 @@ export interface PenguinInput {
   moveZ: number; // forward (1) / back (-1)
   yaw: number; pitch: number; // where the penguin is looking
   jump: boolean; // edge: consumed by the sim
-  slide: boolean; // held
+  slide: boolean; // held (penguin: belly slide, polar bear: charge)
   fire: boolean; // held: charge, release: throw
   plow: boolean; // held
   pack: boolean; // held
@@ -36,9 +37,9 @@ export const emptyInput = (): PenguinInput => ({
   plow: false, pack: false, dig: false, build: false, use: false, roll: false, turret: false, reward: 0, gun: false, aim: null,
 });
 
-export type Action = 'idle' | 'plow' | 'pack' | 'dig' | 'build' | 'charge' | 'throw' | 'slide' | 'down';
+export type Action = 'idle' | 'plow' | 'pack' | 'dig' | 'build' | 'charge' | 'throw' | 'slide' | 'down' | 'rush';
 export type Phase = 'build' | 'fight' | 'end';
-export type SplatCause = 'snowball' | 'bigball' | 'turret' | 'avalanche' | 'vehicle' | 'cocoa' | 'blade';
+export type SplatCause = 'snowball' | 'bigball' | 'turret' | 'avalanche' | 'vehicle' | 'cocoa' | 'blade' | 'charge';
 
 export type GameEvent =
   | { type: 'plow'; pid: number; x: number; y: number; z: number; fx: number; fz: number; mass: number }
@@ -97,6 +98,9 @@ export type GameEvent =
   | { type: 'thaw'; pid: number; by: number } // hot chocolate warmed `pid` out of a chill
   | { type: 'icePatch'; x: number; y: number; z: number }
   | { type: 'slip'; pid: number }
+  | { type: 'boom'; x: number; y: number; z: number; r: number; mass: number } // a yeti's giant snowball landed
+  | { type: 'rush'; pid: number; x: number; y: number; z: number } // a polar bear started a charge
+  | { type: 'rushHit'; pid: number; by: number; x: number; y: number; z: number } // ... and bowled someone over
   | { type: 'gameOver'; winner: number };
 
 export class Penguin {
@@ -112,7 +116,7 @@ export class Penguin {
   alive = true;
   downT = 0;
   invuln = 0;
-  health = CFG.maxHealth;
+  health: number;
   sinceHit = 99;
   carried = 0;
   packProgress = 0;
@@ -170,8 +174,19 @@ export class Penguin {
   heat = 0;
   /** seconds left on its belly after slipping on an ice patch, and seconds before it can slip again */
   slipT = 0; slipCd = 0;
+  /** the class to come back as next time (you can change your mind while you play) */
+  nextCls: ClassId;
+  /** polar bear charge: seconds of it left, and seconds until the next one */
+  rushT = 0; rushCd = 0;
+  /** who this charge has already bowled over (each enemy only once) */
+  rushHits: number[] = [];
+  /** snow this charge has burst through so far */
+  rushSnow = 0;
 
-  constructor(public id: number, public name: string, public team: number, public hat: string, public bot: boolean) {}
+  constructor(public id: number, public name: string, public team: number, public hat: string, public bot: boolean, public cls: ClassId = 'penguin') {
+    this.nextCls = cls;
+    this.health = CLASSES[cls].health;
+  }
 }
 
 export interface Snowball {
@@ -180,6 +195,8 @@ export interface Snowball {
   vx: number; vy: number; vz: number; age: number; alive: boolean;
   /** 0 = thrown by a penguin, 1 = thrown by a turret, 2 = fell out of an Avalanche */
   kind: number;
+  /** a yeti's giant snowball: hits harder, splashes, and blasts a hole in snow */
+  big?: boolean;
 }
 
 export interface BigBall {
@@ -222,7 +239,7 @@ export interface CapturePoint {
 export interface Barrage { owner: number; team: number; x: number; y: number; z: number; wait: number; left: number; acc: number; }
 
 /** Who is in the match, as the server tells an online client. */
-export interface RosterEntry { id: number; name: string; team: number; hat: string; bot: boolean; }
+export interface RosterEntry { id: number; name: string; team: number; hat: string; bot: boolean; cls: ClassId; }
 
 export interface MatchOptions {
   teamSize: number; playerName: string; playerHat: string; mode?: Mode;
@@ -234,6 +251,10 @@ export interface MatchOptions {
   meId?: number;
   /** playing alone: the team you're on (Breakthrough: 0 attacks, 1 defends) */
   playerTeam?: number;
+  /** the class you play (penguin unless you say otherwise) */
+  playerClass?: ClassId;
+  /** what each team's bots are, by their number on the team (it repeats). Left out: mostly penguins, a bear and a yeti in every five */
+  botClasses?: [ClassId[], ClassId[]];
 }
 
 /** Breakthrough: Team Blizzard attacks, Team Sunrise defends. */
@@ -307,7 +328,7 @@ export class World {
     if (opts.roster) {
       // an online client's mirror of the server's match: you first, then everyone else
       const me = opts.roster.find(r => r.id === opts.meId) ?? opts.roster[0];
-      for (const r of [me, ...opts.roster.filter(r => r !== me)]) this.penguins.push(new Penguin(r.id, r.name, r.team, r.hat, r.bot));
+      for (const r of [me, ...opts.roster.filter(r => r !== me)]) this.penguins.push(new Penguin(r.id, r.name, r.team, r.hat, r.bot, asClass(r.cls)));
       this.playerId = me.id;
       this.nextId = Math.max(0, ...opts.roster.map(r => r.id)) + 1;
       return;
@@ -316,9 +337,10 @@ export class World {
     const names = [...BOT_NAMES].sort(() => this.rand() - 0.5);
     this.botNames = names;
     const mine = opts.playerTeam === 1 ? 1 : 0;
+    const botClass = (team: number, slot: number) => { const mix = opts.botClasses?.[team] ?? BOT_CLASS_MIX; return mix[slot % mix.length]; };
     const player = opts.allBots
-      ? new Penguin(this.nextId++, names[names.length - 1], mine, HATS[1 + Math.floor(this.rand() * (HATS.length - 1))], true)
-      : new Penguin(this.nextId++, opts.playerName || 'You', mine, opts.playerHat, false);
+      ? new Penguin(this.nextId++, names[names.length - 1], mine, HATS[1 + Math.floor(this.rand() * (HATS.length - 1))], true, botClass(mine, 0))
+      : new Penguin(this.nextId++, opts.playerName || 'You', mine, opts.playerHat, false, asClass(opts.playerClass));
     this.penguins.push(player);
     this.playerId = player.id;
     let n = 0;
@@ -326,7 +348,7 @@ export class World {
       const count = team === mine ? opts.teamSize - 1 : opts.teamSize;
       for (let c = 0; c < count; c++) {
         const hat = HATS[1 + Math.floor(this.rand() * (HATS.length - 1))];
-        this.penguins.push(new Penguin(this.nextId++, names[n++ % names.length], team, hat, true));
+        this.penguins.push(new Penguin(this.nextId++, names[n++ % names.length], team, hat, true, botClass(team, team === mine ? c + 1 : c)));
       }
     }
     this.penguins.forEach((p, i) => this.spawn(p, i));
@@ -341,13 +363,13 @@ export class World {
   newId() { return this.nextId++; }
   random() { return this.rand(); }
 
-  roster(): RosterEntry[] { return this.penguins.map(p => ({ id: p.id, name: p.name, team: p.team, hat: p.hat, bot: p.bot })); }
+  roster(): RosterEntry[] { return this.penguins.map(p => ({ id: p.id, name: p.name, team: p.team, hat: p.hat, bot: p.bot, cls: p.cls })); }
 
   /**
    * Server: a person joins and takes a bot's place on the team with fewer people (or the team they ask for, if it has room).
    * Returns null when every slot already has a person in it.
    */
-  addHuman(name: string, hat: string, wantTeam = -1): Penguin | null {
+  addHuman(name: string, hat: string, wantTeam = -1, cls: ClassId = 'penguin'): Penguin | null {
     const humans = [0, 0];
     for (const p of this.penguins) if (!p.bot) humans[p.team]++;
     const open = (t: number) => this.penguins.some(p => p.bot && p.team === t);
@@ -361,7 +383,7 @@ export class World {
     const p = bots[0];
     if (p.riding >= 0) leaveVehicle(this, p);
     if (this.board.holder === p.id) { this.board.holder = -1; this.board.x = p.x; this.board.y = p.y + 0.6; this.board.z = p.z; this.board.vy = 4; p.surfing = false; }
-    p.bot = false; p.name = name; p.hat = hat;
+    p.bot = false; p.name = name; p.hat = hat; p.nextCls = cls;
     p.splats = 0; p.downs = 0; p.mitten = 0;
     p.gun = GUN_NONE; p.gunAmmo = 0;
     p.streak = 0; p.rewards = [0, 0, 0]; p.frenzyT = 0; p.turretSnow = 0; p.turretAt = null; p.turretBlock = 0;
@@ -443,8 +465,10 @@ export class World {
     p.vx = p.vy = p.vz = 0;
     p.yaw = p.lookYaw = base.facing;
     p.input.yaw = base.facing;
-    p.alive = true; p.health = CFG.maxHealth; p.invuln = CFG.spawnProtect; p.sinceHit = 99;
+    p.cls = p.nextCls; // a new class starts with your next life
+    p.alive = true; p.health = CLASSES[p.cls].health; p.invuln = CFG.spawnProtect; p.sinceHit = 99;
     p.carried = 0; p.packProgress = 0; p.charge = 0; p.charging = false; p.sliding = false;
+    p.rushT = 0; p.rushCd = 0;
     p.action = 'idle';
     this.guns.reset(p);
   }
@@ -474,6 +498,7 @@ export class World {
     this.updatePhase(dt);
     for (const p of this.penguins) { p.px = p.x; p.py = p.y; p.pz = p.z; }
     for (const p of this.penguins) this.stepPenguin(p, dt);
+    this.stepRushes(dt);
     this.separatePenguins();
     stepVehicles(this, dt);
     this.stepSnowballs(dt);
@@ -520,8 +545,10 @@ export class World {
   // ───────────────────────── penguins ─────────────────────────
   private stepPenguin(p: Penguin, dt: number) {
     const inp = p.input;
+    const def = CLASSES[p.cls];
     p.lookYaw = inp.yaw; p.lookPitch = inp.pitch;
     p.throwCd = Math.max(0, p.throwCd - dt);
+    p.rushCd = Math.max(0, p.rushCd - dt);
     p.throwAnim = Math.max(0, p.throwAnim - dt);
     p.invuln = Math.max(0, p.invuln - dt);
     p.noSnowT = Math.max(0, p.noSnowT - dt);
@@ -539,7 +566,7 @@ export class World {
     }
     if (this.phase === 'end') { p.vx = p.vz = 0; p.action = 'idle'; return; }
 
-    if (p.health < CFG.maxHealth && p.sinceHit > CFG.regenDelay && !this.predicting) { p.health++; p.sinceHit = CFG.regenDelay * 0.5; }
+    if (p.health < def.health && p.sinceHit > CFG.regenDelay && !this.predicting) { p.health++; p.sinceHit = CFG.regenDelay * 0.5; }
 
     // on a vehicle: it carries you (an online client never runs this ahead of the server: the server drives)
     if (p.riding >= 0) { if (!this.predicting) stepRider(this, p, dt); return; }
@@ -551,8 +578,8 @@ export class World {
     if (ml > 1) { mx /= ml; mz /= ml; }
     const wishX = fwdX * mz + rightX * mx, wishZ = fwdZ * mz + rightZ * mx;
 
-    // ── belly slide ──
-    if (inp.slide && p.grounded && !p.sliding && !p.surfing && (Math.hypot(p.vx, p.vz) > 1.5 || ml > 0.2)) {
+    // ── belly slide (penguins only) ──
+    if (inp.slide && def.slide && p.grounded && !p.sliding && !p.surfing && (Math.hypot(p.vx, p.vz) > 1.5 || ml > 0.2)) {
       p.sliding = true; p.slideSlowT = 0;
       const sp = Math.hypot(p.vx, p.vz);
       let dx = sp > 0.5 ? p.vx / sp : wishX, dz = sp > 0.5 ? p.vz / sp : wishZ;
@@ -565,19 +592,29 @@ export class World {
     // (a penguin that slipped on an ice patch stays on its belly until the slip is over)
     if (p.sliding && !p.onSlide && p.slipT <= 0 && (inp.jump || (!inp.slide && p.grounded))) p.sliding = false;
 
+    // ── polar bear charge: a short, fast rush that's hard to turn. stepRushes does the bowling over and wall smashing ──
+    if (def.rush && inp.slide && p.rushT <= 0 && p.rushCd <= 0 && p.grounded && !p.surfing && !p.onSlide && !p.charging) {
+      p.rushT = CFG.rushTime; p.rushCd = CFG.rushTime + CFG.rushCooldown; p.rushHits.length = 0; p.rushSnow = 0;
+      p.yaw = p.lookYaw;
+      this.emit({ type: 'rush', pid: p.id, x: p.x, y: p.y, z: p.z });
+    }
+    if (p.rushT > 0) p.rushT = p.surfing || p.onSlide ? 0 : Math.max(0, p.rushT - dt);
+    const rushing = p.rushT > 0;
+
     // what are the mittens doing?
-    const busy = !p.sliding && p.grounded;
-    let action: Action = p.sliding ? 'slide' : 'idle';
-    const canThrow = this.phase === 'fight' && p.carried > 0 && p.throwCd <= 0 && !p.gunOut; // gun out: the trigger sprays instead
+    const busy = !p.sliding && p.grounded && !rushing;
+    let action: Action = rushing ? 'rush' : p.sliding ? 'slide' : 'idle';
+    const canThrow = this.phase === 'fight' && p.carried > 0 && p.throwCd <= 0 && !rushing && !p.gunOut; // gun out: the trigger sprays instead
+    if (rushing) { p.charging = false; p.charge = 0; }
     if (inp.fire && canThrow && !inp.plow) { p.charging = true; }
     if (p.charging) {
       if (inp.fire && p.carried > 0) {
-        p.charge = Math.min(1, p.charge + dt / CFG.throwChargeTime);
+        p.charge = Math.min(1, p.charge + dt / def.throwChargeTime);
         action = p.sliding ? 'slide' : 'charge';
       } else {
         if (p.carried > 0 && this.phase === 'fight') {
           // a predicting client only plays the arm swing; the server throws the real snowball
-          if (this.predicting) { p.throwCd = p.frenzyT > 0 ? CFG.frenzyCooldown : CFG.throwCooldown; p.throwAnim = 0.25; } else this.throwSnowball(p);
+          if (this.predicting) { p.throwCd = this.throwCooldown(p); p.throwAnim = 0.25; } else this.throwSnowball(p);
         }
         p.charging = false; p.charge = 0;
       }
@@ -596,7 +633,7 @@ export class World {
     const ice = this.isIce(p.x, p.z) || patch;
     p.onIce = ice;
     const chilled = this.guns.speedMult(p); // soaked by a Freeze Soaker: everything is slower
-    if (patch && !p.sliding && !p.surfing && p.slipCd <= 0 && Math.hypot(p.vx, p.vz) > CFG.slipSpeed) {
+    if (patch && !rushing && !p.sliding && !p.surfing && p.slipCd <= 0 && Math.hypot(p.vx, p.vz) > CFG.slipSpeed) {
       // stepped on an ice patch: feet out from under you, and off you go on your belly
       p.sliding = true; p.slideSlowT = 0;
       p.slipT = CFG.slipTime; p.slipCd = CFG.slipAgain;
@@ -605,7 +642,19 @@ export class World {
       p.charging = false; p.charge = 0;
       if (!this.predicting) this.emit({ type: 'slip', pid: p.id });
     }
-    if (p.sliding) {
+    if (rushing) {
+      // head down and go: you can lean the charge toward where you look, but not turn on the spot
+      let turn = p.lookYaw - p.yaw;
+      while (turn > Math.PI) turn -= Math.PI * 2;
+      while (turn < -Math.PI) turn += Math.PI * 2;
+      const max = CFG.rushSteer * dt;
+      p.yaw += Math.max(-max, Math.min(max, turn));
+      const want = CFG.rushSpeed;
+      const k = Math.min(1, (p.grounded ? (ice ? 3 : 9) : 1.5) * dt);
+      // ran into something that won't move (a tree, a house, a wall too thick to smash): the charge is over
+      if (p.rushT < CFG.rushTime - 0.3 && Math.hypot(p.vx, p.vz) < 3) p.rushT = 0;
+      p.vx += (-Math.sin(p.yaw) * want - p.vx) * k; p.vz += (-Math.cos(p.yaw) * want - p.vz) * k;
+    } else if (p.sliding) {
       // steer toward where you're pushing. That's worked out from the camera, like walking, so left is always left
       // on screen whichever way the slide is going, and holding forward bends the slide toward where you look.
       // Pushing straight back against the slide brakes instead of turning you round.
@@ -653,7 +702,7 @@ export class World {
       else if (action === 'charge') speed = CFG.chargeSpeed;
       else if (this.guns.spraying(p)) speed = CFG.gunMoveSpeed;
       if (p.surfing) speed *= CFG.surfSpeedMult;
-      speed *= chilled;
+      speed *= chilled * def.speed;
       const tx = wishX * speed, tz = wishZ * speed;
       let accel = p.grounded ? (ice ? 2.2 : 12) : 3;
       if (p.surfing) accel = p.grounded ? (ice ? 4 : CFG.surfAccel) : 2.5;
@@ -681,7 +730,7 @@ export class World {
     }
 
     if (inp.jump) {
-      if (p.grounded && p.slipT <= 0) { p.vy = CFG.jumpVel * (p.surfing ? 1.15 : 1) * (0.6 + 0.4 * chilled); p.grounded = false; p.sliding = false; p.onSlide = false; this.emit({ type: 'jump', pid: p.id }); }
+      if (p.grounded && p.slipT <= 0) { p.vy = CFG.jumpVel * def.jump * (p.surfing ? 1.15 : 1) * (0.6 + 0.4 * chilled); p.grounded = false; p.sliding = false; p.onSlide = false; this.emit({ type: 'jump', pid: p.id }); }
       inp.jump = false;
     }
 
@@ -741,7 +790,7 @@ export class World {
       if (!p.useDone && p.useT >= CFG.useHoldTime) {
         p.useDone = true;
         if (p.carried > 0 && this.nearPile(p) === p.team) {
-          this.piles[p.team] += p.carried;
+          this.piles[p.team] += p.carried * def.ballCost;
           this.emit({ type: 'stash', pid: p.id, n: p.carried });
           p.carried = 0;
         } else if (p.carried > 0) this.loadTurret(p);
@@ -755,9 +804,10 @@ export class World {
 
   tryGrab(p: Penguin) {
     for (let t = 0; t < 2; t++) {
-      if (this.atPile(p, t) && this.piles[t] > 0 && p.carried < CFG.maxCarry) {
-        const n = Math.min(CFG.maxCarry - p.carried, this.piles[t]);
-        this.piles[t] -= n; p.carried += n;
+      const def = CLASSES[p.cls];
+      if (this.atPile(p, t) && this.piles[t] >= def.ballCost && p.carried < def.maxCarry) {
+        const n = Math.min(def.maxCarry - p.carried, Math.floor(this.piles[t] / def.ballCost));
+        this.piles[t] -= n * def.ballCost; p.carried += n;
         this.emit({ type: 'grab', pid: p.id, n, team: t, stolen: t !== p.team });
         return true;
       }
@@ -806,8 +856,9 @@ export class World {
 
   /** Push the penguin's body out of snow walls, trees, igloos and big balls. */
   private collideBody(p: Penguin) {
-    const r = CFG.radius;
-    const heights = p.sliding ? [0.3] : [0.6, 0.95];
+    const def = CLASSES[p.cls];
+    const r = def.radius;
+    const heights = p.sliding ? [0.3] : def.top > 1.2 ? [0.6, 0.95, def.top - 0.1] : [0.6, 0.95];
     const f = this.field;
     for (let iter = 0; iter < 2; iter++) {
       let pushX = 0, pushZ = 0;
@@ -841,7 +892,7 @@ export class World {
       }
     }
     // head bump
-    if (p.vy > 0 && f.sample(p.x, p.y + (p.sliding ? 0.55 : 1.1), p.z) > ISO) p.vy = 0;
+    if (p.vy > 0 && f.sample(p.x, p.y + (p.sliding ? 0.55 : def.top + 0.05), p.z) > ISO) p.vy = 0;
     // trees
     for (const t of this.map.trees) {
       const dx = p.x - t.x, dz = p.z - t.z;
@@ -856,7 +907,7 @@ export class World {
     }
     // playground: boxes and poles
     const pg = this.map.playground;
-    const head = p.y + (p.sliding ? 0.6 : 1.05);
+    const head = p.y + (p.sliding ? 0.6 : def.top);
     if (boxPush(pg.boxes, p.x, p.z, p.y + 0.02, head, r, pushTmp)) {
       p.x += pushTmp.x; p.z += pushTmp.z;
       const pl = Math.hypot(pushTmp.x, pushTmp.z) || 1;
@@ -919,7 +970,7 @@ export class World {
     // the playground slide
     if (this.onPlaygroundSlide(p, dt)) return;
     let g = f.surfaceBelow(p.x, p.y, p.z, stepUp, down);
-    const pb = boxGround(this.map.playground.boxes, p.x, p.z, p.y, stepUp, down, CFG.radius * 0.5);
+    const pb = boxGround(this.map.playground.boxes, p.x, p.z, p.y, stepUp, down, CLASSES[p.cls].radius * 0.5);
     p.onProp = false;
     if (pb !== null && (g === null || pb > g)) { g = pb; p.onProp = true; }
     const pr = this.ramps.length ? rampGround(this.ramps, p.x, p.z, p.y, stepUp, down) : null;
@@ -986,7 +1037,7 @@ export class World {
         const B = ps[b]; if (!B.alive || B.riding >= 0) continue;
         const dx = B.x - A.x, dz = B.z - A.z;
         if (Math.abs(A.y - B.y) > 1) continue;
-        const d = Math.hypot(dx, dz), min = CFG.radius * 2;
+        const d = Math.hypot(dx, dz), min = CLASSES[A.cls].radius + CLASSES[B.cls].radius;
         if (d < min && d > 1e-4) {
           const push = (min - d) * 0.5;
           A.x -= dx / d * push; A.z -= dz / d * push;
@@ -1017,15 +1068,17 @@ export class World {
   }
 
   private doPack(p: Penguin, dt: number, fx: number, fz: number) {
-    if (p.carried >= CFG.maxCarry) { p.noSnowT = 0.4; return; }
-    const want = CFG.packMass * dt / CFG.packTime[p.mitten];
+    const def = CLASSES[p.cls];
+    if (p.carried >= def.maxCarry) { p.noSnowT = 0.4; return; }
+    const packTime = CFG.packTime[p.mitten] * def.packTime;
+    const want = CFG.packMass * def.packMass * dt / packTime;
     const got = this.field.removeMass(p.x + fx * 0.6, p.y - 0.05, p.z + fz * 0.6, 0.5, want, 0.3, 0.7);
     if (got < want * 0.3) {
       // try right under our feet
       const got2 = this.field.removeMass(p.x, p.y - 0.1, p.z, 0.55, want - got, 0.3, 0.7);
       if (got + got2 < want * 0.3) { p.noSnowT = 0.6; if (Math.random() < 0.05) this.emit({ type: 'noSnow', pid: p.id }); return; }
     }
-    p.packProgress += dt / CFG.packTime[p.mitten];
+    p.packProgress += dt / packTime;
     if (Math.random() < 0.35) this.emit({ type: 'packTick', pid: p.id, x: p.x + fx * 0.5, y: p.y + 0.15, z: p.z + fz * 0.5 });
     if (p.packProgress >= 1) {
       p.packProgress = 0;
@@ -1046,7 +1099,7 @@ export class World {
     const a = this.aimInReach(p);
     if (!a) return;
     p.aimOk = true;
-    const want = CFG.digRate * dt * this.rateMult(p);
+    const want = CFG.digRate * dt * this.rateMult(p) * CLASSES[p.cls].dig;
     // dig a little past the surface point so tunnels go in straight
     const dx = a.x - p.x, dz = a.z - p.z, dl = Math.hypot(dx, dz) || 1;
     const got = this.field.removeMass(a.x + dx / dl * 0.15, a.y, a.z + dz / dl * 0.15, 0.62, want, 0.35);
@@ -1081,7 +1134,7 @@ export class World {
     if (top > (f.ny - 3) * f.cell) { p.buildBlock = 1; return; }
     if (Math.hypot(a.x - p.x, top - (p.y + 0.9), a.z - p.z) > CFG.reach + 1.5) { p.buildBlock = 1; return; } // too tall to reach from here
     p.aimOk = true;
-    const want = CFG.buildRate * dt * this.rateMult(p);
+    const want = CFG.buildRate * dt * this.rateMult(p) * CLASSES[p.cls].build;
     // scoop from the ground around our feet (behind and to the sides), so building leaves a shallow trench around you
     let got = 0, sx = p.x, sy = p.y, sz = p.z;
     for (let tries = 0; tries < 6 && got < want * 0.6; tries++) {
@@ -1144,19 +1197,33 @@ export class World {
 
   // ───────────────────────── throwing ─────────────────────────
   handPos(p: Penguin) {
+    const def = CLASSES[p.cls];
     const rx = Math.cos(p.yaw), rz = -Math.sin(p.yaw);
-    return { x: p.x + rx * 0.35, y: p.y + (p.sliding ? 0.5 : 1.05), z: p.z + rz * 0.35 };
+    return { x: p.x + rx * def.handOut, y: p.y + (p.sliding ? 0.5 : def.handY), z: p.z + rz * def.handOut };
+  }
+
+  /** How fast this penguin's throw leaves the mitten at its current wind-up. */
+  throwSpeed(p: Penguin, charge = p.charge) {
+    const def = CLASSES[p.cls];
+    return (def.throwSpeedMin + (def.throwSpeedMax - def.throwSpeedMin) * charge) * (1 + p.mitten * CFG.throwPerLevel);
+  }
+
+  /** Seconds between throws (Snowball Frenzy shortens it for every class by the same share). */
+  throwCooldown(p: Penguin) {
+    const cd = CLASSES[p.cls].throwCooldown;
+    return p.frenzyT > 0 ? cd * CFG.frenzyCooldown / CFG.throwCooldown : cd;
   }
 
   throwSnowball(p: Penguin) {
-    const speed = (CFG.throwSpeedMin + (CFG.throwSpeedMax - CFG.throwSpeedMin) * p.charge) * (1 + p.mitten * CFG.throwPerLevel);
+    const def = CLASSES[p.cls];
+    const speed = this.throwSpeed(p);
     const h = this.handPos(p);
     const v = solveThrow(h, p.input.aim, speed, CFG.snowballGravity) ?? lookVelocity(p.lookYaw, p.lookPitch + 0.07, speed);
     this.snowballs.push({ id: this.nextId++, owner: p.id, team: p.team, x: h.x, y: h.y, z: h.z, px: h.x, py: h.y, pz: h.z,
-      vx: v.x + p.vx * 0.3, vy: v.y, vz: v.z + p.vz * 0.3, age: 0, alive: true, kind: 0 });
+      vx: v.x + p.vx * 0.3, vy: v.y, vz: v.z + p.vz * 0.3, age: 0, alive: true, kind: 0, big: def.splash > 0 });
     // Snowball Frenzy: the snowballs don't run out and the arm doesn't rest
     if (p.frenzyT <= 0) p.carried--;
-    p.throwCd = p.frenzyT > 0 ? CFG.frenzyCooldown : CFG.throwCooldown;
+    p.throwCd = this.throwCooldown(p);
     p.throwAnim = 0.25;
     this.emit({ type: 'throw', pid: p.id, x: h.x, y: h.y, z: h.z, power: p.charge });
   }
@@ -1170,25 +1237,28 @@ export class World {
       b.vy -= g * dt;
       const steps = Math.max(1, Math.ceil(Math.hypot(b.vx, b.vy, b.vz) * dt / 0.2));
       const sdt = dt / steps;
+      const br = b.big ? CLASSES.yeti.ballRadius : CFG.snowballRadius;
+      let direct = -1; // the penguin a giant snowball landed right on (they don't take the splash as well)
       for (let s = 0; s < steps && b.alive; s++) {
         b.x += b.vx * sdt; b.y += b.vy * sdt; b.z += b.vz * sdt;
         // penguins
         for (const p of this.penguins) {
           if (!p.alive || p.team === b.team || p.id === b.owner || p.covered) continue;
-          const hitR = CFG.hitRadius + CFG.snowballRadius;
+          const pd = CLASSES[p.cls];
+          const hitR = pd.hitRadius + br;
           let d: number;
           if (p.sliding) d = Math.hypot(b.x - p.x, b.y - (p.y + 0.3), b.z - p.z);
           else {
-            const cy = Math.max(p.y + 0.3, Math.min(p.y + 1.05, b.y));
+            const cy = Math.max(p.y + 0.3, Math.min(p.y + pd.top, b.y));
             d = Math.hypot(b.x - p.x, b.y - cy, b.z - p.z);
           }
-          if (d < hitR) { this.hitPenguin(p, b); b.alive = false; break; }
+          if (d < hitR) { direct = p.id; this.hitPenguin(p, b); b.alive = false; break; }
         }
         if (!b.alive) break;
         // enemy turrets take the hit (your own team's snowballs fly straight past theirs)
         for (const t of this.turrets) {
           if (!t.alive || t.team === b.team) continue;
-          if (b.y > t.y - 0.1 && b.y < t.y + CFG.turretHeight && Math.hypot(b.x - t.x, b.z - t.z) < CFG.turretRadius + CFG.snowballRadius) {
+          if (b.y > t.y - 0.1 && b.y < t.y + CFG.turretHeight && Math.hypot(b.x - t.x, b.z - t.z) < CFG.turretRadius + br) {
             this.hitTurret(t, b.owner, b.x, b.y, b.z);
             b.alive = false; break;
           }
@@ -1198,15 +1268,15 @@ export class World {
         if (snowballHitsVehicle(this, b)) { b.alive = false; break; }
         // big balls soak it up
         for (const bb of this.bigBalls) {
-          if (Math.hypot(b.x - bb.x, b.y - bb.y, b.z - bb.z) < bb.r + CFG.snowballRadius) {
+          if (Math.hypot(b.x - bb.x, b.y - bb.y, b.z - bb.z) < bb.r + br) {
             this.emit({ type: 'snowHit', x: b.x, y: b.y, z: b.z, nx: (b.x - bb.x) / bb.r, ny: (b.y - bb.y) / bb.r, nz: (b.z - bb.z) / bb.r });
             b.alive = false; break;
           }
         }
         if (!b.alive) break;
         const pg = this.map.playground;
-        let propHit = pointInBoxes(pg.boxes, b.x, b.y, b.z, CFG.snowballRadius) || pointInRamps(this.ramps, b.x, b.y, b.z, CFG.snowballRadius * 0.5);
-        if (!propHit) for (const c of pg.cyls) if (b.y > c.y0 && b.y < c.y1 && Math.hypot(b.x - c.x, b.z - c.z) < c.r + CFG.snowballRadius) { propHit = true; break; }
+        let propHit = pointInBoxes(pg.boxes, b.x, b.y, b.z, br) || pointInRamps(this.ramps, b.x, b.y, b.z, br * 0.5);
+        if (!propHit) for (const c of pg.cyls) if (b.y > c.y0 && b.y < c.y1 && Math.hypot(b.x - c.x, b.z - c.z) < c.r + br) { propHit = true; break; }
         if (!propHit) {
           const sl = pg.slide, ss = (b.z - sl.z0) * sl.dirZ;
           if (ss >= 0 && ss <= sl.length && Math.abs(b.x - sl.x) < sl.width / 2 + 0.05) {
@@ -1229,23 +1299,110 @@ export class World {
           b.alive = false;
         }
       }
+      if (!b.alive && b.big) this.boom(b, direct);
       if (b.age > 6) b.alive = false;
     }
     this.snowballs = this.snowballs.filter(b => b.alive);
   }
 
   private hitPenguin(p: Penguin, b: Snowball) {
-    if (p.invuln > 0) {
-      this.emit({ type: 'snowHit', x: b.x, y: b.y, z: b.z, nx: 0, ny: 1, nz: 0 });
-      return;
-    }
-    p.health--;
-    p.sinceHit = 0;
-    p.lastHitBy = b.owner;
     const sp = Math.hypot(b.vx, b.vz) || 1;
-    p.vx += b.vx / sp * 1.6; p.vz += b.vz / sp * 1.6;
-    this.emit({ type: 'hit', pid: p.id, by: b.owner, x: b.x, y: b.y, z: b.z, health: p.health });
-    if (p.health <= 0) this.splat(p, b.owner, b.kind === 1 ? 'turret' : b.kind === 2 ? 'avalanche' : 'snowball');
+    const push = b.big ? 3 : 1.6;
+    this.hurt(p, b.owner, b.big ? CLASSES.yeti.damage : 1, b.kind === 1 ? 'turret' : b.kind === 2 ? 'avalanche' : 'snowball', b.x, b.y, b.z, b.vx / sp * push, b.vz / sp * push);
+  }
+
+  /** Take `amount` hits and a shove. Spawn protection soaks it all up (returns false). */
+  private hurt(p: Penguin, by: number, amount: number, cause: SplatCause, x: number, y: number, z: number, kx: number, kz: number) {
+    if (p.invuln > 0) {
+      this.emit({ type: 'snowHit', x, y, z, nx: 0, ny: 1, nz: 0 });
+      return false;
+    }
+    p.health = Math.max(0, p.health - amount);
+    p.sinceHit = 0;
+    p.lastHitBy = by;
+    p.vx += kx; p.vz += kz;
+    this.emit({ type: 'hit', pid: p.id, by, x, y, z, health: p.health });
+    if (p.health <= 0) this.splat(p, by, cause);
+    return true;
+  }
+
+  /**
+   * A yeti's giant snowball lands. Everyone on the other team close by takes a hit, unless there is snow between them
+   * and the blast; then the blast takes a bite out of whatever snow it landed on, which is how a yeti opens up a fort.
+   */
+  private boom(b: Snowball, direct: number) {
+    const def = CLASSES.yeti;
+    const f = this.field;
+    // the blast starts a step back along the flight, in the open air in front of whatever it hit
+    const sp = Math.hypot(b.vx, b.vy, b.vz) || 1;
+    const ox = b.x - b.vx / sp * 0.4, oy = b.y - b.vy / sp * 0.4, oz = b.z - b.vz / sp * 0.4;
+    for (const p of this.penguins) {
+      if (!p.alive || p.team === b.team || p.id === direct) continue;
+      const pd = CLASSES[p.cls];
+      const cy = p.y + (p.sliding ? 0.3 : pd.top * 0.55);
+      const dx = p.x - ox, dy = cy - oy, dz = p.z - oz, d = Math.hypot(dx, dy, dz);
+      if (d > def.splash + pd.radius) continue;
+      if (d > 0.6) { const hit = f.raycast(ox, oy, oz, dx / d, dy / d, dz / d, d, 0.2); if (hit && hit.t < d - 0.55) continue; } // snow in the way
+      const dh = Math.hypot(dx, dz) || 1;
+      this.hurt(p, b.owner, def.splashDamage, 'snowball', p.x, cy, p.z, dx / dh * 2.2, dz / dh * 2.2);
+    }
+    for (const t of this.turrets) {
+      if (t.alive && t.team !== b.team && Math.hypot(t.x - ox, t.y + 0.9 - oy, t.z - oz) < def.splash) this.hitTurret(t, b.owner, t.x, t.y + 1, t.z);
+    }
+    // walls and forts get a hole knocked in them; open ground gets a crater (never deeper than a metre below how the map started)
+    const removed = f.removeMass(b.x, b.y, b.z, def.crater, def.craterMass, 0.3, 1.0);
+    this.emit({ type: 'boom', x: b.x, y: b.y, z: b.z, r: def.splash, mass: removed });
+  }
+
+  /**
+   * Polar bear charges: bowl over the enemies in the way, knock into their turrets, and burst through snow walls.
+   * One charge only has so much snow in it (CFG.rushSmash): a thin wall barely slows the bear, a thick fort stops it.
+   */
+  private stepRushes(dt: number) {
+    const f = this.field;
+    for (const A of this.penguins) {
+      if (!A.alive || A.rushT <= 0) continue;
+      const sp = Math.hypot(A.vx, A.vz);
+      if (sp < 1) continue;
+      const nx = A.vx / sp, nz = A.vz / sp;
+      const ra = CLASSES[A.cls].radius;
+      if (this.phase === 'fight' && sp > CFG.rushSpeed * 0.4) {
+        for (const B of this.penguins) {
+          if (B === A || !B.alive || B.team === A.team || A.rushHits.includes(B.id) || Math.abs(B.y - A.y) > 1.5) continue;
+          const dx = B.x - A.x, dz = B.z - A.z;
+          const reach = ra + CLASSES[B.cls].radius + 0.3;
+          const along = dx * nx + dz * nz, side = Math.abs(dx * nz - dz * nx);
+          if (along < -0.25 || along > reach || side > reach * 0.9) continue;
+          A.rushHits.push(B.id);
+          this.emit({ type: 'rushHit', pid: B.id, by: A.id, x: B.x, y: B.y + 0.6, z: B.z });
+          if (this.hurt(B, A.id, CFG.rushDamage, 'charge', B.x, B.y + 0.7, B.z, nx * 7, nz * 7)) { B.vy = 5.5; B.grounded = false; B.sliding = false; }
+          A.vx *= 0.8; A.vz *= 0.8;
+        }
+        for (const t of this.turrets) {
+          if (!t.alive || t.team === A.team || Math.abs(t.y - A.y) > 1.6) continue;
+          if (Math.hypot(t.x - A.x, t.z - A.z) > ra + CFG.turretRadius + 0.25) continue;
+          for (let n = 0; n < CFG.rushDamage && t.alive; n++) this.hitTurret(t, A.id, t.x, t.y + 0.9, t.z);
+          // a snowman is a solid thing to run into: if it's still standing the charge ends there
+          if (t.alive) { A.rushT = 0; A.vx *= -0.25; A.vz *= -0.25; }
+        }
+        if (A.rushT <= 0) continue;
+      }
+      // snow in the way at chest height: a wall, a drift, the side of a fort
+      const cy = A.y + 0.8;
+      const ax = A.x + nx * (ra + 0.3), az = A.z + nz * (ra + 0.3);
+      if (f.sample(ax, cy, az) > 40 || f.sample(ax, cy + 0.45, az) > 40) {
+        const left = CFG.rushSmash - A.rushSnow;
+        const removed = left > 0 ? f.removeMass(ax, cy + 0.05, az, 0.9, Math.min(left, sp * dt * 5600), 0.4, 0.5) : 0;
+        A.rushSnow += removed;
+        if (removed > 0) {
+          const k = Math.max(0.5, 1 - removed / 6000);
+          A.vx *= k; A.vz *= k;
+          if (removed > 100) this.emit({ type: 'crush', x: ax, y: cy, z: az, mass: removed, r: 0.9 });
+        }
+        // out of puff with packed snow still in the way: bonk
+        if (A.rushSnow >= CFG.rushSmash && f.sample(ax, cy, az) > ISO + 40) { A.rushT = 0; A.vx *= 0.2; A.vz *= 0.2; }
+      }
+    }
   }
 
   splat(p: Penguin, by: number, cause: SplatCause) {
@@ -1260,7 +1417,7 @@ export class World {
     p.downs++;
     // Breakthrough: every attacker who goes down costs the attackers a ticket
     if (this.mode === 'breakthrough' && this.phase === 'fight' && p.team === ATTACK && this.scores[ATTACK] > 0) this.scores[ATTACK]--;
-    p.sliding = false; p.charging = false; p.charge = 0;
+    p.sliding = false; p.charging = false; p.charge = 0; p.rushT = 0;
     p.mitten = Math.max(0, p.mitten - 1);
     const killer = this.penguin(by);
     if (killer && killer.team !== p.team) {
@@ -1269,7 +1426,7 @@ export class World {
       if (this.phase === 'fight' && this.mode === 'tdm') {
         this.scores[killer.team]++;
         // only splats you land yourself build a streak: turrets and Avalanches don't feed it
-        if (cause === 'snowball' || cause === 'bigball' || cause === 'cocoa' || cause === 'blade') this.addStreak(killer);
+        if (cause === 'snowball' || cause === 'bigball' || cause === 'cocoa' || cause === 'blade' || cause === 'charge') this.addStreak(killer);
       }
     }
     p.streak = 0;
@@ -1323,21 +1480,24 @@ export class World {
         if (!p.alive || p.riding >= 0) continue;
         const dx = b.x - p.x, dz = b.z - p.z;
         const dh = Math.hypot(dx, dz);
-        if (dh > b.r + CFG.radius + 0.12 || Math.abs((p.y + 0.5) - b.y) > b.r + 0.6) continue;
+        const pr = CLASSES[p.cls].radius;
+        if (dh > b.r + pr + 0.12 || Math.abs((p.y + 0.5) - b.y) > b.r + 0.6) continue;
         const nx = dx / (dh || 1), nz = dz / (dh || 1);
         const pv = p.vx * nx + p.vz * nz;
-        const intoBall = (p.input.moveZ !== 0 || p.input.moveX !== 0) ? 1 : 0;
+        const rushing = p.rushT > 0;
+        const intoBall = (p.input.moveZ !== 0 || p.input.moveX !== 0 || rushing) ? 1 : 0;
         if (pv > 0.4 && intoBall) {
           const mass = b.r * b.r * b.r;
-          const strength = (p.action === 'plow' ? 13 : 7) / Math.max(0.6, mass);
+          // a charging bear sends it flying
+          const strength = (rushing ? 60 : p.action === 'plow' ? 13 : 7) / Math.max(0.6, mass);
           const bv = b.vx * nx + b.vz * nz;
-          const target = (p.action === 'plow' ? CFG.plowSpeed : CFG.walkSpeed) * 0.9;
+          const target = (rushing ? CFG.rushSpeed : p.action === 'plow' ? CFG.plowSpeed : CFG.walkSpeed) * 0.9;
           if (bv < target) { b.vx += nx * strength * dt; b.vz += nz * strength * dt; }
           b.lastPusher = p.id; b.pushT = 4;
         }
         // fast ball runs penguins over
         const rel = Math.hypot(b.vx - p.vx, b.vz - p.vz);
-        if (rel > 3.2 && dh < b.r + CFG.radius && (b.vx * -nx + b.vz * -nz) > 2.5) {
+        if (rel > 3.2 && dh < b.r + pr && (b.vx * -nx + b.vz * -nz) > 2.5) {
           const pusher = this.penguin(b.lastPusher);
           const sameTeam = pusher && pusher.team === p.team;
           if (!sameTeam && p.invuln <= 0) {
@@ -1616,9 +1776,10 @@ export class World {
   private loadTurret(p: Penguin) {
     const t = this.nearTurret(p);
     if (!t) return;
-    const n = Math.min(p.carried, Math.floor((CFG.turretAmmoMax - t.ammo) / CFG.turretAmmoPerBall));
+    const per = CFG.turretAmmoPerBall * CLASSES[p.cls].ballCost; // a yeti's giant snowball breaks up into more shots
+    const n = Math.min(p.carried, Math.max(1, Math.floor((CFG.turretAmmoMax - t.ammo) / per)));
     if (n <= 0) return;
-    t.ammo += n * CFG.turretAmmoPerBall;
+    t.ammo = Math.min(CFG.turretAmmoMax, t.ammo + n * per);
     p.carried -= n;
     this.emit({ type: 'turretLoad', pid: p.id, tid: t.id, n });
   }
@@ -1694,7 +1855,7 @@ export class World {
     const fx = -Math.sin(p.lookYaw), fz = -Math.cos(p.lookYaw);
     let x = p.x, y = p.y, z = p.z;
     if (r === 0) {
-      p.frenzyT = CFG.frenzyTime; p.carried = CFG.maxCarry; p.throwCd = 0;
+      p.frenzyT = CFG.frenzyTime; p.carried = CLASSES[p.cls].maxCarry; p.throwCd = 0;
     } else if (r === 1) {
       x = p.x + fx * 1.8; z = p.z + fz * 1.8;
       if (a) { const d = Math.hypot(a.x - p.x, a.z - p.z); if (d > 1 && d < CFG.reach + 2) { x = a.x; y = a.y; z = a.z; } }

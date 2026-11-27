@@ -9,6 +9,7 @@ import { World, Penguin, solveThrow } from './World';
 import { CFG } from './config';
 import { Vehicle, vehicleOf, boardingBlock } from './Vehicles';
 import { GUN_WATER, GUN_COCOA, GUN_BLADE } from './Guns';
+import { CLASSES } from './Classes';
 
 type Goal = 'build' | 'pack' | 'stash' | 'grab' | 'fight' | 'flake' | 'roll' | 'retreat' | 'advance' | 'board' | 'turret' | 'capture' | 'gun';
 
@@ -68,6 +69,7 @@ export class BotBrain {
 
   think(w: World, p: Penguin, dt: number) {
     const inp = p.input;
+    const def = CLASSES[p.cls];
     inp.fire = inp.fire && p.charging; // keep holding only while charging
     inp.plow = inp.pack = inp.dig = inp.build = inp.use = inp.roll = inp.turret = false;
     inp.slide = false;
@@ -104,10 +106,10 @@ export class BotBrain {
     if (w.phase === 'build') {
       // builders build; packers switch to building once the stockpile is healthy
       // (Breakthrough attackers have nothing to fortify: they all stock up for the push)
-      if (bt && p.team === 0) this.goal = p.carried >= CFG.maxCarry ? 'stash' : 'pack';
+      if (bt && p.team === 0) this.goal = p.carried >= def.maxCarry ? 'stash' : 'pack';
       else if (this.turretJob && this.turretWait <= 0 && this.wantsTurret(w, p) && this.t < w.buildLen - 4) this.goal = 'turret';
       else if ((this.role === 'builder' || (w.piles[p.team] >= 18 && p.carried === 0)) && this.t < w.buildLen - 3) this.goal = 'build';
-      else this.goal = p.carried >= CFG.maxCarry ? 'stash' : 'pack';
+      else this.goal = p.carried >= def.maxCarry ? 'stash' : 'pack';
     } else {
       this.pickTarget(w, p);
       this.spendRewards(w, p, dt);
@@ -122,10 +124,10 @@ export class BotBrain {
         // a gun with something in the tank and someone to use it on: that comes before stocking up on snowballs
         this.goal = 'fight';
       } else if (p.carried === 0) {
-        this.goal = w.piles[p.team] > 0 && pileDist < (flags ? 20 : 34) ? 'grab' : 'pack';
-      } else if (bt && p.team === 0 && w.holdT > 0 && p.carried < CFG.maxCarry) {
+        this.goal = w.piles[p.team] >= def.ballCost && pileDist < (flags ? 20 : 34) ? 'grab' : 'pack';
+      } else if (bt && p.team === 0 && w.holdT > 0 && p.carried < def.maxCarry) {
         // waiting for the next section to open: fill your flippers
-        this.goal = w.piles[p.team] > 0 && pileDist < 30 ? 'grab' : 'pack';
+        this.goal = w.piles[p.team] >= def.ballCost && pileDist < 30 ? 'grab' : 'pack';
       } else if (p.health === 1 && p.sinceHit < 4 && this.targetVisible && !onFlag) {
         this.goal = 'retreat';
       } else if (w.board.active && w.board.holder < 0 && Math.hypot(w.board.x - p.x, w.board.z - p.z) < (flags ? 14 : 26)) {
@@ -212,6 +214,26 @@ export class BotBrain {
         break;
       }
     }
+    // only penguins belly slide. For a polar bear the same key is the charge, so it's only pressed on purpose
+    if (!def.slide) inp.slide = false;
+    if (def.rush && w.phase === 'fight') this.bearCharge(w, p);
+  }
+
+  /**
+   * Polar bear: when an enemy is a few steps away, in sight and more or less ahead, put your head down and charge.
+   * Mid-charge, lean it toward them.
+   */
+  private bearCharge(w: World, p: Penguin) {
+    const t = this.targetId >= 0 ? w.penguin(this.targetId) : undefined;
+    if (!t || !t.alive || !this.targetVisible || Math.abs(t.y - p.y) > 1.6) return;
+    const d = Math.hypot(t.x - p.x, t.z - p.z);
+    // where they'll be when we get there
+    const lead = d / CFG.rushSpeed * 0.8;
+    const yaw = this.yawTo(p, t.x + t.vx * lead, t.z + t.vz * lead);
+    if (p.rushT > 0) { p.input.yaw = yaw; p.input.fire = false; return; }
+    if (p.rushCd > 0 || p.charging || !p.grounded || this.reactT > 0 || d < 2.2 || d > 6 + this.skill * 5) return;
+    p.input.yaw = yaw;
+    p.input.slide = true;
   }
 
   /** Where this bot is trying to get to in the fight: its objective, or (Team Deathmatch) the middle of the map. */
@@ -429,7 +451,7 @@ export class BotBrain {
     }
     // in the ring
     const toEnemy = base.facing; // look the way the enemy comes from
-    if (p.carried < CFG.maxCarry) {
+    if (p.carried < CLASSES[p.cls].maxCarry) {
       p.input.pack = true;
       this.faceYaw(p, toEnemy + Math.sin(this.t * 0.4 + this.index) * 1.3);
       if (p.noSnowT > 0) this.holdSpot = null;
@@ -693,7 +715,7 @@ export class BotBrain {
     const t = this.mark(w);
     if (!t) return;
     const dx = t.x - p.x, dz = t.z - p.z, d = Math.hypot(dx, dz) || 1;
-    const want = p.gun === GUN_COCOA ? 7 : 11 + this.skill * 5; // hot chocolate doesn't reach far
+    const want = p.gun === GUN_COCOA ? 7 : CLASSES[p.cls].rush ? 7 + this.skill * 2 : 11 + this.skill * 5; // hot chocolate doesn't reach far; bears like to be close enough to charge
     const charge = p.gun === GUN_BLADE && this.targetVisible && d < 12; // blade in hand and someone close: run straight at them
     this.strafeT -= dt;
     if (this.strafeT <= 0) { this.strafeT = 0.8 + Math.random() * 1.6; this.strafeDir = Math.random() < 0.5 ? -1 : 1; }
@@ -723,25 +745,31 @@ export class BotBrain {
     if (this.gunCombat(w, p)) return;
     if (w.phase !== 'fight' || p.carried === 0) { p.input.fire = false; return; }
     const t = this.mark(w);
-    if (!t || !this.targetVisible || !t.alive || this.reactT > 0) { if (!p.charging) p.input.fire = false; return; }
+    const big = CLASSES[p.cls].splash > 0;
+    // a yeti doesn't need to see you: within a short lob it throws at the wall you're hiding behind, and blasts it open
+    const seen = this.targetVisible || (big && this.targetId >= 0 && !!t && Math.hypot(t.x - p.x, t.z - p.z) < 20);
+    if (!t || !seen || !t.alive || this.reactT > 0) { if (!p.charging) p.input.fire = false; return; }
     const d = Math.hypot(t.x - p.x, t.z - p.z);
-    if (d > 40) { p.input.fire = false; return; }
+    if (d > (big ? 34 : 40)) { p.input.fire = false; return; }
     if (!p.charging && p.throwCd <= 0) {
       p.input.fire = true;
-      this.chargeGoal = d > 28 ? 0.8 : d > 17 ? 0.35 : Math.random() * 0.2;
+      // a giant snowball is slow and heavy: it needs more of a wind-up to get there
+      this.chargeGoal = big ? (d > 22 ? 1 : d > 13 ? 0.6 : 0.2 + Math.random() * 0.15) : d > 28 ? 0.8 : d > 17 ? 0.35 : Math.random() * 0.2;
       return;
     }
     if (p.charging) {
       // aim with lead + human-ish error
       p.input.yaw = this.yawTo(p, t.x, t.z);
-      const speed = (CFG.throwSpeedMin + (CFG.throwSpeedMax - CFG.throwSpeedMin) * p.charge) * (1 + p.mitten * CFG.throwPerLevel);
+      const speed = w.throwSpeed(p);
       const h = w.handPos(p);
-      let aim = { x: t.x, y: t.y + t.h, z: t.z };
+      // a giant snowball goes at their feet, so a near miss still splashes them
+      const ah = big ? 0.25 : t.h;
+      let aim = { x: t.x, y: t.y + ah, z: t.z };
       for (let it = 0; it < 2; it++) {
         const v = solveThrow(h, aim, speed, CFG.snowballGravity);
         const flight = v ? Math.hypot(aim.x - h.x, aim.z - h.z) / Math.max(1, Math.hypot(v.x, v.z)) : d / speed;
         const lead = this.skill * 0.9;
-        aim = { x: t.x + t.vx * flight * lead, y: t.y + t.h, z: t.z + t.vz * flight * lead };
+        aim = { x: t.x + t.vx * flight * lead, y: t.y + ah, z: t.z + t.vz * flight * lead };
       }
       const err = (0.25 + d * 0.05) * (1.3 - this.skill);
       aim.x += (Math.random() * 2 - 1) * err; aim.z += (Math.random() * 2 - 1) * err; aim.y += (Math.random() * 2 - 1) * err * 0.4;

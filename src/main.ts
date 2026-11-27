@@ -2,6 +2,7 @@ import './style.css';
 import { Game } from './game/Game';
 import { HATS, World, Mode } from './sim/World';
 import { CFG } from './sim/config';
+import { CLASSES, CLASS_IDS, ClassId, asClass } from './sim/Classes';
 import { TEAM_NAMES } from './render/Environment';
 import { NetClient, serverStatus, serverUrl } from './net/NetClient';
 import { loadAssets } from './render/Assets';
@@ -33,7 +34,9 @@ let mode: Mode = asMode(store.get('mode', 'tdm'));
 // Breakthrough: 0 = attack with Team Blizzard, 1 = defend with Team Sunrise
 let side = store.get('side', '0') === '1' ? 1 : 0;
 let name = store.get('name', 'Flynn');
+let cls: ClassId = asClass(store.get('cls', 'penguin'));
 game.setMenuHat(hat);
+game.setMenuClass(cls);
 game.input.sensitivity = +store.get('sens', '1');
 
 const el = (html: string) => { const d = document.createElement('div'); d.innerHTML = html.trim(); return d.firstElementChild as HTMLElement; };
@@ -41,6 +44,7 @@ const el = (html: string) => { const d = document.createElement('div'); d.innerH
 const menu = el(`<div class="menu">
   <div class="logo">Polar<span>Penguin Fight</span><small>Snowball arena · built live on stream</small></div>
   <div class="field"><label>Penguin name</label><input type="text" id="name" maxlength="16" /></div>
+  <div class="field"><label>Class</label><div class="classes" id="classes"></div><div class="classblurb" id="classBlurb"></div></div>
   <div class="field"><label>Hat</label><div class="hats" id="hats"></div></div>
   <div class="field"><label>Game mode</label><div class="modes">
     <button class="mode gm" data-mode="tdm"><b>Team Deathmatch</b><span>First to ${CFG.scoreToWin} splats · Frostbite Bay</span></button>
@@ -60,6 +64,7 @@ const menu = el(`<div class="menu">
   </div>
   <div class="online" id="online"></div>
   <div class="howto">
+    <div><b>Three classes.</b> <b>Penguins</b> are quick and belly slide. <b>Polar bears</b> take ${CLASSES.bear.health} hits and charge with Shift, bowling enemies over and bursting through snow walls. <b>Yetis</b> take ${CLASSES.yeti.health} hits and move slowly, pack slowly and carry only ${CLASSES.yeti.maxCarry}, but their giant snowballs hit twice as hard, splash everyone nearby and blast holes in forts. Only penguins slide.</div>
     <div><b>Build phase first:</b> hold R and sweep the crosshair to draw snow walls, hold still to stack them higher. Dig trenches and tunnels, pack snowballs and stash them in your stockpile.</div>
     <div id="howMode"></div>
     <div><b>Hold T to build a snowman turret.</b> It takes a lot of snow, throws at any enemy it can see, and you reload it with your own snowballs.</div>
@@ -68,7 +73,7 @@ const menu = el(`<div class="menu">
   </div>
   <div class="howto">
     <span class="key">WASD</span>move <span class="key">Mouse</span>look <span class="key">LMB</span>throw <span class="key">RMB</span>push snow
-    <span class="key">F</span>pack <span class="key">R</span>build <span class="key">Q</span>dig <span class="key">T</span>turret <span class="key">G</span>giant snowball <span class="key">E</span>stockpile <span class="key">X</span>gun / blade <span class="key">Shift</span>slide <span class="key">Space</span>hop
+    <span class="key">F</span>pack <span class="key">R</span>build <span class="key">Q</span>dig <span class="key">T</span>turret <span class="key">G</span>giant snowball <span class="key">E</span>stockpile <span class="key">X</span>gun / blade <span class="key">Shift</span>slide (penguin) or charge (polar bear) <span class="key">Space</span>hop
   </div>
   <div class="foot">Best on a computer with a mouse.</div>
 </div>`);
@@ -89,6 +94,20 @@ for (const h of HATS) {
   b.addEventListener('click', () => { hat = h; store.set('hat', h); game.setMenuHat(h); game.audio.unlock(); game.audio.click(); syncMenu(); });
   hatsEl.appendChild(b);
 }
+// classes: what you play as (you can switch again from the pause menu, and it starts with your next life)
+const CLASS_STATS: Record<ClassId, string> = {
+  penguin: `${CLASSES.penguin.health} hearts · fast · belly slide`,
+  bear: `${CLASSES.bear.health} hearts · charge`,
+  yeti: `${CLASSES.yeti.health} hearts · slow · giant snowballs`,
+};
+const classButtons = (where: Element, pick: (c: ClassId) => void) => {
+  for (const c of CLASS_IDS) {
+    const b = el(`<button class="mode cls" data-cls="${c}"><b>${CLASSES[c].name}</b><span>${CLASS_STATS[c]}</span></button>`);
+    b.addEventListener('click', () => { cls = c; store.set('cls', c); game.audio.unlock(); game.audio.click(); pick(c); syncMenu(); });
+    where.appendChild(b);
+  }
+};
+classButtons(menu.querySelector('#classes')!, c => game.setMenuClass(c));
 menu.querySelectorAll<HTMLButtonElement>('.mode[data-size]').forEach(b => b.addEventListener('click', () => {
   teamSize = +b.dataset.size!; store.set('teamSize', String(teamSize)); game.audio.unlock(); game.audio.click(); syncMenu();
 }));
@@ -105,20 +124,20 @@ const HOW_MODE: Record<Mode, string> = {
 };
 function syncMenu() {
   menu.querySelectorAll<HTMLElement>('.hat').forEach(b => b.classList.toggle('sel', b.dataset.hat === hat));
+  document.querySelectorAll<HTMLElement>('.mode[data-cls]').forEach(b => b.classList.toggle('sel', b.dataset.cls === cls));
   menu.querySelectorAll<HTMLElement>('.mode[data-size]').forEach(b => b.classList.toggle('sel', +b.dataset.size! === teamSize));
   menu.querySelectorAll<HTMLElement>('.mode[data-mode]').forEach(b => b.classList.toggle('sel', b.dataset.mode === mode));
   menu.querySelectorAll<HTMLElement>('.mode[data-side]').forEach(b => b.classList.toggle('sel', +b.dataset.side! === side));
   menu.querySelector('#sides')!.classList.toggle('hidden', mode !== 'breakthrough');
   menu.querySelector('#howMode')!.innerHTML = HOW_MODE[mode];
+  menu.querySelector('#classBlurb')!.textContent = CLASSES[cls].blurb;
 }
-syncMenu();
-
 function start() {
   menu.classList.add('hidden');
   pause.classList.add('hidden');
   end.classList.add('hidden');
   online = false;
-  game.startMatch({ teamSize, playerName: name || 'Penguin', playerHat: hat, mode, playerTeam: mode === 'breakthrough' ? side : 0 });
+  game.startMatch({ teamSize, playerName: name || 'Penguin', playerHat: hat, mode, playerTeam: mode === 'breakthrough' ? side : 0, playerClass: cls });
 }
 playBtn.addEventListener('click', start);
 practiceBtn.addEventListener('click', start);
@@ -149,7 +168,7 @@ function playOnline() {
   onlineEl.textContent = 'Joining a match…';
   playOnlineBtn.disabled = true;
   let started = false;
-  const net = new NetClient(serverUrl(), { name: name || 'Penguin', hat, size: teamSize, mode, ...(mode === 'breakthrough' ? { team: side } : {}) }, {
+  const net = new NetClient(serverUrl(), { name: name || 'Penguin', hat, size: teamSize, mode, cls, ...(mode === 'breakthrough' ? { team: side } : {}) }, {
     onMatch: (info, density, hard) => {
       started = true; joining = false; playOnlineBtn.disabled = false;
       menu.classList.add('hidden');
@@ -172,9 +191,13 @@ const pause = el(`<div class="overlay dim hidden"><div class="panel">
   <div class="set"><span>Mouse sensitivity</span><input type="range" id="sens" min="0.3" max="2.5" step="0.05"></div>
   <div class="set"><span>Sound</span><button class="btn small blue" id="mute">On</button></div>
   <div class="set"><span>Graphics</span><button class="btn small blue" id="gfx">High</button></div>
+  <div class="setlabel">Class <small>(a change starts with your next life)</small></div>
+  <div class="classes small" id="pauseClasses"></div>
   <div class="row"><button class="btn" id="resume">Resume</button><button class="btn blue" id="quit">Quit to menu</button></div>
 </div></div>`);
 document.body.appendChild(pause);
+classButtons(pause.querySelector('#pauseClasses')!, c => game.setNextClass(c));
+syncMenu();
 const sens = pause.querySelector('#sens') as HTMLInputElement;
 sens.value = String(game.input.sensitivity);
 sens.addEventListener('input', () => { game.input.sensitivity = +sens.value; store.set('sens', sens.value); });
@@ -209,6 +232,7 @@ function toMenu() {
   end.classList.add('hidden');
   game.enterMenu();
   game.setMenuHat(hat);
+  game.setMenuClass(cls);
   menu.classList.remove('hidden');
   checkServer();
 }
@@ -248,5 +272,6 @@ game.hooks = {
 if (params.get('q')) game.setQuality(params.get('q') === 'low' ? 'low' : 'high');
 if (params.get('mode')) mode = asMode(params.get('mode'));
 if (params.get('side')) side = params.get('side') === 'defend' || params.get('side') === '1' ? 1 : 0;
+if (params.get('class')) { cls = asClass(params.get('class')); game.setMenuClass(cls); syncMenu(); }
 if (params.get('autostart')) start();
 (window as any).__game = game;

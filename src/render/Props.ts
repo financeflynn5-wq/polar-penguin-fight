@@ -3,6 +3,7 @@ import { World } from '../sim/World';
 import { MapDef } from '../world/MapDef';
 import { TEAM_COLORS } from './Environment';
 import { ThrowArc } from './ThrowArc';
+import { CLASSES } from '../sim/Classes';
 
 const snowballMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.8 });
 
@@ -74,6 +75,9 @@ function textSprite(text: string, color = '#ffffff', w = 1.2) {
   draw(text);
   return { sprite: s, draw };
 }
+
+/** how much bigger than an ordinary snowball's mesh a yeti's giant one is drawn */
+const BIG_BALL = CLASSES.yeti.ballRadius / 0.16;
 
 export class Props {
   readonly group = new THREE.Group();
@@ -215,6 +219,7 @@ export class Props {
       if (n >= 256) break;
       const x = b.px + (b.x - b.px) * alpha, y = b.py + (b.y - b.py) * alpha, z = b.pz + (b.z - b.pz) * alpha;
       this.m4.makeTranslation(x, y, z);
+      if (b.big) { const k = BIG_BALL; const e = this.m4.elements; e[0] = e[5] = e[10] = k; } // a yeti's giant snowball
       this.snowballs.setMatrixAt(n++, this.m4);
     }
     this.snowballs.count = n;
