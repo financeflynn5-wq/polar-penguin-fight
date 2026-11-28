@@ -107,9 +107,9 @@ export const CFG = {
   plowRam: 2.2, // m/s: the blade flattens any enemy it reaches faster than this
   plowBotWait: 6, // seconds a fresh snowplow waits for a person before a bot may take it
   vehicleIdleHome: 30, // an empty vehicle left out in the field goes back to camp after this long
-  // the snow tank: one at each camp in every mode. The driver works a snowball machine gun, and a second rider
+  // the snow tank: tanksPerTeam at each camp in every mode (change the number to get more or fewer). The driver works a snowball machine gun, and a second rider
   // standing on the back works the snowball catapult (see src/sim/Tank.ts)
-  tanksPerTeam: 1,
+  tanksPerTeam: 2,
   tankFirst: 0, // seconds into the match before the tanks are at camp
   tankHealth: 16, // snowball hits to wreck one (both riders are out in the open)
   tankRespawn: 45, // seconds until a wrecked one is back at camp
