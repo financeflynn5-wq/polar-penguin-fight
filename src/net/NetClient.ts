@@ -24,7 +24,14 @@ export interface NetHooks {
   onRoster(roster: RosterEntry[]): void;
   /** Couldn't join, or lost the connection. */
   onClose(reason: string): void;
+  /** Waiting in a hosted lobby: who's there, and whether you're the host (who starts the match). */
+  onLobby?(lobby: LobbyState): void;
 }
+
+export interface LobbyState { code: string; mode: Mode; size: number; host: boolean; players: { name: string; host: boolean }[]; max: number; }
+
+/** How to get into a match: the public matchmaking, hosting a lobby, or joining one by its code. */
+export type JoinKind = { t: 'join' } | { t: 'host' } | { t: 'joinLobby'; code: string };
 
 export interface JoinRequest { name: string; hat: string; skin?: Skin; size: number; mode: Mode; /** Breakthrough: the side you'd like (0 attack, 1 defend) */ team?: number; cls?: ClassId; }
 
@@ -43,7 +50,7 @@ export function serverUrl(): string {
 }
 
 /** Is a game server answering? Returns its head count, or null when there's no server (e.g. the GitHub Pages copy). */
-export async function serverStatus(): Promise<{ players: number; max: number } | null> {
+export async function serverStatus(): Promise<{ players: number; max: number; lobbies: boolean } | null> {
   try {
     const u = new URL(serverUrl());
     u.protocol = u.protocol === 'wss:' ? 'https:' : 'http:';
@@ -56,7 +63,7 @@ export async function serverStatus(): Promise<{ players: number; max: number } |
     const j = await r.json();
     if (j?.game !== 'polar-penguin-fight') return null;
     if (j.protocol !== P.PROTOCOL) return null;
-    return { players: j.players | 0, max: j.max | 0 };
+    return { players: j.players | 0, max: j.max | 0, lobbies: !!j.lobbies };
   } catch { return null; }
 }
 
@@ -82,10 +89,10 @@ export class NetClient {
   predicting = false;
   you = -1;
 
-  constructor(url: string, join: JoinRequest, private hooks: NetHooks) {
+  constructor(url: string, join: JoinRequest, private hooks: NetHooks, kind: JoinKind = { t: 'join' }) {
     this.ws = new WebSocket(url);
     this.ws.binaryType = 'arraybuffer';
-    this.ws.onopen = () => this.ws.send(JSON.stringify({ t: 'join', v: P.PROTOCOL, ...join }));
+    this.ws.onopen = () => this.ws.send(JSON.stringify({ v: P.PROTOCOL, ...join, ...kind }));
     this.ws.onmessage = ev => { const d = ev.data; this.chain = this.chain.then(() => this.receive(d)).catch(e => console.error('net:', e)); };
     this.ws.onclose = ev => {
       if (this.closed) return;
@@ -95,6 +102,9 @@ export class NetClient {
       this.hooks.onClose(why);
     };
   }
+
+  /** The host starts the lobby's match. */
+  startLobby() { if (this.ws.readyState === 1) this.ws.send(JSON.stringify({ t: 'start' })); }
 
   /** Come back as this class next time you respawn. */
   setClass(cls: ClassId) { if (this.ws.readyState === 1) this.ws.send(JSON.stringify({ t: 'cls', cls })); }
@@ -110,6 +120,7 @@ export class NetClient {
     if (typeof data === 'string') {
       const m = JSON.parse(data);
       if (m.t === 'roster') this.applyRoster(m.roster);
+      else if (m.t === 'lobby') this.hooks.onLobby?.(m as LobbyState);
       else if (m.t === 'pong') this.rtt = performance.now() - m.c;
       else if (m.t === 'joinErr') { this.closed = true; this.ws.close(); this.hooks.onClose(m.err); }
       return;

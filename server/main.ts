@@ -7,6 +7,10 @@
 //
 // Matches: one 5v5 and one 10v10 at a time per "room"; when a room's slots are all people, the next person starts
 // another room of that size. Bots fill every slot nobody is playing.
+//
+// Lobbies: someone hosts one ({ t: 'host' }) and gets a short code; friends join with that code ({ t: 'joinLobby' })
+// and wait until the host starts ({ t: 'start' }). That match is a private room nobody else is matched into, and the
+// code keeps working while it runs, so late friends can still drop in.
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -37,12 +41,36 @@ const MIME: Record<string, string> = {
 
 const rooms: Room[] = [];
 let roomN = 0;
-const humans = () => rooms.reduce((n, r) => n + r.humans, 0);
+const humans = () => rooms.reduce((n, r) => n + r.humans, 0) + [...lobbies.values()].reduce((n, l) => n + (l.room ? 0 : l.members.length), 0);
 const roomFor = (size: number, mode: Mode) => {
-  let r = rooms.find(r => r.size === size && r.mode === mode && r.open);
+  let r = rooms.find(r => r.size === size && r.mode === mode && r.open && !privateRooms.has(r));
   if (!r) { r = new Room(size, mode, `${mode}-${size}v${size}#${++roomN}`); rooms.push(r); console.log(`[${r.key}] room opened`); }
   return r;
 };
+
+// ───────── lobbies ─────────
+interface Conn { ws: WebSocket; room: Room | null; client: Client | null; lobby: Lobby | null }
+interface Lobby { code: string; host: Conn; members: Conn[]; mode: Mode; size: number; room: Room | null }
+const lobbies = new Map<string, Lobby>();
+const privateRooms = new Set<Room>();
+const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ'; // no I, L or O: easy to read out on stream
+const newCode = () => {
+  for (;;) {
+    let c = '';
+    for (let i = 0; i < 4; i++) c += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)];
+    if (!lobbies.has(c)) return c;
+  }
+};
+const sendJson = (ws: WebSocket, m: unknown) => { if (ws.readyState === 1) try { ws.send(JSON.stringify(m)); } catch { /* closing */ } };
+/** Everyone waiting in the lobby sees who's there and who the host is. */
+function lobbyUpdate(l: Lobby) {
+  const players = l.members.map(m => ({ name: m.client!.name, host: m === l.host }));
+  for (const m of l.members) sendJson(m.ws, { t: 'lobby', code: l.code, mode: l.mode, size: l.size, host: m === l.host, players, max: l.size * 2 });
+}
+function closeLobby(l: Lobby) {
+  if (lobbies.get(l.code) === l) lobbies.delete(l.code);
+  console.log(`[lobby ${l.code}] closed`);
+}
 
 const bans = new Bans();
 const wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024, perMessageDeflate: { threshold: 256, zlibDeflateOptions: { level: 3 } } });
@@ -77,7 +105,7 @@ const server = http.createServer((req, res) => {
     if ((req.url || '').split('?')[0] === '/status') {
       // the menu's live head count (also answers the GitHub Pages copy of the game, so it can offer online play)
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store', 'access-control-allow-origin': '*' });
-      res.end(JSON.stringify({ game: 'polar-penguin-fight', protocol: PROTOCOL, players: humans(), max: MAX_PLAYERS,
+      res.end(JSON.stringify({ game: 'polar-penguin-fight', protocol: PROTOCOL, players: humans(), max: MAX_PLAYERS, lobbies: true,
         rooms: rooms.map(r => ({ size: r.size, mode: r.mode, players: r.humans, phase: r.world.phase })) }));
       return;
     }
@@ -112,8 +140,7 @@ wss.on('connection', (ws: WebSocket, _req: http.IncomingMessage, ip: string) => 
   meta.arcadeIp = ip;
   meta.isAlive = true;
   ws.on('pong', () => { meta.isAlive = true; });
-  let room: Room | null = null;
-  let client: Client | null = null;
+  const conn: Conn = { ws, room: null, client: null, lobby: null };
   let sec = 0, count = 0;
   ws.on('message', (data, isBinary) => {
     const now = Math.floor(performance.now() / 1000);
@@ -123,14 +150,20 @@ wss.on('connection', (ws: WebSocket, _req: http.IncomingMessage, ip: string) => 
     try { msg = JSON.parse(String(data)); } catch { return; }
     if (!msg || typeof msg !== 'object') return;
     try {
+      const { room, client } = conn;
       if (msg.t === 'in' && client && room) room.onInput(client, msg.s, Array.isArray(msg.i) ? msg.i : []);
-      else if (msg.t === 'cls' && client && room) room.setClass(client, asClass(msg.cls));
+      else if (msg.t === 'cls' && client) { client.cls = asClass(msg.cls); if (room) room.setClass(client, client.cls); }
       else if (msg.t === 'ping') ws.send(JSON.stringify({ t: 'pong', c: Number(msg.c) || 0 }));
-      else if (msg.t === 'join' && !client) {
+      else if ((msg.t === 'join' || msg.t === 'host' || msg.t === 'joinLobby') && !conn.client && !conn.lobby) {
         if (msg.v !== PROTOCOL) { ws.send(JSON.stringify({ t: 'joinErr', err: 'The game was just updated. Refresh the page to play.' })); return; }
         if (humans() >= MAX_PLAYERS) { ws.send(JSON.stringify({ t: 'joinErr', err: `The server is full (${MAX_PLAYERS} players). Try again in a minute!` })); return; }
-        const size = TEAM_SIZES.includes(msg.size) ? msg.size : 5;
-        const mode: Mode = MODES.includes(msg.mode) ? msg.mode : 'tdm';
+        let l: Lobby | undefined;
+        if (msg.t === 'joinLobby') {
+          l = lobbies.get(String(msg.code ?? '').trim().toUpperCase());
+          if (!l) { ws.send(JSON.stringify({ t: 'joinErr', err: 'No lobby with that code. Check it with the host!' })); return; }
+        }
+        const size = l ? l.size : TEAM_SIZES.includes(msg.size) ? msg.size : 5;
+        const mode: Mode = l ? l.mode : MODES.includes(msg.mode) ? msg.mode : 'tdm';
         const hat = HATS.includes(msg.hat) ? msg.hat : 'beanie';
         const c: Client = {
           ws, name: cleanName(msg.name, 'Penguin', { max: 16, prefix: 'Penguin' }), hat, cls: asClass(msg.cls), skin: asSkin(msg.skin),
@@ -138,20 +171,69 @@ wss.on('connection', (ws: WebSocket, _req: http.IncomingMessage, ip: string) => 
           team: mode === 'breakthrough' && (msg.team === 0 || msg.team === 1) ? msg.team : -1, penguinId: -1,
           queue: [], last: emptyInput(), lastSeq: -1, ack: 0, held: null, resync: false,
         };
+        if (msg.t === 'host') {
+          const code = newCode();
+          const nl: Lobby = { code, host: conn, members: [conn], mode, size, room: null };
+          lobbies.set(code, nl);
+          conn.client = c; conn.lobby = nl;
+          console.log(`[lobby ${code}] ${c.name} is hosting ${mode} ${size}v${size}`);
+          lobbyUpdate(nl);
+          return;
+        }
+        if (l) {
+          if (l.room) {
+            // the match already started: drop straight in
+            if (!l.room.join(c)) { ws.send(JSON.stringify({ t: 'joinErr', err: 'That lobby\'s match is full.' })); return; }
+            conn.room = l.room; conn.client = c;
+            return;
+          }
+          if (l.members.length >= l.size * 2) { ws.send(JSON.stringify({ t: 'joinErr', err: 'That lobby is full.' })); return; }
+          l.members.push(conn);
+          conn.client = c; conn.lobby = l;
+          console.log(`[lobby ${l.code}] ${c.name} joined (${l.members.length} waiting)`);
+          lobbyUpdate(l);
+          return;
+        }
         const r = roomFor(size, mode);
         if (!r.join(c)) { ws.send(JSON.stringify({ t: 'joinErr', err: 'That match just filled up. Try again!' })); return; }
-        room = r; client = c;
+        conn.room = r; conn.client = c;
+      }
+      else if (msg.t === 'start' && conn.lobby && conn.lobby.host === conn && !conn.lobby.room) {
+        // the host starts: everyone waiting goes into a fresh private match together
+        const l = conn.lobby;
+        const r = new Room(l.size, l.mode, `${l.mode}-${l.size}v${l.size}#${++roomN}-lobby-${l.code}`);
+        rooms.push(r); privateRooms.add(r); l.room = r;
+        console.log(`[${r.key}] lobby ${l.code} started with ${l.members.length}`);
+        for (const m of l.members) {
+          m.lobby = null;
+          if (m.ws.readyState === 1 && m.client && r.join(m.client)) m.room = r;
+        }
+        l.members = [];
       }
     } catch (e) {
-      console.error(`[${room?.key ?? '-'}] message error:`, e);
+      console.error(`[${conn.room?.key ?? conn.lobby?.code ?? '-'}] message error:`, e);
     }
   });
   ws.on('close', () => {
     perIp.set(ip, (perIp.get(ip) ?? 1) - 1);
     if ((perIp.get(ip) ?? 0) <= 0) perIp.delete(ip);
     try {
+      const { room, client, lobby } = conn;
+      if (lobby) {
+        lobby.members = lobby.members.filter(m => m !== conn);
+        if (lobby.host === conn) {
+          // no host, no start button: tell the others and close it
+          for (const m of lobby.members) { sendJson(m.ws, { t: 'joinErr', err: 'The host closed the lobby.' }); m.lobby = null; m.client = null; }
+          lobby.members = [];
+          closeLobby(lobby);
+        } else lobbyUpdate(lobby);
+      }
       if (room && client) room.leave(client);
-      if (room && room.humans === 0) { rooms.splice(rooms.indexOf(room), 1); console.log(`[${room.key}] room closed`); }
+      if (room && room.humans === 0) {
+        rooms.splice(rooms.indexOf(room), 1); privateRooms.delete(room);
+        for (const l of lobbies.values()) if (l.room === room) closeLobby(l);
+        console.log(`[${room.key}] room closed`);
+      }
     } catch (e) { console.error('leave error:', e); }
   });
   ws.on('error', () => {});

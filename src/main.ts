@@ -4,7 +4,7 @@ import { HATS, World, Mode, asSkin } from './sim/World';
 import { CFG } from './sim/config';
 import { CLASSES, CLASS_IDS, ClassId, asClass } from './sim/Classes';
 import { TEAM_NAMES } from './render/Environment';
-import { NetClient, serverStatus, serverUrl } from './net/NetClient';
+import { NetClient, serverStatus, serverUrl, type JoinKind, type LobbyState } from './net/NetClient';
 import { loadAssets } from './render/Assets';
 
 const HAT_LABELS: Record<string, [string, string]> = {
@@ -65,6 +65,11 @@ const menu = el(`<div class="menu">
   </div></div>
   <div class="playrow">
     <button class="btn" id="playOnline">Play online</button>
+    <div class="lobbyrow hidden" id="lobbyRow">
+      <button class="btn blue small" id="hostLobby">Host a lobby</button>
+      <input type="text" id="lobbyCode" maxlength="4" placeholder="CODE" autocomplete="off" spellcheck="false" />
+      <button class="btn blue small" id="joinLobby">Join lobby</button>
+    </div>
     <button class="btn" id="play">Play</button>
     <button class="btn blue small" id="practice">Practice with bots</button>
   </div>
@@ -88,6 +93,13 @@ const playOnlineBtn = menu.querySelector('#playOnline') as HTMLButtonElement;
 const playBtn = menu.querySelector('#play') as HTMLButtonElement;
 const practiceBtn = menu.querySelector('#practice') as HTMLButtonElement;
 const onlineEl = menu.querySelector('#online') as HTMLElement;
+const lobbyRow = menu.querySelector('#lobbyRow') as HTMLElement;
+const hostLobbyBtn = menu.querySelector('#hostLobby') as HTMLButtonElement;
+const joinLobbyBtn = menu.querySelector('#joinLobby') as HTMLButtonElement;
+const lobbyCodeInput = menu.querySelector('#lobbyCode') as HTMLInputElement;
+lobbyCodeInput.value = (params.get('lobby') ?? '').toUpperCase().slice(0, 4);
+lobbyCodeInput.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') joinLobbyBtn.click(); });
+lobbyCodeInput.addEventListener('input', () => { lobbyCodeInput.value = lobbyCodeInput.value.toUpperCase().replace(/[^A-Z]/g, ''); });
 const nameInput = menu.querySelector('#name') as HTMLInputElement;
 nameInput.value = name;
 nameInput.addEventListener('input', () => { name = nameInput.value.trim() || 'Penguin'; store.set('name', name); });
@@ -164,36 +176,91 @@ async function checkServer() {
     playOnlineBtn.classList.toggle('hidden', !serverUp);
     practiceBtn.classList.toggle('hidden', !serverUp);
     playBtn.classList.toggle('hidden', serverUp);
-    if (!joining) onlineEl.textContent = st ? `${st.players} ${st.players === 1 ? 'penguin' : 'penguins'} online now · bots fill the empty slots` : '';
+    lobbyRow.classList.toggle('hidden', !st?.lobbies);
+    if (!joining) onlineEl.textContent = st ? (st.lobbies && lobbyCodeInput.value.length === 4 ? `Pick your penguin, then press Join lobby to join ${lobbyCodeInput.value}`
+      : `${st.players} ${st.players === 1 ? 'penguin' : 'penguins'} online now · bots fill the empty slots`) : '';
   }
 }
 checkServer();
 setInterval(checkServer, 10000);
 
-function playOnline() {
+const MODE_NAMES: Record<Mode, string> = { tdm: 'Team Deathmatch', conquest: 'Conquest', breakthrough: 'Breakthrough' };
+const onlineButtons = [playOnlineBtn, hostLobbyBtn, joinLobbyBtn];
+function playOnline(kind: JoinKind = { t: 'join' }) {
   if (joining) return;
   joining = true;
   online = true;
   game.audio.unlock(); game.audio.click();
-  onlineEl.textContent = 'Joining a match…';
-  playOnlineBtn.disabled = true;
+  onlineEl.textContent = kind.t === 'host' ? 'Opening your lobby…' : kind.t === 'joinLobby' ? `Joining lobby ${kind.code}…` : 'Joining a match…';
+  onlineButtons.forEach(b => b.disabled = true);
   let started = false;
   const net = new NetClient(serverUrl(), { name: name || 'Penguin', hat, skin, size: teamSize, mode, cls, ...(mode === 'breakthrough' ? { team: side } : {}) }, {
     onMatch: (info, density, hard) => {
-      started = true; joining = false; playOnlineBtn.disabled = false;
+      started = true; joining = false; onlineButtons.forEach(b => b.disabled = false);
+      lobbyNet = null; lobbyEl.classList.add('hidden');
       menu.classList.add('hidden');
       game.beginOnlineMatch(net, info, density, hard);
     },
     onRoster: () => game.refreshModels(),
+    onLobby: l => { lobbyNet = net; showLobby(l); },
     onClose: reason => {
-      joining = false; playOnlineBtn.disabled = false;
+      joining = false; onlineButtons.forEach(b => b.disabled = false);
+      if (lobbyNet === net) { lobbyNet = null; lobbyEl.classList.add('hidden'); }
       if (game.net !== net && started) return; // we already left
       if (started) { toMenu(); }
       onlineEl.textContent = reason;
     },
-  });
+  }, kind);
 }
-playOnlineBtn.addEventListener('click', playOnline);
+playOnlineBtn.addEventListener('click', () => playOnline());
+hostLobbyBtn.addEventListener('click', () => playOnline({ t: 'host' }));
+joinLobbyBtn.addEventListener('click', () => {
+  const code = lobbyCodeInput.value.trim().toUpperCase();
+  if (code.length !== 4) { onlineEl.textContent = 'Type the 4-letter lobby code your host gave you.'; lobbyCodeInput.focus(); return; }
+  playOnline({ t: 'joinLobby', code });
+});
+
+// the lobby: wait for friends, then the host starts
+let lobbyNet: NetClient | null = null;
+const lobbyEl = el(`<div class="overlay dim hidden"><div class="panel lobby">
+  <h2>Lobby <span id="lobbyCodeBig"></span></h2>
+  <p id="lobbyMode"></p>
+  <div class="set"><span>Invite link</span><button class="btn small blue" id="lobbyCopy">Copy link</button></div>
+  <div class="lobbylist" id="lobbyList"></div>
+  <p id="lobbyWait"></p>
+  <div class="row"><button class="btn" id="lobbyStart">Start game</button><button class="btn blue" id="lobbyLeave">Leave</button></div>
+</div></div>`);
+document.body.appendChild(lobbyEl);
+const lobbyStartBtn = lobbyEl.querySelector('#lobbyStart') as HTMLButtonElement;
+let lobbyCode = '';
+const inviteLink = () => { const u = new URL(location.href); u.search = ''; u.hash = ''; u.searchParams.set('lobby', lobbyCode); return u.toString(); };
+function showLobby(l: LobbyState) {
+  lobbyCode = l.code;
+  joining = false;
+  lobbyEl.classList.remove('hidden');
+  (lobbyEl.querySelector('#lobbyCodeBig') as HTMLElement).textContent = l.code;
+  (lobbyEl.querySelector('#lobbyMode') as HTMLElement).textContent = `${MODE_NAMES[l.mode] ?? l.mode} · ${l.size} v ${l.size} · bots fill the empty slots`;
+  const list = lobbyEl.querySelector('#lobbyList') as HTMLElement;
+  list.replaceChildren(...l.players.map(p => { const d = document.createElement('div'); d.textContent = p.name + (p.host ? '  (host)' : ''); return d; }));
+  (lobbyEl.querySelector('#lobbyWait') as HTMLElement).textContent = l.host
+    ? `${l.players.length} of ${l.max} here. Friends can join with the code ${l.code} or the link. Start whenever you're ready.`
+    : `${l.players.length} of ${l.max} here. Waiting for the host to start the game…`;
+  lobbyStartBtn.classList.toggle('hidden', !l.host);
+  lobbyStartBtn.disabled = false;
+}
+lobbyStartBtn.addEventListener('click', () => { game.audio.click(); lobbyStartBtn.disabled = true; lobbyNet?.startLobby(); });
+lobbyEl.querySelector('#lobbyCopy')!.addEventListener('click', async e => {
+  const b = e.currentTarget as HTMLButtonElement;
+  try { await navigator.clipboard.writeText(inviteLink()); b.textContent = 'Copied!'; } catch { b.textContent = inviteLink(); }
+  setTimeout(() => { b.textContent = 'Copy link'; }, 2000);
+});
+lobbyEl.querySelector('#lobbyLeave')!.addEventListener('click', () => {
+  const n = lobbyNet; lobbyNet = null;
+  lobbyEl.classList.add('hidden');
+  n?.close();
+  joining = false; onlineButtons.forEach(b => b.disabled = false);
+  onlineEl.textContent = 'You left the lobby.';
+});
 
 // pause overlay (pointer lock lost)
 const pause = el(`<div class="overlay dim hidden"><div class="panel">
