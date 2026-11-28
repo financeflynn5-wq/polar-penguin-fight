@@ -91,6 +91,8 @@ export class Game {
   private stepT = 0;
   private countdownLast = -1;
   private camDist = 4.8;
+  /** where your penguin was drawn when the camera was placed this frame (before the sim stepped) */
+  private camAt = { x: 0, y: 0, z: 0 };
   private post: PostFX | null = null;
   quality: 'high' | 'low' = 'high';
   private stroke = new Map<number, number>();
@@ -455,6 +457,16 @@ export class Game {
       if (steps === 5) this.acc = 0;
     }
     const alpha = this.paused && !this.net ? 1 : this.acc / STEP;
+    // The camera was placed before the sim stepped, so it's where your penguin was last frame. Carry it along by how far
+    // the penguin moved since, so the camera and the penguin are drawn at the same moment (otherwise running wobbles
+    // the penguin back and forth on screen whenever frame times vary).
+    {
+      const o = this.net?.drawOffset;
+      const dx = me.px + (me.x - me.px) * alpha + (o?.x ?? 0) - this.camAt.x;
+      const dy = me.py + (me.y - me.py) * alpha + (o?.y ?? 0) - this.camAt.y;
+      const dz = me.pz + (me.z - me.pz) * alpha + (o?.z ?? 0) - this.camAt.z;
+      if (Math.hypot(dx, dy, dz) < 3) { this.camera.position.x += dx; this.camera.position.y += dy; this.camera.position.z += dz; }
+    }
 
     this.handleEvents(w, me);
 
@@ -603,6 +615,7 @@ export class Game {
     const alpha = this.acc / STEP;
     const o = this.net?.drawOffset;
     const px = me.px + (me.x - me.px) * alpha + (o?.x ?? 0), py = me.py + (me.y - me.py) * alpha + (o?.y ?? 0), pz = me.pz + (me.z - me.pz) * alpha + (o?.z ?? 0);
+    this.camAt.x = px; this.camAt.y = py; this.camAt.z = pz;
     const yaw = inp.yaw, pitch = inp.pitch;
     const fx = -Math.sin(yaw) * Math.cos(pitch), fy = Math.sin(pitch), fz = -Math.cos(yaw) * Math.cos(pitch);
     const rx = Math.cos(yaw), rz = -Math.sin(yaw);
