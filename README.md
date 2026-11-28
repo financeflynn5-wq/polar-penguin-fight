@@ -119,7 +119,7 @@ Then point a subdomain at port 8080 with whatever already fronts the other games
 
 Without Docker: `npm ci && npm run build && PORT=8080 node server-dist/main.mjs` on Node 22.
 
-To make the GitHub Pages copy offer online play too, set the repository variable `GAME_SERVER_URL` (Settings → Secrets and variables → Actions → Variables) to the server's address, such as `https://penguin.5-222-13-73.sslip.io`, and push. Any copy of the game also takes `?server=https://…` in its address.
+The GitHub Pages copy connects to `https://penguin.5-222-13-73.sslip.io` (Flynn's Hetzner box, deployed with `node deploy.mjs penguin` from his GameServer folder). To point it somewhere else, set the repository variable `GAME_SERVER_URL` (Settings → Secrets and variables → Actions → Variables) to the server's address, such as `https://penguin.5-222-13-73.sslip.io`, and push. Any copy of the game also takes `?server=https://…` in its address.
 
 For the Flynn Arcade hub, add `{ "id": "penguin", "name": "Polar Penguin Fight", "dir": "<this folder>", "subdomain": "penguin", "port": 5188, "build": false, "start": "server-dist/main.mjs" }` to `hub/config.json` and run `npm run build` here after pulling.
 
