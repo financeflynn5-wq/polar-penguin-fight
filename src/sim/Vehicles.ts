@@ -408,8 +408,8 @@ export function snowballHitsVehicle(w: World, b: { x: number; y: number; z: numb
     const fx = -Math.sin(v.yaw), fz = -Math.cos(v.yaw);
     for (const [f, r] of spec.circles) {
       if (Math.hypot(b.x - (v.x + fx * f), b.z - (v.z + fz * f)) > r * 0.92 + CFG.snowballRadius) continue;
-      // a catapult ball hits hard; the tank gun's little snowballs take two to make one dent
-      const n = b.cat ? CFG.catVehicleDamage : b.kind === 3 ? (w.chip(`v${v.id}`, CFG.tankGunDamage) ? 1 : 0) : 1;
+      // a catapult ball hits hard, a polar bear throws hard at vehicles; the tank gun's little snowballs take two to make one dent
+      const n = b.cat ? CFG.catVehicleDamage : b.kind === 3 ? (w.chip(`v${v.id}`, CFG.tankGunDamage) ? 1 : 0) : b.kind === 0 && w.penguin(b.owner)?.cls === 'bear' ? CFG.bearVehicleDamage : 1;
       if (n > 0) damageVehicle(w, v, n, b.owner, b.x, b.y, b.z);
       else { v.hitT = 0; w.emit({ type: 'vehicleHit', vid: v.id, by: b.owner, x: b.x, y: b.y, z: b.z, health: Math.max(0, v.health) }); }
       return true;

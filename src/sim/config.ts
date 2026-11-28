@@ -133,6 +133,7 @@ export const CFG = {
   catCrater: 1.9, // metres: the hole it knocks in a wall
   catCraterMass: 7000, // snow it can knock out (2040 = one cubic metre)
   catVehicleDamage: 4, // hits a direct hit takes off a vehicle (and half that for one in the splash)
+  bearVehicleDamage: 2, // hits a polar bear's thrown snowball takes off a vehicle (anyone else's takes 1): bears are the tank counter
 
   // splat streak rewards (Team Deathmatch only)
   streakAt: [3, 5, 7], // splats in one life for Snowball Frenzy, Insta-Turret, Avalanche
