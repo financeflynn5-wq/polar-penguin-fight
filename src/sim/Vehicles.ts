@@ -1,6 +1,6 @@
 // Vehicles: the snowmobile (a fast two-seater parked at every camp) and the snowplow (Breakthrough: a heavy tracked
 // machine the attackers get every so often, which tears through snow walls and shoves the snow aside) and the snow tank
-// (one per team: the driver works a snowball machine gun, a second rider works the snowball catapult on the back; Tank.ts).
+// (two per team, CFG.tanksPerTeam: the driver works a snowball machine gun, a second rider works the snowball catapult on the back; Tank.ts).
 // Part of the simulation: no Three.js and no DOM, so the game server runs the same code.
 import { ISO } from '../world/SnowField';
 import { boxPush, pointInBoxes } from '../world/Playground';
@@ -248,7 +248,7 @@ function spawnVehicle(w: World, kind: VehicleKind, team: number, slot: number): 
 export function initVehicles(w: World) {
   const n = Math.max(1, Math.round(w.opts.teamSize / 5 * CFG.snowmobilesPer5));
   for (let team = 0; team < 2; team++) for (let slot = 0; slot < n; slot++) w.garage.pending.push({ kind: 'snowmobile', team, slot, t: 0 });
-  // a snow tank at each camp, in every mode
+  // CFG.tanksPerTeam snow tanks at each camp, in every mode (slots alternate sides of the camp)
   for (let team = 0; team < 2; team++) for (let slot = 0; slot < CFG.tanksPerTeam; slot++) w.garage.pending.push({ kind: 'snowtank', team, slot, t: CFG.tankFirst });
   w.garage.plowT = w.mode === 'breakthrough' ? CFG.plowFirst : -1;
 }
@@ -408,8 +408,8 @@ export function snowballHitsVehicle(w: World, b: { x: number; y: number; z: numb
     const fx = -Math.sin(v.yaw), fz = -Math.cos(v.yaw);
     for (const [f, r] of spec.circles) {
       if (Math.hypot(b.x - (v.x + fx * f), b.z - (v.z + fz * f)) > r * 0.92 + CFG.snowballRadius) continue;
-      // a catapult ball hits hard; the tank gun's little snowballs take two to make one dent
-      const n = b.cat ? CFG.catVehicleDamage : b.kind === 3 ? (w.chip(`v${v.id}`, CFG.tankGunDamage) ? 1 : 0) : 1;
+      // a catapult ball hits hard, a polar bear throws hard at vehicles; the tank gun's little snowballs take two to make one dent
+      const n = b.cat ? CFG.catVehicleDamage : b.kind === 3 ? (w.chip(`v${v.id}`, CFG.tankGunDamage) ? 1 : 0) : b.kind === 0 && w.penguin(b.owner)?.cls === 'bear' ? CFG.bearVehicleDamage : 1;
       if (n > 0) damageVehicle(w, v, n, b.owner, b.x, b.y, b.z);
       else { v.hitT = 0; w.emit({ type: 'vehicleHit', vid: v.id, by: b.owner, x: b.x, y: b.y, z: b.z, health: Math.max(0, v.health) }); }
       return true;

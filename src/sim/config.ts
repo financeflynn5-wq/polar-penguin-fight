@@ -107,9 +107,9 @@ export const CFG = {
   plowRam: 2.2, // m/s: the blade flattens any enemy it reaches faster than this
   plowBotWait: 6, // seconds a fresh snowplow waits for a person before a bot may take it
   vehicleIdleHome: 30, // an empty vehicle left out in the field goes back to camp after this long
-  // the snow tank: one at each camp in every mode. The driver works a snowball machine gun, and a second rider
+  // the snow tank: tanksPerTeam at each camp in every mode (change the number to get more or fewer). The driver works a snowball machine gun, and a second rider
   // standing on the back works the snowball catapult (see src/sim/Tank.ts)
-  tanksPerTeam: 1,
+  tanksPerTeam: 2,
   tankFirst: 0, // seconds into the match before the tanks are at camp
   tankHealth: 16, // snowball hits to wreck one (both riders are out in the open)
   tankRespawn: 45, // seconds until a wrecked one is back at camp
@@ -133,6 +133,7 @@ export const CFG = {
   catCrater: 1.9, // metres: the hole it knocks in a wall
   catCraterMass: 7000, // snow it can knock out (2040 = one cubic metre)
   catVehicleDamage: 4, // hits a direct hit takes off a vehicle (and half that for one in the splash)
+  bearVehicleDamage: 2, // hits a polar bear's thrown snowball takes off a vehicle (anyone else's takes 1): bears are the tank counter
 
   // splat streak rewards (Team Deathmatch only)
   streakAt: [3, 5, 7], // splats in one life for Snowball Frenzy, Insta-Turret, Avalanche
