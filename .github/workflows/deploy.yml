@@ -27,8 +27,9 @@ jobs:
       - run: npm ci
       - run: npm run build
         env:
-          # the online game server this copy of the game connects to (a repository variable; empty = practice with bots only)
-          VITE_SERVER: ${{ vars.GAME_SERVER_URL }}
+          # the online game server this copy of the game connects to: the repository variable GAME_SERVER_URL if set,
+          # else Flynn's Hetzner box (when it doesn't answer, the menu just offers practice with bots)
+          VITE_SERVER: ${{ vars.GAME_SERVER_URL || 'https://penguin.5-222-13-73.sslip.io' }}
       - name: Push dist to gh-pages
         run: |
           cd dist
