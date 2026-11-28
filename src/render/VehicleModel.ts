@@ -37,7 +37,7 @@ function load(kind: VehicleKind) {
         if (!m.isMesh) return;
         const name = (m.material as THREE.Material).name;
         m.userData.mat = name;
-        m.material = propMaterial(name);
+        m.material = solid(name);
         m.castShadow = !NO_SHADOW.has(name);
         m.receiveShadow = name !== 'glass';
         if (name === 'glass') m.renderOrder = 2; // after the driver behind it
@@ -47,6 +47,17 @@ function load(kind: VehicleKind) {
     sources.set(kind, p);
   }
   return p;
+}
+
+/**
+ * The prop material without the see-through hook. Vehicles must stay solid: the one you ride sits between the camera
+ * and your penguin, so the hook dithered it away (the "see-through tank"). clone() leaves the hook behind.
+ */
+const solids = new Map<string, THREE.Material>();
+function solid(name: string): THREE.Material {
+  let m = solids.get(name);
+  if (!m) { m = propMaterial(name).clone(); solids.set(name, m); }
+  return m;
 }
 
 /** A material of this vehicle's own. clone() leaves the see-through hook behind, so it is carried over by hand. */
@@ -76,11 +87,11 @@ function arrived(t: THREE.Texture | null) {
  */
 export async function makeVehicleModel(kind: VehicleKind, tint: THREE.ColorRepresentation): Promise<THREE.Group> {
   const src = await load(kind);
-  const tread = propMaterial('tread') as THREE.MeshStandardMaterial;
+  const tread = solid('tread') as THREE.MeshStandardMaterial;
   await Promise.all([arrived(tread.map), arrived(tread.normalMap), arrived(tread.roughnessMap)]);
   const g = src.clone(true); // shares the geometry and, until they are replaced below, the materials
   g.name = kind;
-  const paint = own(propMaterial('paint') as THREE.MeshStandardMaterial);
+  const paint = own(solid('paint') as THREE.MeshStandardMaterial);
   paint.color.multiply(new THREE.Color(tint));
   const wheels: THREE.Object3D[] = [];
   g.traverse(o => {
