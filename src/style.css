@@ -226,3 +226,6 @@ canvas { display: block; }
 .rushtxt { font: 700 14px 'Fredoka'; color: var(--ice-2); margin-top: 4px; }
 #rushCard.ready .rushtxt { color: #ffe9a8; }
 #rushCard.ready { border-color: rgba(255, 220, 150, .8); }
+
+/* frames-per-second counter (pause menu: Show FPS) */
+.fps { position: fixed; top: 10px; left: 12px; z-index: 6; pointer-events: none; padding: 3px 9px; border-radius: 8px; background: rgba(8,22,44,.55); color: #e8f4ff; font: 700 13px 'Nunito', sans-serif; font-variant-numeric: tabular-nums; }
