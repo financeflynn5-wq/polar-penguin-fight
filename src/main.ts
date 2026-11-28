@@ -201,6 +201,7 @@ const pause = el(`<div class="overlay dim hidden"><div class="panel">
   <div class="set"><span>Mouse sensitivity</span><input type="range" id="sens" min="0.3" max="2.5" step="0.05"></div>
   <div class="set"><span>Sound</span><button class="btn small blue" id="mute">On</button></div>
   <div class="set"><span>Graphics</span><button class="btn small blue" id="gfx">High</button></div>
+  <div class="set"><span>Show FPS</span><button class="btn small blue" id="fpsBtn">Off</button></div>
   <div class="setlabel">Class <small>(a change starts with your next life)</small></div>
   <div class="classes small" id="pauseClasses"></div>
   <div class="row"><button class="btn" id="resume">Resume</button><button class="btn blue" id="quit">Quit to menu</button></div>
@@ -216,6 +217,18 @@ muteBtn.addEventListener('click', () => { game.audio.setMuted(!game.audio.muted)
 const gfxBtn = pause.querySelector('#gfx') as HTMLButtonElement;
 gfxBtn.textContent = game.quality === 'high' ? 'High' : 'Fast';
 gfxBtn.addEventListener('click', () => { game.setQuality(game.quality === 'high' ? 'low' : 'high'); gfxBtn.textContent = game.quality === 'high' ? 'High' : 'Fast'; });
+// frames-per-second counter in the top-left corner (online it also shows your ping)
+const fpsEl = el(`<div class="fps hidden">… FPS</div>`);
+document.body.appendChild(fpsEl);
+const fpsBtn = pause.querySelector('#fpsBtn') as HTMLButtonElement;
+const showFps = (on: boolean) => { fpsEl.classList.toggle('hidden', !on); fpsBtn.textContent = on ? 'On' : 'Off'; store.set('fps', on ? '1' : '0'); };
+showFps(store.get('fps', '0') === '1' || params.get('fps') === '1');
+fpsBtn.addEventListener('click', () => showFps(fpsEl.classList.contains('hidden')));
+setInterval(() => {
+  if (fpsEl.classList.contains('hidden')) return;
+  const rtt = game.net ? Math.round(game.net.rtt) : 0;
+  fpsEl.textContent = `${Math.round(game.fps)} FPS${rtt > 0 ? ` · ${rtt} ms` : ''}`;
+}, 250);
 pause.querySelector('#resume')!.addEventListener('click', () => game.resume());
 pause.querySelector('#quit')!.addEventListener('click', () => { pause.classList.add('hidden'); toMenu(); });
 
