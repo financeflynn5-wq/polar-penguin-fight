@@ -17,10 +17,10 @@ const MODE = (process.env.MODE ?? 'tdm') as Mode;
 const server = spawn(process.execPath, ['server-dist/main.mjs'], { env: { ...process.env, PORT: String(PORT) }, stdio: ['ignore', 'pipe', 'inherit'] });
 await new Promise<void>(res => server.stdout!.on('data', d => { if (String(d).includes('server on')) res(); }));
 
-interface Bot { name: string; net: NetClient; world: World | null; me: Penguin | null; corrections: number[]; starved: number; frames: number; matches: number; events: number; }
+interface Bot { name: string; net: NetClient; world: World | null; me: Penguin | null; corrections: number[]; starved: number; jerk: number[]; drawn: { x: number; z: number; vx: number; vz: number } | null; frames: number; matches: number; events: number; }
 
 function connect(name: string, size: number, skin?: Skin): Bot {
-  const b: Bot = { name, net: null as any, world: null, me: null, corrections: [], starved: 0, frames: 0, matches: 0, events: 0 };
+  const b: Bot = { name, net: null as any, world: null, me: null, corrections: [], starved: 0, jerk: [], drawn: null, frames: 0, matches: 0, events: 0 };
   b.net = new NetClient(`ws://localhost:${PORT}/ws`, { name, hat: 'viking', skin, size, mode: MODE }, {
     onMatch: (info, density, hard) => {
       assert.equal(info.mode, MODE);
@@ -79,6 +79,16 @@ await new Promise<void>(done => {
       const net = b.net as any;
       if (net.snaps.length && net.renderTick > net.latest.tick) b.starved++;
       b.frames++;
+      // how smoothly your own penguin is drawn: the change in its on-screen velocity from one frame to the next
+      // (a snap shows up as a spike; walking, turning and hopping only change it a little per frame)
+      const m = b.me, o = b.net.drawOffset, al = acc / STEP;
+      if (b.net.predicting && m.alive && dt > 0) {
+        const x = m.px + (m.x - m.px) * al + o.x, z = m.pz + (m.z - m.pz) * al + o.z;
+        const pd = b.drawn;
+        const vx = pd ? (x - pd.x) / dt : 0, vz = pd ? (z - pd.z) / dt : 0;
+        if (pd && pd.vx !== 0) b.jerk.push(Math.hypot(vx - pd.vx, vz - pd.vz) * dt);
+        b.drawn = { x, z, vx: pd ? vx : 0, vz: pd ? vz : 0 };
+      } else b.drawn = null;
       b.events += b.world.events.length; b.world.events.length = 0;
     }
     if (now - t0 > SECONDS * 1000) { clearInterval(iv); done(); }
@@ -90,6 +100,9 @@ for (const b of bots) {
   const pct = (q: number) => (c.length ? c[Math.min(c.length - 1, Math.floor(c.length * q))] : 0).toFixed(3);
   console.log(`${b.name}: rtt ${Math.round(b.net.rtt)} ms, ${b.frames} frames, ${(100 * b.starved / b.frames).toFixed(1)}% frames past the newest snapshot, ` +
     `${c.length} corrections (median ${pct(0.5)} m, 95% ${pct(0.95)} m, max ${pct(1)} m), ${b.events} events`);
+  const j = b.jerk.sort((x, y) => x - y), jq = (q: number) => (j.length ? j[Math.min(j.length - 1, Math.floor(j.length * q))] * 100 : 0).toFixed(1);
+  console.log(`${b.name}: frame-to-frame wobble of your own penguin on screen: median ${jq(0.5)} cm, 95% ${jq(0.95)} cm, 99% ${jq(0.99)} cm`);
+  assert.ok(Number(jq(0.95)) < 5, `${b.name}'s own penguin is drawn smoothly while running`);
   assert.equal(b.matches, 1);
   assert.ok(b.net.predicting, `${b.name} is predicting its own penguin`);
 }

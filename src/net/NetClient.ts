@@ -245,6 +245,9 @@ export class NetClient {
     me.riding = -1; me.covered = false;
     const wasPredicting = this.predicting;
     const bx = me.x, by = me.y, bz = me.z;
+    // how far your penguin moved in the tick it's being drawn across: keep that, so the frame-to-frame blend carries on
+    // where it was instead of jumping to the end of the tick every time a snapshot arrives (the "running looks choppy" bug)
+    const tx = me.x - me.px, ty = me.y - me.py, tz = me.z - me.pz;
     const live = P.copyInput(me.input, emptyInput());
     P.applyPenguinState(me, st);
     me.lookYaw = live.yaw; me.lookPitch = live.pitch;
@@ -259,7 +262,8 @@ export class NetClient {
       if (Math.hypot(ox, oy, oz) < 2) { this.drawOffset.x = ox; this.drawOffset.y = oy; this.drawOffset.z = oz; }
       else { this.drawOffset.x = this.drawOffset.y = this.drawOffset.z = 0; }
     }
-    me.px = me.x; me.py = me.y; me.pz = me.z;
+    if (wasPredicting) { me.px = me.x - tx; me.py = me.y - ty; me.pz = me.z - tz; }
+    else { me.px = me.x; me.py = me.y; me.pz = me.z; }
   }
 
   private applyInterpolated(w: World, me: Penguin, a: P.Snapshot, b: P.Snapshot, t: number) {
