@@ -1078,7 +1078,9 @@ export class Game {
           A.engineStart(e.x, e.y, e.z, plow);
           if (e.pid === me.id) {
             const driving = me.seat === 0;
-            if (!this.taughtDrive || plow) H.banner(plow ? 'SNOWPLOW!' : driving ? 'SNOWMOBILE!' : 'ON THE BACK!', plow ? 'Blade up, it drives straight through walls. Space puts the blade down to push up a wall of your own. E hops out' : driving ? 'W/S drive, A/D steer, E hops off. A friend on the back seat can throw' : 'You can still pack and throw from the back seat. E hops off', 3.2);
+            // the snow tank has its own controls in each seat, so it always says what they are
+            if (e.kind === 'snowtank') H.banner(driving ? 'SNOW TANK!' : 'CATAPULT!', driving ? 'W/S drive, A/D steer, hold the mouse for the machine gun (it jams if you hold it too long). E hops out' : 'Aim where you want it to land and click to launch. E hops off', 3.2);
+            else if (!this.taughtDrive || plow) H.banner(plow ? 'SNOWPLOW!' : driving ? 'SNOWMOBILE!' : 'ON THE BACK!', plow ? 'Blade up, it drives straight through walls. Space puts the blade down to push up a wall of your own. E hops out' : driving ? 'W/S drive, A/D steer, E hops off. A friend on the back seat can throw' : 'You can still pack and throw from the back seat. E hops off', 3.2);
             this.taughtDrive = true;
           } else if (plow && p && w.phase === 'fight') H.toast(p.team !== e.team ? (p.team === me.team ? `${p.name} stole their snowplow!` : `${p.name} stole your snowplow! Wreck it or take it back`) : p.team === me.team ? `${p.name} is driving the snowplow: follow it in!` : `${p.name} is driving the snowplow!`, 2.4);
         } else if (e.what === 'exit') { if (e.pid === me.id) A.click(); }
